@@ -44,7 +44,7 @@ jobs:
     env:
       DATABASE_URL: postgres://sdi:sdi@127.0.0.1:5440/sdi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install protoc
         # libprotobuf-dev provides google/protobuf/*.proto imported by the contracts.
@@ -78,13 +78,13 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate deploy/nginx in the runtime image
         run: >-
@@ -120,9 +120,9 @@ jobs:
       matrix:
         image: [gateway, knowledge, intelligence, execution, web]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Resolve build settings
         id: cfg
@@ -143,7 +143,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ steps.cfg.outputs.dockerfile }}
