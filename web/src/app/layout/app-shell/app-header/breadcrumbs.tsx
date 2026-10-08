@@ -1,4 +1,5 @@
-import { Fragment, Suspense } from 'react'
+import { Fragment, Suspense, type ComponentType } from 'react'
+import { ErrorBoundary } from 'react-error-boundary'
 import { Link, useMatches } from 'react-router'
 
 import type { RouteHandle } from '@/app/router'
@@ -16,6 +17,21 @@ function hasCrumb(handle: unknown): handle is RouteHandle {
   return typeof handle === 'object' && handle !== null && 'crumb' in handle
 }
 
+/**
+ * A data-backed crumb. Its query may fail (bad id, service down); that must
+ * never take the shell down, so it degrades to a static label and lets the
+ * page's own boundary explain the error.
+ */
+function DynamicCrumb({ component: Crumb, fallback }: { component: ComponentType; fallback: string }) {
+  return (
+    <ErrorBoundary fallback={<>{fallback}</>}>
+      <Suspense fallback={<Skeleton className="h-3.5 w-20" />}>
+        <Crumb />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
 /** Built from the `handle.crumb` of every matched route. */
 export function Breadcrumbs() {
   const matches = useMatches().filter((match) => hasCrumb(match.handle))
@@ -30,12 +46,7 @@ export function Breadcrumbs() {
             typeof crumb === 'string' ? (
               crumb
             ) : (
-              <Suspense fallback={<Skeleton className="h-3.5 w-20" />}>
-                {(() => {
-                  const Crumb = crumb
-                  return <Crumb />
-                })()}
-              </Suspense>
+              <DynamicCrumb key={match.pathname} component={crumb} fallback={crumb.displayName ?? 'Details'} />
             )
 
           return (

@@ -106,7 +106,8 @@ export default function ProposalPage() {
           ) : null}
         </div>
 
-        <div className="lg:sticky lg:top-16">
+        {/* Sticky, but never taller than the viewport: the panel scrolls on its own past that. */}
+        <div className="lg:sticky lg:top-16 lg:max-h-[calc(100svh-5rem)] lg:overflow-y-auto">
           <NegotiationPanel proposal={proposal} readOnly={closed} />
         </div>
       </div>

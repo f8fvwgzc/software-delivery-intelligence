@@ -1,7 +1,6 @@
 import { MessagesSquareIcon } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
-import { ScrollArea } from '@/components/ui/scroll-area'
 import type { components } from '@/lib/api/schema'
 
 import { MessageItem, PendingMessageItem } from './message-item'
@@ -36,7 +35,10 @@ export function MessageList({ messages, pendingContent }: MessageListProps) {
   }
 
   return (
-    <ScrollArea className="max-h-[28rem] min-h-40">
+    // A plain scroll container: Radix ScrollArea sizes its viewport to the
+    // content, so a max-height on it never clips and the thread would run
+    // under the constraints and weights below.
+    <div className="max-h-[28rem] min-h-40 overflow-y-auto [scrollbar-gutter:stable]">
       <ol className="flex flex-col gap-3 px-4 py-3">
         {messages.map((message) => (
           <MessageItem key={message.id} message={message} />
@@ -44,6 +46,6 @@ export function MessageList({ messages, pendingContent }: MessageListProps) {
         {pendingContent ? <PendingMessageItem content={pendingContent} /> : null}
         <div ref={endRef} aria-hidden="true" />
       </ol>
-    </ScrollArea>
+    </div>
   )
 }
