@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package sdi.common.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // How much damage an action can do. Drives the approval policy.
 enum RiskLevel {
   RISK_LEVEL_UNSPECIFIED = 0;
@@ -20,6 +22,24 @@ enum KnowledgeScope {
   KNOWLEDGE_SCOPE_ORGANIZATION = 4;
   KNOWLEDGE_SCOPE_PUBLIC_TEMPLATE = 5;
 }
+
+// A change notification any service can emit. The gateway merges the three
+// services' streams into one SSE feed so the web app never has to poll.
+message PlatformEvent {
+  // "project" | "scan" | "proposal" | "decision" | "document" | "execution" | "approval" | "pattern"
+  string entity = 1;
+  string entity_id = 2;
+  // Empty for entities that are not tied to one project.
+  string project_id = 3;
+  // "created" | "updated" | "deleted" | "progress"
+  string action = 4;
+  // Entity status after the change, in the entity's own vocabulary (e.g. "scanning").
+  string status = 5;
+  google.protobuf.Timestamp at = 6;
+  map<string, string> data = 7;
+}
+
+message WatchEventsRequest {}
 
 // One unit of work in an execution plan. Shared by pattern templates,
 // proposal options and executions so a plan keeps its shape end to end.

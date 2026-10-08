@@ -49,6 +49,8 @@ pub struct TreeEntry {
 pub enum FactKind {
     Detected,
     Inferred,
+    /// Declared by the repository's `.sdi.yml`. Trusted like detected, shown apart.
+    Configured,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -67,6 +69,10 @@ pub enum FactCategory {
     Documentation,
     Deployment,
     Migration,
+    /// Runtime versions and their end-of-life status.
+    Runtime,
+    /// Values declared in `.sdi.yml`.
+    Configuration,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +205,10 @@ pub struct QuestionDraft {
     pub reason: String,
     pub options: Vec<String>,
     pub allow_free_text: bool,
+    /// Pre-filled when `.sdi.yml` answers the question; empty otherwise.
+    pub answer: String,
+    /// `"config"` when pre-filled; empty otherwise.
+    pub answered_by: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +272,50 @@ pub struct LearnedPatternDraft {
 }
 
 // ---------------------------------------------------------------------------
+// Delivery maturity and repository configuration (CONTRACT.md §12, §13)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaturityAxisDraft {
+    /// `containerization` | `ci` | `tests` | `iac` | `dependencies` | `docs` | `secrets` | `runtime`
+    pub key: String,
+    pub label: String,
+    /// 0–100
+    pub score: u32,
+    pub summary: String,
+    /// Plain sentences naming the evidence.
+    pub findings: Vec<String>,
+    /// Pattern ids that would raise this axis, best first.
+    pub recommended_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaturityDraft {
+    /// Weighted mean of the axes, 0–100.
+    pub overall: u32,
+    /// `legacy` (< 35) | `transitional` (35–69) | `modern` (≥ 70)
+    pub stage: String,
+    pub axes: Vec<MaturityAxisDraft>,
+}
+
+/// What `.sdi.yml` declared. `present=false` means no file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectConfigDraft {
+    pub present: bool,
+    pub path: String,
+    pub deploy_target: String,
+    pub environments: Vec<String>,
+    pub region: String,
+    pub budget_monthly_usd: f64,
+    pub test_command: String,
+    pub health_path: String,
+    pub port: u32,
+    pub scan_exclude: Vec<String>,
+    /// Parse problems, in plain words. The config is ignored when non-empty.
+    pub errors: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 
@@ -283,4 +337,6 @@ pub struct Analysis {
     pub capabilities: Vec<String>,
     /// One paragraph describing the project; the project embedding is built from it.
     pub profile_text: String,
+    pub maturity: MaturityDraft,
+    pub config: ProjectConfigDraft,
 }

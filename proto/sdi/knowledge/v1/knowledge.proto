@@ -25,12 +25,16 @@ service KnowledgeService {
   rpc StartScan(StartScanRequest) returns (Scan);
   rpc GetScan(GetScanRequest) returns (Scan);
   rpc ListScans(ListScansRequest) returns (ListScansResponse);
+  // Live progress: emits the scan after every stage change, ends when terminal.
+  rpc WatchScan(WatchScanRequest) returns (stream Scan);
 
   // --- Knowledge model ------------------------------------------------------
   rpc ListFacts(ListFactsRequest) returns (ListFactsResponse);
   rpc ListQuestions(ListQuestionsRequest) returns (ListQuestionsResponse);
   rpc AnswerQuestion(AnswerQuestionRequest) returns (Question);
   rpc GetUnderstanding(GetUnderstandingRequest) returns (Understanding);
+  // Delivery maturity 0–100 with per-axis findings; drives modernization proposals.
+  rpc GetMaturity(GetMaturityRequest) returns (MaturityScore);
   rpc GetGraph(GetGraphRequest) returns (Graph);
   rpc AnalyzeImpact(AnalyzeImpactRequest) returns (ImpactAnalysis);
   rpc ListDependencies(ListDependenciesRequest) returns (ListDependenciesResponse);
@@ -54,6 +58,12 @@ service KnowledgeService {
   // Everything the proposal engine needs about one project, in one call.
   rpc GetProjectContext(GetProjectContextRequest) returns (ProjectContext);
   rpc GetKnowledgeStats(GetKnowledgeStatsRequest) returns (KnowledgeStats);
+
+  // --- Settings and live events ---------------------------------------------
+  rpc GetSettings(GetSettingsRequest) returns (KnowledgeSettings);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (KnowledgeSettings);
+  // Project, scan and pattern changes as they happen. Never ends.
+  rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +151,10 @@ message Project {
   // Top technologies, for list display.
   repeated string stack = 15;
   uint32 open_questions = 16;
+  // Delivery maturity 0–100. 0 until the first scan succeeds.
+  uint32 maturity_score = 17;
+  // True when the repository carries a `.sdi.yml`.
+  bool has_config = 18;
 }
 
 message ConnectProjectRequest {
@@ -239,6 +253,8 @@ enum FactKind {
   FACT_KIND_UNSPECIFIED = 0;
   FACT_KIND_DETECTED = 1;
   FACT_KIND_INFERRED = 2;
+  // Declared by the repository's `.sdi.yml`. Trusted like detected, shown apart.
+  FACT_KIND_CONFIGURED = 3;
 }
 
 enum FactCategory {
@@ -257,6 +273,10 @@ enum FactCategory {
   FACT_CATEGORY_DOCUMENTATION = 12;
   FACT_CATEGORY_DEPLOYMENT = 13;
   FACT_CATEGORY_MIGRATION = 14;
+  // Runtime versions (Node 18, Python 3.12, Java 8, .NET Framework 4.8) and their EOL status.
+  FACT_CATEGORY_RUNTIME = 15;
+  // Values declared in `.sdi.yml`.
+  FACT_CATEGORY_CONFIGURATION = 16;
 }
 
 message Fact {
@@ -299,6 +319,8 @@ message Question {
   bool allow_free_text = 7;
   string answer = 8;
   google.protobuf.Timestamp answered_at = 9;
+  // "user" | "config" (answered by `.sdi.yml`). Empty while open.
+  string answered_by = 10;
 }
 
 message ListQuestionsRequest {
@@ -336,10 +358,78 @@ message Understanding {
   repeated string request_flow = 6;
   string commit_sha = 7;
   google.protobuf.Timestamp generated_at = 8;
+  MaturityScore maturity = 9;
 }
 
 message GetUnderstandingRequest {
   string project_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Delivery maturity (legacy ↔ modern)
+// ---------------------------------------------------------------------------
+
+// One axis of delivery maturity, 0–100. Findings are plain sentences that
+// name the evidence ("No Dockerfile found", "Node 16 reached end of life").
+message MaturityAxis {
+  // "containerization" | "ci" | "tests" | "iac" | "dependencies" | "docs" | "secrets" | "runtime"
+  string key = 1;
+  string label = 2;
+  uint32 score = 3;
+  string summary = 4;
+  repeated string findings = 5;
+  // Pattern ids that would raise this axis, best first.
+  repeated string recommended_patterns = 6;
+}
+
+message MaturityScore {
+  string project_id = 1;
+  // Weighted mean of the axes.
+  uint32 overall = 2;
+  // "legacy" (< 35) | "transitional" (35–69) | "modern" (≥ 70)
+  string stage = 3;
+  repeated MaturityAxis axes = 4;
+  google.protobuf.Timestamp computed_at = 5;
+}
+
+message GetMaturityRequest {
+  string project_id = 1;
+}
+
+message WatchScanRequest {
+  string id = 1;
+}
+
+// What the repository declared in `.sdi.yml` (CONTRACT.md §12).
+message ProjectConfig {
+  bool present = 1;
+  string path = 2;
+  string deploy_target = 3;
+  repeated string environments = 4;
+  string region = 5;
+  double budget_monthly_usd = 6;
+  string test_command = 7;
+  string health_path = 8;
+  uint32 port = 9;
+  repeated string scan_exclude = 10;
+  // Parse problems, in plain words. The config is ignored when non-empty.
+  repeated string errors = 11;
+}
+
+// Scanner limits. Changed from the settings page.
+message KnowledgeSettings {
+  uint32 scan_max_files = 1;
+  uint32 scan_max_file_bytes = 2;
+  uint32 scan_concurrency = 3;
+  uint32 pipeline_runs_limit = 4;
+  // GitHub API ETag caching.
+  bool cache_github = 5;
+}
+
+message GetSettingsRequest {}
+
+message UpdateSettingsRequest {
+  KnowledgeSettings settings = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -784,6 +874,9 @@ message ProjectContext {
   repeated string capabilities = 10;
   // Text the project profile embedding was built from.
   string profile_text = 11;
+  MaturityScore maturity = 12;
+  ProjectConfig config = 13;
+  repeated Dependency dependencies = 14;
 }
 
 message GetKnowledgeStatsRequest {}

@@ -34,6 +34,12 @@ service IntelligenceService {
   rpc GetDocument(GetDocumentRequest) returns (Document);
 
   rpc GetIntelligenceStats(GetIntelligenceStatsRequest) returns (IntelligenceStats);
+
+  // --- Settings and live events ---------------------------------------------
+  rpc GetSettings(GetSettingsRequest) returns (IntelligenceSettings);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
+  // Proposal, decision and document changes as they happen. Never ends.
+  rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +55,8 @@ enum ProposalKind {
   PROPOSAL_KIND_SECURITY = 5;
   PROPOSAL_KIND_DOCUMENTATION = 6;
   PROPOSAL_KIND_DEPENDENCY = 7;
+  // Moves a legacy or transitional project up the maturity axes.
+  PROPOSAL_KIND_MODERNIZATION = 8;
 }
 
 enum ProposalStatus {
@@ -117,6 +125,29 @@ message ProposalOption {
   // Pattern requirements this project does not meet yet.
   repeated string unmet_requirements = 11;
   repeated sdi.common.v1.PlanStep plan = 12;
+  // Real files this option would add to the repository, generated from the
+  // project's facts. Committed by a `repo.open_pull_request` step.
+  repeated Artifact artifacts = 13;
+  repeated CostLine cost_breakdown = 14;
+}
+
+// A generated file. Content is complete and ready to commit.
+message Artifact {
+  // Repository-relative, e.g. ".github/workflows/deploy.yml".
+  string path = 1;
+  string content = 2;
+  // "dockerfile" | "yaml" | "hcl" | "bicep" | "json" | "markdown" | "nginx" | "text"
+  string language = 3;
+  // One sentence: why this file exists.
+  string purpose = 4;
+  // True when the repository already has a file at this path.
+  bool replaces_existing = 5;
+}
+
+message CostLine {
+  string item = 1;
+  double monthly_usd = 2;
+  string note = 3;
 }
 
 // A condition agreed during negotiation, e.g. "keep the current networking".
@@ -154,6 +185,8 @@ message GenerateProposalRequest {
   string project_id = 1;
   ProposalKind kind = 2;
   string prompt = 3;
+  // 0 means no budget. Becomes the `budget_monthly_usd` constraint.
+  double budget_monthly_usd = 4;
 }
 
 message ListProposalsRequest {
@@ -175,6 +208,11 @@ message AcceptProposalRequest {
   string option_id = 2;
   // Hand the plan to the execution service straight away.
   bool create_execution = 3;
+  // Runtime for that execution (CONTRACT.md §5.4): "simulated" (default) runs
+  // the option's own plan as a dry run; "docker" runs the local verification
+  // plan (checkout → build → run → tests → destroy); "github" runs
+  // checkout → open_pull_request with the option's artifacts.
+  string adapter = 4;
 }
 
 message RejectProposalRequest {
@@ -340,6 +378,23 @@ message ListDocumentsResponse {
 
 message GetDocumentRequest {
   string id = 1;
+}
+
+// Ranking defaults and the reasoner. Changed from the settings page.
+message IntelligenceSettings {
+  ScoreWeights default_weights = 1;
+  // "heuristic" | "claude". "claude" needs ANTHROPIC_API_KEY; falls back otherwise.
+  string reasoner = 2;
+  string model = 3;
+  bool api_key_configured = 4;
+  // Cost shrink: options above this monthly cost lose ranking unless a budget says otherwise.
+  double cost_ceiling_usd = 5;
+}
+
+message GetSettingsRequest {}
+
+message UpdateSettingsRequest {
+  IntelligenceSettings settings = 1;
 }
 
 message GetIntelligenceStatsRequest {}

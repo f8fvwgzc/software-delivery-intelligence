@@ -40,6 +40,9 @@ service ExecutionService {
   rpc GrantPermission(GrantPermissionRequest) returns (Identity);
 
   rpc GetDeliveryStats(GetDeliveryStatsRequest) returns (DeliveryStats);
+
+  // Execution and approval changes as they happen (not the per-step log). Never ends.
+  rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +166,8 @@ message Execution {
   google.protobuf.Timestamp updated_at = 16;
   google.protobuf.Timestamp started_at = 17;
   google.protobuf.Timestamp finished_at = 18;
+  // Things the run produced: "pull_request_url", "image", "container_url", "workdir".
+  map<string, string> outputs = 19;
 }
 
 message CreateExecutionRequest {
@@ -171,6 +176,10 @@ message CreateExecutionRequest {
   string pattern_id = 3;
   string title = 4;
   repeated sdi.common.v1.PlanStep steps = 5;
+  // "simulated" (default) | "docker" | "github". See CONTRACT.md §5.4.
+  string adapter = 6;
+  // Files a `repo.open_pull_request` step commits, keyed by repository path.
+  map<string, string> artifacts = 7;
 }
 
 message ListExecutionsRequest {

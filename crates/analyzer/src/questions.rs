@@ -41,6 +41,8 @@ pub(crate) fn derive(ctx: &Ctx<'_>) -> Vec<QuestionDraft> {
             .map(String::from)
             .to_vec(),
             allow_free_text: true,
+            answer: String::new(),
+            answered_by: String::new(),
         });
     }
 
@@ -80,6 +82,8 @@ pub(crate) fn derive(ctx: &Ctx<'_>) -> Vec<QuestionDraft> {
             .map(String::from)
             .to_vec(),
             allow_free_text: true,
+            answer: String::new(),
+            answered_by: String::new(),
         });
     }
 
@@ -108,6 +112,8 @@ pub(crate) fn derive(ctx: &Ctx<'_>) -> Vec<QuestionDraft> {
             .map(String::from)
             .to_vec(),
             allow_free_text: true,
+            answer: String::new(),
+            answered_by: String::new(),
         });
     }
     out

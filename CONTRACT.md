@@ -69,6 +69,9 @@ Shared crates:
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` | `0.0.0.0:<port>` | each service |
 | `LOG_FORMAT` | text (`json` in containers) | all |
 | `RUST_LOG` | `info,sqlx=warn` | all |
+| `SDI_RUN_DIR` | `.run` | execution (`docker` adapter workdirs) |
+| `DOCKER_HOST` | Docker default | execution (`docker` adapter; the compose `local-exec` profile mounts the socket) |
+| `GITHUB_TOKEN` | — | execution (`github` adapter; same token as knowledge, needs `repo` write) |
 
 ## 4. Database
 
@@ -154,22 +157,43 @@ design conversation. `editable=false` rows can never be relaxed.
 | `firewall.modify` | Modify firewall | high | required | no |
 | `secrets.rotate` | Rotate secrets | high | required | no |
 | `db.destroy_production` | Destroy production database | blocked | blocked | no |
+| `repo.checkout` | Download the repository at a commit | safe | auto | no |
+| `env.destroy_temporary` | Remove a temporary environment | safe | auto | yes |
+| `repo.open_pull_request` | Open a pull request with generated files | medium | approval | yes |
 
 ### 5.3 Permissions (`PlanStep.required_permissions`, identity grants)
 
-`<resource>:<verb>` — e.g. `repository:read`, `container:build`,
-`container:run`, `environment:write`, `database:write`, `cloud:write`,
-`deploy:staging`, `deploy:production`, `secrets:write`. The seeded
-`simulated` identity holds `repository:read`, `container:build`,
-`environment:write` only; everything else must be granted (TTL, default 30
+`<resource>:<verb>` — e.g. `repository:read`, `repository:write`,
+`container:build`, `container:run`, `environment:write`, `database:write`,
+`cloud:write`, `deploy:staging`, `deploy:production`, `secrets:write`. The
+seeded `simulated` identity holds `repository:read`, `container:build`,
+`environment:write` only; the seeded `local-docker` identity adds
+`container:run`, and the seeded `github-token` identity holds
+`repository:read` + `repository:write` (it is the connected token, so the
+grant only exists while `GITHUB_TOKEN` is configured); everything else must be granted (TTL, default 30
 minutes) and a missing grant produces a `PERMISSION_DENIED` failure **before**
 the step runs.
 
 ### 5.4 Adapters
 
-`simulated` (v1, every execution) runs steps as timed dry runs and supports
-fault injection. `github`, `docker`, `cloud`, `kubernetes` are reserved names;
-the `Adapter` trait in the execution service is the extension point.
+`CreateExecutionRequest.adapter` picks the runtime for the whole run; each
+step's `PlanStep.adapter` names the tool family it needs. The execution
+service refuses a run (`INVALID_ARGUMENT`) whose steps need a tool the chosen
+runtime cannot provide.
+
+| adapter | what it does | steps it can run |
+|---|---|---|
+| `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
+| `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/`, `container.build` runs `docker build`, `container.run` starts the image detached with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, `env.destroy_temporary` stops and removes everything; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
+| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal-id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url` | `repo.checkout`, `repo.open_pull_request` |
+| `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
+
+A plan may mix families (build locally, then open a PR): the service routes
+each step to the family named on the step as long as the chosen runtime is
+not `simulated`. Every adapter honours the same gates: permission → policy →
+approval → run → verify → checkpoint. The `docker` adapter requires the
+`container:build` / `container:run` permissions; `github` requires
+`repository:write`.
 
 ### 5.5 Failure codes
 
@@ -197,6 +221,25 @@ plus the free-text instruction path.
 | `terraform-remote-state` | Terraform remote state + plan on PR | infrastructure | `iac:terraform` |
 | `secret-scanning-baseline` | Secret scanning + env example | security | — |
 | `readme-architecture-docs` | README + architecture document | documentation | — |
+| `containerize-legacy-app` | Containerize an application that has no Dockerfile | modernization | — |
+| `add-ci-baseline` | Add a CI baseline where none exists | modernization | — |
+| `upgrade-runtime` | Move an end-of-life runtime to a supported version | modernization | — |
+| `config-to-environment` | Externalise configuration into environment variables | modernization | — |
+| `add-healthcheck` | Add a health endpoint and container healthcheck | modernization | `dockerfile` |
+| `managed-database` | Move a self-hosted database to a managed service | modernization | `database:*` |
+| `monorepo-ci-matrix` | Per-package CI matrix for a monorepo | ci_cd | `monorepo` |
+| `azure-app-service` | Azure App Service (Linux) + GitHub OIDC | deployment | — |
+| `aws-lambda-container` | AWS Lambda container image + API Gateway | deployment | `dockerfile` |
+| `hetzner-vm-compose` | Hetzner VM + Docker Compose (lowest cost) | deployment | `dockerfile` |
+| `render-web-service` | Render web service | deployment | — |
+
+Every pattern (catalog and modernization) ships a realistic `plan` (4–8
+`PlanStep`s with `action_type`, `adapter`, `depends_on`,
+`required_permissions`, `verification`), `pros`, `cons`, cost, security score,
+complexity, and a **cost model** (`CostLine`s: compute, database, registry,
+networking, CI minutes) that the generator fills per project.
+`modernization` patterns carry `targets_axes` in their attributes so the
+maturity report can point at them.
 
 Every catalog pattern ships a realistic `plan` (4–8 `PlanStep`s with
 `action_type`, `adapter`, `depends_on`, `required_permissions`,
@@ -241,6 +284,27 @@ re-ranking; every revision bumps `revision` and sets
 reply cites `Evidence`. If `ANTHROPIC_API_KEY` is set the reply text is
 written by Claude from the structured context (model `ANTHROPIC_MODEL`); the
 ranking is always deterministic.
+
+**Budget.** `GenerateProposalRequest.budget_monthly_usd`, the project's
+`.sdi.yml` budget, or a negotiation turn ("under $15 a month", "max 20
+dollars") sets the `budget_monthly_usd` constraint. Options whose estimated
+cost exceeds it are kept but marked (`unmet_requirements` gets
+`budget:<n>`) and lose 0.25 on `overall`; the cheapest viable option is
+always present in the top 5 even when its signals would rank it lower. Every
+option carries a `cost_breakdown` (`CostLine`s) that sums to
+`estimated_monthly_cost_usd`.
+
+**Modernization.** `PROPOSAL_KIND_MODERNIZATION` ranks patterns of category
+`modernization` by the maturity axes they raise: `architecture_fit` for this
+kind is `1 − axis_score/100` of the weakest axis the pattern targets, so the
+lowest axis is addressed first. The maturity report (§13) links each axis to
+its `recommended_patterns`.
+
+**Artifacts.** Each option of kind `deployment`, `ci_cd`, `infrastructure`,
+`security`, `dependency`, `testing` and `modernization` carries generated
+files (§14). Artifacts are generated once per revision from the project's
+facts and config; negotiation that changes a parameter (region, port,
+runtime) regenerates them.
 
 ## 7. Execution state machine
 
@@ -322,6 +386,21 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 | `GET /delivery/stats?projectId=` | Execution.GetDeliveryStats |
 | `GET /system/status` | gateway: gRPC health of each service + versions |
 | `GET /health` | gateway liveness |
+| `GET /scans/{id}/stream` (SSE, `data: <Scan>`, final `event: end`) | Knowledge.WatchScan |
+| `GET /projects/{id}/maturity` | Knowledge.GetMaturity |
+| `GET /projects/{id}/config` | gateway: `ProjectContext.config` via Knowledge.GetProjectContext |
+| `GET /events/stream` (SSE, `data: <PlatformEvent>`, never ends, keep-alive 15s) | gateway merges Knowledge/Intelligence/Execution.WatchEvents |
+| `GET /settings`, `PATCH /settings {knowledge?, intelligence?}` | Knowledge.Get/UpdateSettings + Intelligence.Get/UpdateSettings, composed as `{knowledge, intelligence}` |
+| `GET /proposals/{id}/options/{optionId}/artifacts` | gateway: the option's artifacts (omitted from `GET /proposals/{id}` and list responses to keep them small; `GET /proposals/{id}` carries `artifactCount` per option) |
+| `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the execution |
+| `POST /executions {…, adapter?, artifacts?}` | Execution.CreateExecution (adapter per §5.4) |
+
+**Live events.** The web app opens `GET /events/stream` once (in the shell)
+and invalidates TanStack Query families by `entity`: `project`/`scan` →
+`['projects']`, `['scans']`; `proposal`/`decision`/`document` →
+`['proposals']`, `['decisions']`, `['documents']`; `execution`/`approval` →
+`['executions']`, `['approvals']`; `pattern` → `['patterns']`. Polling stays
+only as a fallback while the stream is disconnected.
 
 The gateway converts gRPC status codes: `NOT_FOUND`→404,
 `INVALID_ARGUMENT`→400, `ALREADY_EXISTS`→409, `FAILED_PRECONDITION`→412,
@@ -368,8 +447,10 @@ web/src
   answers, the edge itself answers JSON `502 {"code":"upstream_unavailable"}`
   or `504 {"code":"upstream_timeout"}`; gateway-generated bodies pass through
   unchanged.
-- SSE route `/api/v1/executions/*/events/stream`: `proxy_buffering off`,
-  `proxy_read_timeout 1h`, `Cache-Control: no-cache`.
+- SSE routes `/api/v1/executions/*/events/stream`, `/api/v1/scans/*/stream`
+  and `/api/v1/events/stream`: `proxy_buffering off`, `proxy_read_timeout 1h`,
+  `Cache-Control: no-cache`, excluded from the request rate limit (one
+  long-lived connection per tab).
 - Security headers, gzip, `server_tokens off`.
 
 ## 11. Definition of done (every slice)
@@ -381,3 +462,83 @@ web/src
   `curl localhost/api/v1/health` returns `{"status":"ok"}`.
 - A real private GitHub repository can be connected, scanned, proposed
   against, negotiated with, and executed as a dry run from the browser.
+- `pnpm e2e` (Playwright, against `make up`) passes the critical path:
+  connect → scan (live) → proposal → negotiate → accept → dry run with an
+  injected fault → resolve → succeeded.
+
+## 12. Repository configuration — `.sdi.yml`
+
+Optional file at the repository root. Values are **configured facts**
+(`FACT_KIND_CONFIGURED`, confidence 1.0, `source_path=.sdi.yml`) and answer
+the matching open questions automatically (`answered_by=config`). Unknown
+keys are reported in `ProjectConfig.errors` and ignored; a file that fails to
+parse is ignored entirely and reported.
+
+```yaml
+version: 1                      # required
+deploy:
+  target: vm | azure | aws | gcp | kubernetes | fly | render | none   # answers deployment_target
+  environments: [staging, production]                                 # answers environments
+  region: westeurope
+budget:
+  monthly_usd: 20                 # becomes the budget constraint on every proposal
+test:
+  command: "cargo test"           # used by the docker adapter's tests.run_local
+  health_path: "/health"          # polled by container.run
+  port: 8080
+scan:
+  exclude: ["docs/legacy/**", "vendor/**"]   # glob, applied to wanted_files
+```
+
+Everything that is *not* a configuration value stays a generated document
+(README, architecture, deployment guide, runbook, ADR, UAT plan, reports) in
+Markdown, downloadable from the Documents page and committable through a
+`repo.open_pull_request` step.
+
+## 13. Delivery maturity (knowledge)
+
+Eight axes, each 0–100, from facts only (never from guesses):
+
+| axis | 100 means | typical findings |
+|---|---|---|
+| `containerization` | Dockerfile + compose or k8s, non-root user, healthcheck | "No Dockerfile", "Runs as root" |
+| `ci` | CI with test + build + a deploy or release job | "No workflows", "CI has no test step" |
+| `tests` | unit + e2e suites, test command detectable | "No test framework detected" |
+| `iac` | IaC present with remote state / modules | "Infrastructure is not declared" |
+| `dependencies` | lockfile + Dependabot + no EOL major pins | "No lockfile", "Dependabot not configured" |
+| `docs` | README + architecture/ADR docs | "README missing", "No architecture document" |
+| `secrets` | `.env.example`, no committed secret-looking files, secret scanning | "`.env` committed" |
+| `runtime` | every detected runtime within support | "Node 16 reached end of life 2023-09-11" |
+
+`overall` is the weighted mean (containerization 0.15, ci 0.2, tests 0.15,
+iac 0.1, dependencies 0.15, docs 0.05, secrets 0.1, runtime 0.1); `stage`
+is `legacy` < 35, `transitional` 35–69, `modern` ≥ 70. Runtime currency uses a
+curated EOL table (`crates/analyzer/src/eol.rs`: Node, Python, Java, .NET,
+PHP, Ruby, Go, Rust edition, Ubuntu/Debian/Alpine base images) read from
+`.nvmrc`, `.node-version`, `.tool-versions`, `engines`, `runtime.txt`,
+`pyproject requires-python`, `pom maven.compiler`, `<TargetFramework>`,
+`go.mod go`, `Cargo.toml edition`, Dockerfile base images.
+
+## 14. Generators (intelligence)
+
+`intelligence/src/generators/` turns a pattern + `ProjectContext` into
+`Artifact`s. One module per family; each is a pure function unit-tested with
+fixtures, and every file is complete (no `TODO` placeholders):
+
+| family | files | inputs it needs |
+|---|---|---|
+| `dockerfile` | `Dockerfile`, `.dockerignore` | language/framework/package manager, entry point, port, runtime version |
+| `compose` | `docker-compose.yml` | services, datastores, ports, env example |
+| `github_actions` | `.github/workflows/ci.yml`, `deploy.yml` | package manager, test command, image name, deploy target |
+| `terraform` | `infra/<cloud>/{main,variables,outputs}.tf` | cloud, region, service name, database engine |
+| `bicep` | `infra/azure/main.bicep` | same as terraform for Azure |
+| `kubernetes` | `deploy/k8s/{deployment,service,ingress}.yaml` or `charts/<name>/` | image, port, health path, replicas |
+| `nginx` | `deploy/nginx/default.conf` | upstream port, static dir |
+| `dependabot` | `.github/dependabot.yml` | ecosystems found |
+| `env` | `.env.example` | env vars referenced in code/compose |
+| `docs` | `docs/deployment.md`, `docs/runbook.md` | the plan and its policy gates |
+
+Generated content uses the project's own names (repo name, service names,
+detected port) and the negotiated parameters (region, runtime). Files that
+already exist in the repository are generated with `replaces_existing=true`
+and the PR step writes them only when the option says so.
