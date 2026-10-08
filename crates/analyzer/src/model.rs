@@ -1,0 +1,286 @@
+//! Input and output types of the analyzer.
+//!
+//! These are plain data: the knowledge service fills a [`RepoSnapshot`] from
+//! the provider API, calls [`crate::analyze`], and persists the [`Analysis`].
+//! Field names deliberately mirror `sdi.knowledge.v1` so the mapping is 1:1.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+
+/// Everything known about a repository at one commit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepoSnapshot {
+    /// `owner/name`.
+    pub full_name: String,
+    pub description: String,
+    pub default_branch: String,
+    pub commit_sha: String,
+    pub is_private: bool,
+    /// Primary language as reported by the provider. May be empty.
+    pub primary_language: String,
+    /// Language → bytes of code, as reported by the provider.
+    pub languages: BTreeMap<String, u64>,
+    pub topics: Vec<String>,
+    /// Every path in the repository, files and directories.
+    pub tree: Vec<TreeEntry>,
+    /// Contents of the files chosen by [`crate::wanted_files`], keyed by path.
+    pub files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeEntry {
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Facts
+// ---------------------------------------------------------------------------
+
+/// Detected facts are read straight from the repository. Inferred facts are
+/// conclusions drawn from them. The two are never mixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FactKind {
+    Detected,
+    Inferred,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum FactCategory {
+    Repository,
+    Language,
+    Framework,
+    Datastore,
+    Container,
+    CiCd,
+    Iac,
+    Cloud,
+    Testing,
+    Dependency,
+    Security,
+    Documentation,
+    Deployment,
+    Migration,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FactDraft {
+    pub kind: FactKind,
+    pub category: FactCategory,
+    /// Stable machine key, unique per analysis, e.g. `framework:react`.
+    pub key: String,
+    pub label: String,
+    pub value: String,
+    /// `0.0..=1.0`. Detected facts are `1.0`.
+    pub confidence: f64,
+    /// Empty when the fact does not come from one file.
+    pub source_path: String,
+    /// Short excerpt that proves the fact. Never a secret.
+    pub evidence: String,
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge graph
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NodeKind {
+    Repository,
+    Service,
+    Library,
+    Datastore,
+    Infrastructure,
+    Pipeline,
+    Environment,
+    Deployment,
+    ContainerImage,
+    IacModule,
+    TestSuite,
+    Document,
+    ExternalApi,
+    Owner,
+    Migration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDraft {
+    pub kind: NodeKind,
+    /// Stable within a project, unique per analysis, e.g. `service:api`.
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub source_path: String,
+    pub attributes: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RelationCategory {
+    Ownership,
+    Structure,
+    Source,
+    Execution,
+    Infrastructure,
+    Validation,
+    Governance,
+    Outcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeDraft {
+    /// [`NodeDraft::key`] of the source node. Must exist in the same analysis.
+    pub source_key: String,
+    /// [`NodeDraft::key`] of the target node. Must exist in the same analysis.
+    pub target_key: String,
+    /// Upper snake case verb, e.g. `DEPENDS_ON`, `DEPLOYED_TO`, `TESTED_BY`.
+    pub relation: String,
+    pub category: RelationCategory,
+    pub attributes: BTreeMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies and pipelines
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyDraft {
+    /// `npm` | `cargo` | `pip` | `go` | `maven` | `docker` | `github_actions` | ...
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+    pub manifest_path: String,
+    /// `runtime` | `dev` | `build`
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependabotDraft {
+    pub configured: bool,
+    pub config_path: String,
+    pub ecosystems: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PipelineJobDraft {
+    pub key: String,
+    pub name: String,
+    pub runs_on: String,
+    pub needs: Vec<String>,
+    pub steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PipelineDraft {
+    /// `github_actions` | `gitlab_ci` | ...
+    pub provider: String,
+    pub name: String,
+    pub path: String,
+    pub triggers: Vec<String>,
+    pub jobs: Vec<PipelineJobDraft>,
+}
+
+// ---------------------------------------------------------------------------
+// Questions and understanding
+// ---------------------------------------------------------------------------
+
+/// Something the repository cannot tell us. Only asked when it truly cannot
+/// be detected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionDraft {
+    /// Stable machine key, e.g. `deployment_target`.
+    pub key: String,
+    pub prompt: String,
+    /// Why it could not be detected.
+    pub reason: String,
+    pub options: Vec<String>,
+    pub allow_free_text: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectionDraft {
+    pub key: String,
+    pub title: String,
+    pub summary: String,
+    pub items: Vec<String>,
+}
+
+/// TL;DR first, deep dive underneath.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnderstandingDraft {
+    pub tldr: String,
+    pub architecture: String,
+    pub stack: Vec<String>,
+    pub sections: Vec<SectionDraft>,
+    /// Ordered hops a request takes, e.g. `["Browser", "React", "API", "PostgreSQL"]`.
+    pub request_flow: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Semantic memory and learned patterns
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChunkKind {
+    Code,
+    Iac,
+    Document,
+    CiCd,
+    Architecture,
+}
+
+/// A piece of text worth embedding. Chunks never contain secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkDraft {
+    pub kind: ChunkKind,
+    pub path: String,
+    pub title: String,
+    pub content: String,
+}
+
+/// A way of working this repository already follows, worth remembering so
+/// other projects can reuse it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LearnedPatternDraft {
+    /// Stable key built from what defines the pattern, e.g. `deployment:docker+github_actions`.
+    pub key: String,
+    pub name: String,
+    pub summary: String,
+    /// `deployment` | `ci_cd` | `testing` | `infrastructure` | `security` | `documentation` | `dependency`
+    pub category: String,
+    pub technologies: Vec<String>,
+    pub cloud: String,
+    pub runtime: String,
+    pub iac: String,
+    pub delivery: String,
+    /// Capability keys, see [`Analysis::capabilities`].
+    pub requires: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Analysis {
+    pub facts: Vec<FactDraft>,
+    pub nodes: Vec<NodeDraft>,
+    pub edges: Vec<EdgeDraft>,
+    pub dependencies: Vec<DependencyDraft>,
+    pub dependabot: DependabotDraft,
+    pub pipelines: Vec<PipelineDraft>,
+    pub questions: Vec<QuestionDraft>,
+    pub understanding: UnderstandingDraft,
+    pub chunks: Vec<ChunkDraft>,
+    pub learned_patterns: Vec<LearnedPatternDraft>,
+    /// Display names, most significant first, e.g. `["React", "Rust", "PostgreSQL"]`.
+    pub technologies: Vec<String>,
+    /// Capability keys patterns are matched against. See `CONTRACT.md` for the vocabulary.
+    pub capabilities: Vec<String>,
+    /// One paragraph describing the project; the project embedding is built from it.
+    pub profile_text: String,
+}

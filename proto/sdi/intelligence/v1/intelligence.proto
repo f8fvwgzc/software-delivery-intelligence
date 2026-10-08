@@ -1,0 +1,354 @@
+syntax = "proto3";
+
+package sdi.intelligence.v1;
+
+import "google/protobuf/timestamp.proto";
+import "sdi/common/v1/common.proto";
+
+// Turns knowledge into ranked, evidence-backed proposals, negotiates them
+// with the user and remembers the resulting decisions with provenance.
+//
+// Calls KnowledgeService for context and retrieval, and ExecutionService to
+// hand an accepted plan over. It never executes anything itself.
+service IntelligenceService {
+  // --- Proposals ------------------------------------------------------------
+  rpc GenerateProposal(GenerateProposalRequest) returns (Proposal);
+  rpc ListProposals(ListProposalsRequest) returns (ListProposalsResponse);
+  rpc GetProposal(GetProposalRequest) returns (Proposal);
+  rpc AcceptProposal(AcceptProposalRequest) returns (Proposal);
+  rpc RejectProposal(RejectProposalRequest) returns (Proposal);
+
+  // --- Negotiation ----------------------------------------------------------
+  // One user turn. May re-rank options and change the recommendation.
+  rpc Negotiate(NegotiateRequest) returns (NegotiateResponse);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+
+  // --- Decision memory ------------------------------------------------------
+  rpc ListDecisions(ListDecisionsRequest) returns (ListDecisionsResponse);
+  rpc CreateDecision(CreateDecisionRequest) returns (Decision);
+  rpc SupersedeDecision(SupersedeDecisionRequest) returns (Decision);
+
+  // --- Documents and reports ------------------------------------------------
+  rpc GenerateDocument(GenerateDocumentRequest) returns (Document);
+  rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+  rpc GetDocument(GetDocumentRequest) returns (Document);
+
+  rpc GetIntelligenceStats(GetIntelligenceStatsRequest) returns (IntelligenceStats);
+}
+
+// ---------------------------------------------------------------------------
+// Proposals
+// ---------------------------------------------------------------------------
+
+enum ProposalKind {
+  PROPOSAL_KIND_UNSPECIFIED = 0;
+  PROPOSAL_KIND_DEPLOYMENT = 1;
+  PROPOSAL_KIND_INFRASTRUCTURE = 2;
+  PROPOSAL_KIND_CI_CD = 3;
+  PROPOSAL_KIND_TESTING = 4;
+  PROPOSAL_KIND_SECURITY = 5;
+  PROPOSAL_KIND_DOCUMENTATION = 6;
+  PROPOSAL_KIND_DEPENDENCY = 7;
+}
+
+enum ProposalStatus {
+  PROPOSAL_STATUS_UNSPECIFIED = 0;
+  PROPOSAL_STATUS_PROPOSED = 1;
+  PROPOSAL_STATUS_NEGOTIATING = 2;
+  PROPOSAL_STATUS_ACCEPTED = 3;
+  PROPOSAL_STATUS_REJECTED = 4;
+  PROPOSAL_STATUS_SUPERSEDED = 5;
+}
+
+// Ranking signals, each 0.0 – 1.0. `overall` is the weighted sum.
+message ScoreBreakdown {
+  double semantic_similarity = 1;
+  double policy = 2;
+  double recency = 3;
+  double success = 4;
+  double architecture_fit = 5;
+  double cost = 6;
+  double security = 7;
+  double overall = 8;
+}
+
+// Relative weight of each signal. Negotiation changes these.
+message ScoreWeights {
+  double semantic_similarity = 1;
+  double policy = 2;
+  double recency = 3;
+  double success = 4;
+  double architecture_fit = 5;
+  double cost = 6;
+  double security = 7;
+}
+
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_FACT = 1;
+  EVIDENCE_KIND_PATTERN = 2;
+  EVIDENCE_KIND_DECISION = 3;
+  EVIDENCE_KIND_DELIVERY_HISTORY = 4;
+  EVIDENCE_KIND_SIMILAR_PROJECT = 5;
+  EVIDENCE_KIND_POLICY = 6;
+  EVIDENCE_KIND_ANSWER = 7;
+}
+
+// Why the engine believes something. Every claim in a proposal points at one.
+message Evidence {
+  EvidenceKind kind = 1;
+  string ref_id = 2;
+  string label = 3;
+  string detail = 4;
+}
+
+message ProposalOption {
+  string id = 1;
+  string title = 2;
+  string summary = 3;
+  string pattern_id = 4;
+  // 1 is the best ranked option.
+  uint32 rank = 5;
+  ScoreBreakdown score = 6;
+  repeated string pros = 7;
+  repeated string cons = 8;
+  repeated Evidence evidence = 9;
+  double estimated_monthly_cost_usd = 10;
+  // Pattern requirements this project does not meet yet.
+  repeated string unmet_requirements = 11;
+  repeated sdi.common.v1.PlanStep plan = 12;
+}
+
+// A condition agreed during negotiation, e.g. "keep the current networking".
+message Constraint {
+  string key = 1;
+  string description = 2;
+  string source_message_id = 3;
+}
+
+message Proposal {
+  string id = 1;
+  string project_id = 2;
+  ProposalKind kind = 3;
+  ProposalStatus status = 4;
+  string title = 5;
+  string summary = 6;
+  // What the user asked for, if anything.
+  string prompt = 7;
+  string recommended_option_id = 8;
+  repeated ProposalOption options = 9;
+  repeated Constraint constraints = 10;
+  ScoreWeights weights = 11;
+  // Bumped every time negotiation re-ranks the options.
+  uint32 revision = 12;
+  // "heuristic" | "claude"
+  string reasoner = 13;
+  string accepted_option_id = 14;
+  // Execution created from the accepted option, if any.
+  string execution_id = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+}
+
+message GenerateProposalRequest {
+  string project_id = 1;
+  ProposalKind kind = 2;
+  string prompt = 3;
+}
+
+message ListProposalsRequest {
+  // Empty lists proposals of every project.
+  string project_id = 1;
+}
+
+message ListProposalsResponse {
+  repeated Proposal proposals = 1;
+}
+
+message GetProposalRequest {
+  string id = 1;
+}
+
+message AcceptProposalRequest {
+  string id = 1;
+  // Empty accepts the recommended option.
+  string option_id = 2;
+  // Hand the plan to the execution service straight away.
+  bool create_execution = 3;
+}
+
+message RejectProposalRequest {
+  string id = 1;
+  string reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Negotiation
+// ---------------------------------------------------------------------------
+
+enum MessageRole {
+  MESSAGE_ROLE_UNSPECIFIED = 0;
+  MESSAGE_ROLE_USER = 1;
+  MESSAGE_ROLE_ASSISTANT = 2;
+  MESSAGE_ROLE_SYSTEM = 3;
+}
+
+message Message {
+  string id = 1;
+  string proposal_id = 2;
+  MessageRole role = 3;
+  string content = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // True when this assistant turn switched the recommended option.
+  bool changed_recommendation = 6;
+  repeated Evidence references = 7;
+}
+
+message NegotiateRequest {
+  string proposal_id = 1;
+  string content = 2;
+}
+
+message NegotiateResponse {
+  Proposal proposal = 1;
+  Message user_message = 2;
+  Message reply = 3;
+  // Set when the turn recorded a new decision ("we standardise on X because Y").
+  Decision recorded_decision = 4;
+}
+
+message ListMessagesRequest {
+  string proposal_id = 1;
+}
+
+message ListMessagesResponse {
+  repeated Message messages = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Decisions (memory with provenance)
+// ---------------------------------------------------------------------------
+
+enum DecisionScope {
+  DECISION_SCOPE_UNSPECIFIED = 0;
+  DECISION_SCOPE_PROJECT = 1;
+  DECISION_SCOPE_TEAM = 2;
+  DECISION_SCOPE_DEPARTMENT = 3;
+  DECISION_SCOPE_ORGANIZATION = 4;
+}
+
+enum DecisionStatus {
+  DECISION_STATUS_UNSPECIFIED = 0;
+  DECISION_STATUS_ACTIVE = 1;
+  DECISION_STATUS_SUPERSEDED = 2;
+}
+
+enum DecisionSource {
+  DECISION_SOURCE_UNSPECIFIED = 0;
+  DECISION_SOURCE_MANUAL = 1;
+  DECISION_SOURCE_NEGOTIATION = 2;
+  DECISION_SOURCE_PROPOSAL_ACCEPTED = 3;
+  DECISION_SOURCE_QUESTION_ANSWERED = 4;
+}
+
+message Decision {
+  string id = 1;
+  // Empty for decisions that are not tied to one project.
+  string project_id = 2;
+  DecisionScope scope = 3;
+  DecisionStatus status = 4;
+  DecisionSource source = 5;
+  string title = 6;
+  string statement = 7;
+  repeated string reasons = 8;
+  string approved_by = 9;
+  string proposal_id = 10;
+  // Machine tags the ranker matches on, e.g. "cloud:azure", "runtime:kubernetes".
+  repeated string tags = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp superseded_at = 13;
+  string superseded_by = 14;
+}
+
+message ListDecisionsRequest {
+  // Empty lists every decision.
+  string project_id = 1;
+  bool include_superseded = 2;
+}
+
+message ListDecisionsResponse {
+  repeated Decision decisions = 1;
+}
+
+message CreateDecisionRequest {
+  string project_id = 1;
+  DecisionScope scope = 2;
+  string title = 3;
+  string statement = 4;
+  repeated string reasons = 5;
+  string approved_by = 6;
+  repeated string tags = 7;
+}
+
+message SupersedeDecisionRequest {
+  string id = 1;
+  // Decision that replaces it, if any.
+  string superseded_by = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+enum DocumentKind {
+  DOCUMENT_KIND_UNSPECIFIED = 0;
+  DOCUMENT_KIND_README = 1;
+  DOCUMENT_KIND_ARCHITECTURE = 2;
+  DOCUMENT_KIND_DEPLOYMENT_GUIDE = 3;
+  DOCUMENT_KIND_RUNBOOK = 4;
+  DOCUMENT_KIND_ADR = 5;
+  DOCUMENT_KIND_UAT_PLAN = 6;
+  DOCUMENT_KIND_EXECUTIVE_REPORT = 7;
+  DOCUMENT_KIND_ENGINEERING_REPORT = 8;
+}
+
+// Generated from the knowledge model, never from guesswork.
+message Document {
+  string id = 1;
+  string project_id = 2;
+  DocumentKind kind = 3;
+  string title = 4;
+  string markdown = 5;
+  string commit_sha = 6;
+  uint32 facts_used = 7;
+  google.protobuf.Timestamp generated_at = 8;
+}
+
+message GenerateDocumentRequest {
+  string project_id = 1;
+  DocumentKind kind = 2;
+}
+
+message ListDocumentsRequest {
+  string project_id = 1;
+}
+
+message ListDocumentsResponse {
+  // Markdown bodies are omitted in list responses.
+  repeated Document documents = 1;
+}
+
+message GetDocumentRequest {
+  string id = 1;
+}
+
+message GetIntelligenceStatsRequest {}
+
+message IntelligenceStats {
+  uint32 proposals = 1;
+  uint32 proposals_open = 2;
+  uint32 proposals_accepted = 3;
+  uint32 decisions_active = 4;
+  uint32 documents = 5;
+  uint32 messages = 6;
+}

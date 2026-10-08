@@ -1,0 +1,27 @@
+[package]
+name = "sdi-execution"
+description = "Flight controller: policy and permission checks, approvals, one-action-at-a-time DAG execution, checkpoints, diagnosis, replanning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdi-common.workspace = true
+sdi-proto.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+prost-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tonic-health.workspace = true
+tracing.workspace = true
+uuid.workspace = true

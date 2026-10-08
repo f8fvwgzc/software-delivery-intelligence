@@ -1,0 +1,799 @@
+syntax = "proto3";
+
+package sdi.knowledge.v1;
+
+import "google/protobuf/timestamp.proto";
+import "sdi/common/v1/common.proto";
+
+// Owns the Project Knowledge Model: what exists and how it is related.
+// Facts live in SQL, semantic memory in pgvector, relationships in a
+// temporal graph. The GitHub connector is read-only (Observe mode).
+service KnowledgeService {
+  // --- GitHub connector -----------------------------------------------------
+  rpc GetGithubAccount(GetGithubAccountRequest) returns (GithubAccount);
+  rpc ListGithubRepos(ListGithubReposRequest) returns (ListGithubReposResponse);
+
+  // --- Projects -------------------------------------------------------------
+  // Connects a repository and queues its first scan.
+  rpc ConnectProject(ConnectProjectRequest) returns (Project);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc GetProject(GetProjectRequest) returns (Project);
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  rpc SetProjectMode(SetProjectModeRequest) returns (Project);
+
+  // --- Scans ----------------------------------------------------------------
+  rpc StartScan(StartScanRequest) returns (Scan);
+  rpc GetScan(GetScanRequest) returns (Scan);
+  rpc ListScans(ListScansRequest) returns (ListScansResponse);
+
+  // --- Knowledge model ------------------------------------------------------
+  rpc ListFacts(ListFactsRequest) returns (ListFactsResponse);
+  rpc ListQuestions(ListQuestionsRequest) returns (ListQuestionsResponse);
+  rpc AnswerQuestion(AnswerQuestionRequest) returns (Question);
+  rpc GetUnderstanding(GetUnderstandingRequest) returns (Understanding);
+  rpc GetGraph(GetGraphRequest) returns (Graph);
+  rpc AnalyzeImpact(AnalyzeImpactRequest) returns (ImpactAnalysis);
+  rpc ListDependencies(ListDependenciesRequest) returns (ListDependenciesResponse);
+
+  // --- Delivery observation -------------------------------------------------
+  rpc ListPipelines(ListPipelinesRequest) returns (ListPipelinesResponse);
+  rpc ListPipelineRuns(ListPipelineRunsRequest) returns (ListPipelineRunsResponse);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+
+  // --- Pattern memory and retrieval -----------------------------------------
+  rpc ListPatterns(ListPatternsRequest) returns (ListPatternsResponse);
+  rpc GetPattern(GetPatternRequest) returns (Pattern);
+  // Closes the loop: an execution outcome updates the pattern it came from.
+  rpc RecordPatternOutcome(RecordPatternOutcomeRequest) returns (Pattern);
+  rpc SearchKnowledge(SearchKnowledgeRequest) returns (SearchKnowledgeResponse);
+  // Lets other services store text (decisions, conversations) as semantic memory.
+  rpc IndexKnowledge(IndexKnowledgeRequest) returns (IndexKnowledgeResponse);
+  rpc ListSimilarProjects(ListSimilarProjectsRequest) returns (ListSimilarProjectsResponse);
+
+  // --- Service-to-service ---------------------------------------------------
+  // Everything the proposal engine needs about one project, in one call.
+  rpc GetProjectContext(GetProjectContextRequest) returns (ProjectContext);
+  rpc GetKnowledgeStats(GetKnowledgeStatsRequest) returns (KnowledgeStats);
+}
+
+// ---------------------------------------------------------------------------
+// GitHub
+// ---------------------------------------------------------------------------
+
+message GetGithubAccountRequest {}
+
+message GithubAccount {
+  bool token_configured = 1;
+  string login = 2;
+  string name = 3;
+  string avatar_url = 4;
+  string html_url = 5;
+  uint32 public_repos = 6;
+  uint32 private_repos = 7;
+  repeated string scopes = 8;
+  // Set when the token is missing or GitHub rejected it.
+  string error = 9;
+}
+
+message ListGithubReposRequest {
+  // Case-insensitive filter on the repository name. Empty lists everything.
+  string query = 1;
+}
+
+message ListGithubReposResponse {
+  repeated GithubRepo repos = 1;
+}
+
+message GithubRepo {
+  int64 id = 1;
+  string full_name = 2;
+  string name = 3;
+  string owner = 4;
+  bool is_private = 5;
+  string description = 6;
+  string default_branch = 7;
+  string language = 8;
+  string html_url = 9;
+  google.protobuf.Timestamp pushed_at = 10;
+  uint32 stars = 11;
+  bool archived = 12;
+  bool fork = 13;
+  // Non-empty when this repository is already connected as a project.
+  string project_id = 14;
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PROJECT_STATUS_UNSPECIFIED = 0;
+  PROJECT_STATUS_PENDING = 1;
+  PROJECT_STATUS_SCANNING = 2;
+  PROJECT_STATUS_READY = 3;
+  PROJECT_STATUS_FAILED = 4;
+}
+
+// Observe is read-only analysis (the default). Execute allows controlled,
+// policy-gated actions.
+enum ProjectMode {
+  PROJECT_MODE_UNSPECIFIED = 0;
+  PROJECT_MODE_OBSERVE = 1;
+  PROJECT_MODE_EXECUTE = 2;
+}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  string repo_full_name = 3;
+  string repo_url = 4;
+  string default_branch = 5;
+  bool is_private = 6;
+  string description = 7;
+  string primary_language = 8;
+  ProjectStatus status = 9;
+  ProjectMode mode = 10;
+  string last_scan_id = 11;
+  google.protobuf.Timestamp last_scanned_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  // One-line understanding. Empty until the first scan succeeds.
+  string tldr = 14;
+  // Top technologies, for list display.
+  repeated string stack = 15;
+  uint32 open_questions = 16;
+}
+
+message ConnectProjectRequest {
+  string repo_full_name = 1;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+message GetProjectRequest {
+  string id = 1;
+}
+
+message DeleteProjectRequest {
+  string id = 1;
+}
+
+message DeleteProjectResponse {}
+
+message SetProjectModeRequest {
+  string id = 1;
+  ProjectMode mode = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Scans
+// ---------------------------------------------------------------------------
+
+enum ScanStatus {
+  SCAN_STATUS_UNSPECIFIED = 0;
+  SCAN_STATUS_QUEUED = 1;
+  SCAN_STATUS_RUNNING = 2;
+  SCAN_STATUS_SUCCEEDED = 3;
+  SCAN_STATUS_FAILED = 4;
+}
+
+enum StageStatus {
+  STAGE_STATUS_UNSPECIFIED = 0;
+  STAGE_STATUS_PENDING = 1;
+  STAGE_STATUS_RUNNING = 2;
+  STAGE_STATUS_DONE = 3;
+  STAGE_STATUS_FAILED = 4;
+  STAGE_STATUS_SKIPPED = 5;
+}
+
+message ScanStage {
+  string key = 1;
+  string label = 2;
+  StageStatus status = 3;
+  string detail = 4;
+}
+
+message Scan {
+  string id = 1;
+  string project_id = 2;
+  ScanStatus status = 3;
+  string commit_sha = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  uint32 files_total = 7;
+  uint32 files_analyzed = 8;
+  string error = 9;
+  repeated ScanStage stages = 10;
+  uint32 facts_found = 11;
+  uint32 nodes_found = 12;
+  uint32 edges_found = 13;
+}
+
+message StartScanRequest {
+  string project_id = 1;
+}
+
+message GetScanRequest {
+  string id = 1;
+}
+
+message ListScansRequest {
+  string project_id = 1;
+  uint32 limit = 2;
+}
+
+message ListScansResponse {
+  repeated Scan scans = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Facts and open questions
+// ---------------------------------------------------------------------------
+
+// Detected facts are read straight from the repository. Inferred facts are
+// conclusions drawn from them. The two are never mixed.
+enum FactKind {
+  FACT_KIND_UNSPECIFIED = 0;
+  FACT_KIND_DETECTED = 1;
+  FACT_KIND_INFERRED = 2;
+}
+
+enum FactCategory {
+  FACT_CATEGORY_UNSPECIFIED = 0;
+  FACT_CATEGORY_REPOSITORY = 1;
+  FACT_CATEGORY_LANGUAGE = 2;
+  FACT_CATEGORY_FRAMEWORK = 3;
+  FACT_CATEGORY_DATASTORE = 4;
+  FACT_CATEGORY_CONTAINER = 5;
+  FACT_CATEGORY_CI_CD = 6;
+  FACT_CATEGORY_IAC = 7;
+  FACT_CATEGORY_CLOUD = 8;
+  FACT_CATEGORY_TESTING = 9;
+  FACT_CATEGORY_DEPENDENCY = 10;
+  FACT_CATEGORY_SECURITY = 11;
+  FACT_CATEGORY_DOCUMENTATION = 12;
+  FACT_CATEGORY_DEPLOYMENT = 13;
+  FACT_CATEGORY_MIGRATION = 14;
+}
+
+message Fact {
+  string id = 1;
+  string project_id = 2;
+  FactKind kind = 3;
+  FactCategory category = 4;
+  // Stable machine key, e.g. "framework:react".
+  string key = 5;
+  string label = 6;
+  string value = 7;
+  // 0.0 – 1.0. Detected facts are 1.0.
+  double confidence = 8;
+  string source_path = 9;
+  // Short excerpt that proves the fact.
+  string evidence = 10;
+  google.protobuf.Timestamp detected_at = 11;
+}
+
+message ListFactsRequest {
+  string project_id = 1;
+  FactKind kind = 2;
+  FactCategory category = 3;
+}
+
+message ListFactsResponse {
+  repeated Fact facts = 1;
+}
+
+// Something the scan could not know. Asked once, remembered afterwards.
+message Question {
+  string id = 1;
+  string project_id = 2;
+  // Stable machine key, e.g. "deployment_target".
+  string key = 3;
+  string prompt = 4;
+  // Why the platform could not detect it on its own.
+  string reason = 5;
+  repeated string options = 6;
+  bool allow_free_text = 7;
+  string answer = 8;
+  google.protobuf.Timestamp answered_at = 9;
+}
+
+message ListQuestionsRequest {
+  string project_id = 1;
+  bool only_open = 2;
+}
+
+message ListQuestionsResponse {
+  repeated Question questions = 1;
+}
+
+message AnswerQuestionRequest {
+  string id = 1;
+  string answer = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Understanding (TL;DR first, deep dive underneath)
+// ---------------------------------------------------------------------------
+
+message UnderstandingSection {
+  string key = 1;
+  string title = 2;
+  string summary = 3;
+  repeated string items = 4;
+}
+
+message Understanding {
+  string project_id = 1;
+  string tldr = 2;
+  string architecture = 3;
+  repeated string stack = 4;
+  repeated UnderstandingSection sections = 5;
+  // Ordered hops a request takes through the system, e.g. ["Browser", "React", "API", "PostgreSQL"].
+  repeated string request_flow = 6;
+  string commit_sha = 7;
+  google.protobuf.Timestamp generated_at = 8;
+}
+
+message GetUnderstandingRequest {
+  string project_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge graph
+// ---------------------------------------------------------------------------
+
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_REPOSITORY = 1;
+  NODE_KIND_SERVICE = 2;
+  NODE_KIND_LIBRARY = 3;
+  NODE_KIND_DATASTORE = 4;
+  NODE_KIND_INFRASTRUCTURE = 5;
+  NODE_KIND_PIPELINE = 6;
+  NODE_KIND_ENVIRONMENT = 7;
+  NODE_KIND_DEPLOYMENT = 8;
+  NODE_KIND_CONTAINER_IMAGE = 9;
+  NODE_KIND_IAC_MODULE = 10;
+  NODE_KIND_TEST_SUITE = 11;
+  NODE_KIND_DOCUMENT = 12;
+  NODE_KIND_EXTERNAL_API = 13;
+  NODE_KIND_OWNER = 14;
+  NODE_KIND_MIGRATION = 15;
+}
+
+enum RelationCategory {
+  RELATION_CATEGORY_UNSPECIFIED = 0;
+  RELATION_CATEGORY_OWNERSHIP = 1;
+  RELATION_CATEGORY_STRUCTURE = 2;
+  RELATION_CATEGORY_SOURCE = 3;
+  RELATION_CATEGORY_EXECUTION = 4;
+  RELATION_CATEGORY_INFRASTRUCTURE = 5;
+  RELATION_CATEGORY_VALIDATION = 6;
+  RELATION_CATEGORY_GOVERNANCE = 7;
+  RELATION_CATEGORY_OUTCOME = 8;
+}
+
+message GraphNode {
+  string id = 1;
+  string project_id = 2;
+  NodeKind kind = 3;
+  // Stable within a project, e.g. "service:api".
+  string key = 4;
+  string label = 5;
+  string description = 6;
+  string source_path = 7;
+  map<string, string> attributes = 8;
+}
+
+message GraphEdge {
+  string id = 1;
+  string project_id = 2;
+  string source_id = 3;
+  string target_id = 4;
+  // Upper snake case verb, e.g. "DEPENDS_ON", "DEPLOYED_TO", "TESTED_BY".
+  string relation = 5;
+  RelationCategory category = 6;
+  // Edges are temporal: unset valid_to means "still true".
+  google.protobuf.Timestamp valid_from = 7;
+  google.protobuf.Timestamp valid_to = 8;
+  map<string, string> attributes = 9;
+}
+
+message Graph {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+}
+
+message GetGraphRequest {
+  string project_id = 1;
+  // Also return edges that are no longer valid.
+  bool include_history = 2;
+}
+
+message AnalyzeImpactRequest {
+  string project_id = 1;
+  // Either a graph node id or a repository path. One is required.
+  string node_id = 2;
+  string path = 3;
+  uint32 max_depth = 4;
+}
+
+message ImpactedNode {
+  GraphNode node = 1;
+  uint32 distance = 2;
+  // Relations walked from the origin to reach this node.
+  repeated string via = 3;
+}
+
+message ImpactAnalysis {
+  GraphNode origin = 1;
+  repeated ImpactedNode impacted = 2;
+  string summary = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies
+// ---------------------------------------------------------------------------
+
+message Dependency {
+  string id = 1;
+  string project_id = 2;
+  // "npm" | "cargo" | "pip" | "go" | "maven" | "docker" | "github_actions" | ...
+  string ecosystem = 3;
+  string name = 4;
+  string version = 5;
+  string manifest_path = 6;
+  // "runtime" | "dev" | "build"
+  string scope = 7;
+}
+
+message EcosystemCount {
+  string ecosystem = 1;
+  uint32 count = 2;
+}
+
+message DependabotStatus {
+  bool configured = 1;
+  string config_path = 2;
+  repeated string ecosystems = 3;
+  uint32 open_pull_requests = 4;
+}
+
+message ListDependenciesRequest {
+  string project_id = 1;
+}
+
+message ListDependenciesResponse {
+  repeated Dependency dependencies = 1;
+  repeated EcosystemCount by_ecosystem = 2;
+  DependabotStatus dependabot = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Pipelines and deployments
+// ---------------------------------------------------------------------------
+
+message PipelineJob {
+  string key = 1;
+  string name = 2;
+  string runs_on = 3;
+  repeated string needs = 4;
+  repeated string steps = 5;
+}
+
+message Pipeline {
+  string id = 1;
+  string project_id = 2;
+  // "github_actions" | "gitlab_ci" | ...
+  string provider = 3;
+  string name = 4;
+  string path = 5;
+  repeated string triggers = 6;
+  repeated PipelineJob jobs = 7;
+}
+
+message ListPipelinesRequest {
+  string project_id = 1;
+}
+
+message ListPipelinesResponse {
+  repeated Pipeline pipelines = 1;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_QUEUED = 1;
+  RUN_STATUS_IN_PROGRESS = 2;
+  RUN_STATUS_SUCCEEDED = 3;
+  RUN_STATUS_FAILED = 4;
+  RUN_STATUS_CANCELLED = 5;
+  RUN_STATUS_SKIPPED = 6;
+}
+
+// Root cause of a failed run: which job, which step, and what to try.
+message RunFailure {
+  string job = 1;
+  string step = 2;
+  string summary = 3;
+  string suggested_fix = 4;
+}
+
+message PipelineRun {
+  string id = 1;
+  string project_id = 2;
+  string pipeline_name = 3;
+  string pipeline_path = 4;
+  uint64 run_number = 5;
+  RunStatus status = 6;
+  string branch = 7;
+  string commit_sha = 8;
+  string commit_message = 9;
+  string actor = 10;
+  string event = 11;
+  google.protobuf.Timestamp started_at = 12;
+  uint32 duration_seconds = 13;
+  string html_url = 14;
+  // Present only for failed runs.
+  RunFailure failure = 15;
+}
+
+message PipelineStats {
+  uint32 total = 1;
+  uint32 succeeded = 2;
+  uint32 failed = 3;
+  // 0.0 – 1.0 over completed runs.
+  double success_rate = 4;
+  uint32 avg_duration_seconds = 5;
+}
+
+message ListPipelineRunsRequest {
+  string project_id = 1;
+  // Re-sync from the provider before answering.
+  bool refresh = 2;
+  uint32 limit = 3;
+}
+
+message ListPipelineRunsResponse {
+  repeated PipelineRun runs = 1;
+  PipelineStats stats = 2;
+  google.protobuf.Timestamp synced_at = 3;
+}
+
+enum DeploymentStatus {
+  DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  DEPLOYMENT_STATUS_PENDING = 1;
+  DEPLOYMENT_STATUS_IN_PROGRESS = 2;
+  DEPLOYMENT_STATUS_SUCCEEDED = 3;
+  DEPLOYMENT_STATUS_FAILED = 4;
+  DEPLOYMENT_STATUS_INACTIVE = 5;
+}
+
+message Deployment {
+  string id = 1;
+  string project_id = 2;
+  string environment = 3;
+  string ref = 4;
+  string commit_sha = 5;
+  DeploymentStatus status = 6;
+  google.protobuf.Timestamp created_at = 7;
+  string creator = 8;
+  string url = 9;
+  // "github_deployment" | "workflow_run"
+  string source = 10;
+  string description = 11;
+}
+
+message DeploymentStats {
+  uint32 total = 1;
+  uint32 succeeded = 2;
+  uint32 failed = 3;
+  double success_rate = 4;
+}
+
+message ListDeploymentsRequest {
+  string project_id = 1;
+  bool refresh = 2;
+  uint32 limit = 3;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+  DeploymentStats stats = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern memory
+// ---------------------------------------------------------------------------
+
+enum PatternSource {
+  PATTERN_SOURCE_UNSPECIFIED = 0;
+  // Shipped with the platform as a public template.
+  PATTERN_SOURCE_CATALOG = 1;
+  // Derived from a connected repository that already works this way.
+  PATTERN_SOURCE_LEARNED = 2;
+}
+
+enum PatternStatus {
+  PATTERN_STATUS_UNSPECIFIED = 0;
+  PATTERN_STATUS_ACTIVE = 1;
+  PATTERN_STATUS_DEPRECATED = 2;
+}
+
+// A reusable, outcome-tracked way of doing something. Proposals reason over
+// patterns instead of raw code chunks.
+message Pattern {
+  string id = 1;
+  string name = 2;
+  string summary = 3;
+  // "deployment" | "ci_cd" | "testing" | "infrastructure" | "security" | "documentation" | "dependency"
+  string category = 4;
+  repeated string technologies = 5;
+  // "azure" | "aws" | "gcp" | "any" | "self_hosted" | "github"
+  string cloud = 6;
+  // "vm_docker_compose" | "serverless_container" | "kubernetes" | "static_hosting" | "paas" | ...
+  string runtime = 7;
+  string iac = 8;
+  // Delivery mechanism, e.g. "GitHub Actions + OIDC".
+  string delivery = 9;
+  // Capability keys a project must have, e.g. "dockerfile", "database:postgres".
+  repeated string requires = 10;
+  sdi.common.v1.KnowledgeScope scope = 11;
+  PatternSource source = 12;
+  PatternStatus status = 13;
+  // Project names that use this pattern.
+  repeated string used_by = 14;
+  uint32 deployments = 15;
+  double success_rate = 16;
+  uint32 incidents = 17;
+  google.protobuf.Timestamp last_used_at = 18;
+  double estimated_monthly_cost_usd = 19;
+  // 0.0 – 1.0
+  double security_score = 20;
+  // 1 (trivial) – 5 (heavy)
+  uint32 complexity = 21;
+  repeated string pros = 22;
+  repeated string cons = 23;
+  repeated sdi.common.v1.PlanStep plan = 24;
+  google.protobuf.Timestamp created_at = 25;
+}
+
+message ListPatternsRequest {
+  // Empty returns every category.
+  string category = 1;
+  bool include_deprecated = 2;
+}
+
+message ListPatternsResponse {
+  repeated Pattern patterns = 1;
+}
+
+message GetPatternRequest {
+  string id = 1;
+}
+
+message RecordPatternOutcomeRequest {
+  string pattern_id = 1;
+  string project_id = 2;
+  bool succeeded = 3;
+  bool incident = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Semantic retrieval
+// ---------------------------------------------------------------------------
+
+enum KnowledgeKind {
+  KNOWLEDGE_KIND_UNSPECIFIED = 0;
+  KNOWLEDGE_KIND_CODE = 1;
+  KNOWLEDGE_KIND_IAC = 2;
+  KNOWLEDGE_KIND_DOCUMENT = 3;
+  KNOWLEDGE_KIND_CI_CD = 4;
+  KNOWLEDGE_KIND_ARCHITECTURE = 5;
+  KNOWLEDGE_KIND_PATTERN = 6;
+  KNOWLEDGE_KIND_DECISION = 7;
+  KNOWLEDGE_KIND_CONVERSATION = 8;
+}
+
+message SearchKnowledgeRequest {
+  string query = 1;
+  // Empty searches every project.
+  string project_id = 2;
+  repeated KnowledgeKind kinds = 3;
+  uint32 limit = 4;
+}
+
+message KnowledgeHit {
+  string id = 1;
+  KnowledgeKind kind = 2;
+  string project_id = 3;
+  string project_name = 4;
+  // Id of the object the chunk belongs to (pattern id, decision id, ...).
+  string ref_id = 5;
+  string title = 6;
+  string path = 7;
+  string snippet = 8;
+  // Cosine similarity, 0.0 – 1.0.
+  double score = 9;
+}
+
+message SearchKnowledgeResponse {
+  repeated KnowledgeHit hits = 1;
+}
+
+message IndexKnowledgeRequest {
+  KnowledgeKind kind = 1;
+  string project_id = 2;
+  string ref_id = 3;
+  string title = 4;
+  string content = 5;
+  string path = 6;
+}
+
+message IndexKnowledgeResponse {
+  string id = 1;
+}
+
+message SimilarityBreakdown {
+  double architecture = 1;
+  double iac = 2;
+  double deployment = 3;
+  double cloud = 4;
+  double database = 5;
+  double overall = 6;
+}
+
+message SimilarProject {
+  Project project = 1;
+  SimilarityBreakdown similarity = 2;
+  repeated string shared_technologies = 3;
+}
+
+message ListSimilarProjectsRequest {
+  string project_id = 1;
+  uint32 limit = 2;
+}
+
+message ListSimilarProjectsResponse {
+  repeated SimilarProject projects = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Service-to-service
+// ---------------------------------------------------------------------------
+
+message GetProjectContextRequest {
+  string project_id = 1;
+}
+
+message ProjectContext {
+  Project project = 1;
+  Understanding understanding = 2;
+  repeated Fact facts = 3;
+  repeated Question questions = 4;
+  Graph graph = 5;
+  DependabotStatus dependabot = 6;
+  PipelineStats pipeline_stats = 7;
+  DeploymentStats deployment_stats = 8;
+  // Display names, e.g. "React", "PostgreSQL".
+  repeated string technologies = 9;
+  // Capability keys matched against Pattern.requires, e.g. "dockerfile", "ci:github_actions".
+  repeated string capabilities = 10;
+  // Text the project profile embedding was built from.
+  string profile_text = 11;
+}
+
+message GetKnowledgeStatsRequest {}
+
+message KnowledgeStats {
+  uint32 projects = 1;
+  uint32 facts = 2;
+  uint32 nodes = 3;
+  uint32 edges = 4;
+  uint32 patterns = 5;
+  uint32 chunks = 6;
+  uint32 open_questions = 7;
+}

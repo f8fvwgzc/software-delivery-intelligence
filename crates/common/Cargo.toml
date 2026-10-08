@@ -1,0 +1,17 @@
+[package]
+name = "sdi-common"
+description = "Plumbing shared by every SDI service: config, telemetry, database, gRPC channels, embeddings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+prost-types.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package sdi.common.v1;
+
+// How much damage an action can do. Drives the approval policy.
+enum RiskLevel {
+  RISK_LEVEL_UNSPECIFIED = 0;
+  RISK_LEVEL_SAFE = 1;
+  RISK_LEVEL_MEDIUM = 2;
+  RISK_LEVEL_HIGH = 3;
+  RISK_LEVEL_BLOCKED = 4;
+}
+
+// Who may reuse a piece of knowledge during retrieval.
+enum KnowledgeScope {
+  KNOWLEDGE_SCOPE_UNSPECIFIED = 0;
+  KNOWLEDGE_SCOPE_PRIVATE = 1;
+  KNOWLEDGE_SCOPE_TEAM = 2;
+  KNOWLEDGE_SCOPE_DEPARTMENT = 3;
+  KNOWLEDGE_SCOPE_ORGANIZATION = 4;
+  KNOWLEDGE_SCOPE_PUBLIC_TEMPLATE = 5;
+}
+
+// One unit of work in an execution plan. Shared by pattern templates,
+// proposal options and executions so a plan keeps its shape end to end.
+message PlanStep {
+  string key = 1;
+  string title = 2;
+  string description = 3;
+  // Policy key, e.g. "cloud.create_dev_resource". See execution.v1.Policy.
+  string action_type = 4;
+  // Tool adapter that would run it: "github" | "docker" | "cloud" | "kubernetes" | "local".
+  string adapter = 5;
+  // Keys of the steps that must succeed first (edges of the execution DAG).
+  repeated string depends_on = 6;
+  // Permissions the executing identity must hold, e.g. "database:write".
+  repeated string required_permissions = 7;
+  map<string, string> params = 8;
+  // How success is verified after the action, in plain words.
+  string verification = 9;
+}

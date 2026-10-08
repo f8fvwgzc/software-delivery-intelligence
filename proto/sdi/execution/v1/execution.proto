@@ -1,0 +1,396 @@
+syntax = "proto3";
+
+package sdi.execution.v1;
+
+import "google/protobuf/timestamp.proto";
+import "sdi/common/v1/common.proto";
+
+// The flight controller. Runs a plan as a DAG, one action at a time:
+//
+//   permission check → policy check → human approval → execute ONE action
+//   → verify → checkpoint → next action
+//
+// Any failure stops the run, blocks the dependent steps, diagnoses the cause
+// and asks a human before replanning from the last checkpoint.
+service ExecutionService {
+  // --- Executions -----------------------------------------------------------
+  rpc CreateExecution(CreateExecutionRequest) returns (Execution);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc GetExecution(GetExecutionRequest) returns (Execution);
+  // Runs the policy check and moves the plan to WAITING_FOR_APPROVAL or AUTHORIZED.
+  rpc StartExecution(StartExecutionRequest) returns (Execution);
+  // Answers a paused execution: pick a remediation and replan from the checkpoint.
+  rpc ResolveFailure(ResolveFailureRequest) returns (Execution);
+  rpc CancelExecution(CancelExecutionRequest) returns (Execution);
+
+  // --- Events ---------------------------------------------------------------
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  // Live tail of the event log. Ends once the execution is terminal.
+  rpc WatchExecution(WatchExecutionRequest) returns (stream ExecutionEvent);
+
+  // --- Approvals ------------------------------------------------------------
+  rpc ListApprovals(ListApprovalsRequest) returns (ListApprovalsResponse);
+  rpc DecideApproval(DecideApprovalRequest) returns (Approval);
+
+  // --- Policy and identity --------------------------------------------------
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+  rpc UpdatePolicy(UpdatePolicyRequest) returns (Policy);
+  rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  // Issues a short-lived, scoped grant. Nothing is ever granted permanently.
+  rpc GrantPermission(GrantPermissionRequest) returns (Identity);
+
+  rpc GetDeliveryStats(GetDeliveryStatsRequest) returns (DeliveryStats);
+}
+
+// ---------------------------------------------------------------------------
+// Executions
+// ---------------------------------------------------------------------------
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_PLANNING = 1;
+  EXECUTION_STATUS_WAITING_FOR_APPROVAL = 2;
+  EXECUTION_STATUS_AUTHORIZED = 3;
+  EXECUTION_STATUS_EXECUTING = 4;
+  EXECUTION_STATUS_VERIFYING = 5;
+  EXECUTION_STATUS_PAUSED = 6;
+  EXECUTION_STATUS_DIAGNOSING = 7;
+  EXECUTION_STATUS_REPLANNING = 8;
+  EXECUTION_STATUS_SUCCEEDED = 9;
+  EXECUTION_STATUS_FAILED = 10;
+  EXECUTION_STATUS_CANCELLED = 11;
+}
+
+enum StepStatus {
+  STEP_STATUS_UNSPECIFIED = 0;
+  STEP_STATUS_PENDING = 1;
+  STEP_STATUS_WAITING_APPROVAL = 2;
+  STEP_STATUS_READY = 3;
+  STEP_STATUS_RUNNING = 4;
+  STEP_STATUS_VERIFYING = 5;
+  STEP_STATUS_SUCCEEDED = 6;
+  STEP_STATUS_FAILED = 7;
+  // A step it depends on failed. It will not run until that is resolved.
+  STEP_STATUS_BLOCKED = 8;
+  STEP_STATUS_SKIPPED = 9;
+  STEP_STATUS_CANCELLED = 10;
+}
+
+// What the policy says to do with an action before it runs.
+enum PolicyDecision {
+  POLICY_DECISION_UNSPECIFIED = 0;
+  POLICY_DECISION_AUTO = 1;
+  // Ask a human. Can be relaxed to AUTO.
+  POLICY_DECISION_APPROVAL = 2;
+  // Always ask a human. Cannot be relaxed.
+  POLICY_DECISION_REQUIRED = 3;
+  POLICY_DECISION_BLOCKED = 4;
+}
+
+message Step {
+  string id = 1;
+  string key = 2;
+  uint32 position = 3;
+  string title = 4;
+  string description = 5;
+  string action_type = 6;
+  string adapter = 7;
+  repeated string depends_on = 8;
+  StepStatus status = 9;
+  sdi.common.v1.RiskLevel risk = 10;
+  PolicyDecision policy_decision = 11;
+  repeated string required_permissions = 12;
+  // Approval gating this step, if any.
+  string approval_id = 13;
+  map<string, string> params = 14;
+  string verification = 15;
+  // Tool output of the last attempt.
+  string output = 16;
+  // True once the result was verified and checkpointed.
+  bool checkpointed = 17;
+  uint32 attempts = 18;
+  google.protobuf.Timestamp started_at = 19;
+  google.protobuf.Timestamp finished_at = 20;
+}
+
+// A way out of a failure. The human picks one, or types their own instruction.
+message RemediationOption {
+  string id = 1;
+  string label = 2;
+  string description = 3;
+  // What choosing it changes in the plan, in plain words.
+  string effect = 4;
+  bool recommended = 5;
+}
+
+message Failure {
+  string step_key = 1;
+  // "SKU_UNAVAILABLE" | "QUOTA_EXCEEDED" | "PERMISSION_DENIED" | "TIMEOUT" | "HEALTH_CHECK_FAILED" | ...
+  string code = 2;
+  string message = 3;
+  // Raw tool / provider output that was collected.
+  string raw_output = 4;
+  string diagnosis = 5;
+  repeated RemediationOption options = 6;
+  // Step keys that cannot run until this is resolved.
+  repeated string blocked_steps = 7;
+  // Permissions the identity was missing, for PERMISSION_DENIED.
+  repeated string missing_permissions = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+}
+
+message Execution {
+  string id = 1;
+  // Human-friendly sequence number, e.g. 8241.
+  uint64 number = 2;
+  string project_id = 3;
+  string project_name = 4;
+  string proposal_id = 5;
+  string pattern_id = 6;
+  string title = 7;
+  ExecutionStatus status = 8;
+  // Tool adapter in use. "simulated" is a dry run that touches nothing.
+  string adapter = 9;
+  string identity_id = 10;
+  repeated Step steps = 11;
+  // Present while the execution is paused on a failure.
+  Failure failure = 12;
+  // Key of the last step whose result was verified and checkpointed.
+  string last_checkpoint = 13;
+  // Bumped on every replan.
+  uint32 revision = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+  google.protobuf.Timestamp started_at = 17;
+  google.protobuf.Timestamp finished_at = 18;
+}
+
+message CreateExecutionRequest {
+  string project_id = 1;
+  string proposal_id = 2;
+  string pattern_id = 3;
+  string title = 4;
+  repeated sdi.common.v1.PlanStep steps = 5;
+}
+
+message ListExecutionsRequest {
+  // Empty lists executions of every project.
+  string project_id = 1;
+  uint32 limit = 2;
+}
+
+message ListExecutionsResponse {
+  // Steps are included; the failure body is not.
+  repeated Execution executions = 1;
+}
+
+message GetExecutionRequest {
+  string id = 1;
+}
+
+// Dry-run only: make one step fail on purpose to rehearse the stop → diagnose → ask → replan path.
+message FaultInjection {
+  string step_key = 1;
+  // One of the Failure.code values.
+  string code = 2;
+}
+
+message StartExecutionRequest {
+  string id = 1;
+  FaultInjection fault = 2;
+}
+
+message ResolveFailureRequest {
+  string execution_id = 1;
+  // One of Failure.options[].id.
+  string option_id = 2;
+  // Free-text instruction, e.g. "use the cheapest supported PostgreSQL option".
+  string instruction = 3;
+}
+
+message CancelExecutionRequest {
+  string id = 1;
+  string reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_STATE_CHANGED = 1;
+  EVENT_TYPE_POLICY_CHECKED = 2;
+  EVENT_TYPE_PERMISSION_CHECKED = 3;
+  EVENT_TYPE_PERMISSION_DENIED = 4;
+  EVENT_TYPE_APPROVAL_REQUESTED = 5;
+  EVENT_TYPE_APPROVAL_DECIDED = 6;
+  EVENT_TYPE_STEP_STARTED = 7;
+  EVENT_TYPE_STEP_SUCCEEDED = 8;
+  EVENT_TYPE_STEP_FAILED = 9;
+  EVENT_TYPE_STEP_BLOCKED = 10;
+  EVENT_TYPE_CHECKPOINT = 11;
+  EVENT_TYPE_DIAGNOSIS = 12;
+  EVENT_TYPE_REPLANNED = 13;
+  EVENT_TYPE_LOG = 14;
+}
+
+message ExecutionEvent {
+  // Monotonic per execution. Use it to resume a watch.
+  uint64 seq = 1;
+  string execution_id = 2;
+  EventType type = 3;
+  string step_key = 4;
+  string message = 5;
+  // Execution status after this event.
+  ExecutionStatus status = 6;
+  map<string, string> data = 7;
+  google.protobuf.Timestamp at = 8;
+}
+
+message ListEventsRequest {
+  string execution_id = 1;
+  uint64 after_seq = 2;
+  uint32 limit = 3;
+}
+
+message ListEventsResponse {
+  repeated ExecutionEvent events = 1;
+}
+
+message WatchExecutionRequest {
+  string execution_id = 1;
+  // Only events with a greater seq are sent.
+  uint64 after_seq = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Approvals
+// ---------------------------------------------------------------------------
+
+enum ApprovalStatus {
+  APPROVAL_STATUS_UNSPECIFIED = 0;
+  APPROVAL_STATUS_PENDING = 1;
+  APPROVAL_STATUS_APPROVED = 2;
+  APPROVAL_STATUS_REJECTED = 3;
+  // The execution was cancelled or replanned before a decision was made.
+  APPROVAL_STATUS_EXPIRED = 4;
+}
+
+message Approval {
+  string id = 1;
+  string execution_id = 2;
+  uint64 execution_number = 3;
+  string execution_title = 4;
+  string project_id = 5;
+  string project_name = 6;
+  string step_key = 7;
+  string step_title = 8;
+  string action_type = 9;
+  sdi.common.v1.RiskLevel risk = 10;
+  PolicyDecision policy_decision = 11;
+  // Why a human is needed, in plain words.
+  string reason = 12;
+  repeated string required_permissions = 13;
+  ApprovalStatus status = 14;
+  string decided_by = 15;
+  string note = 16;
+  google.protobuf.Timestamp requested_at = 17;
+  google.protobuf.Timestamp decided_at = 18;
+}
+
+message ListApprovalsRequest {
+  // UNSPECIFIED lists every status.
+  ApprovalStatus status = 1;
+  string execution_id = 2;
+}
+
+message ListApprovalsResponse {
+  repeated Approval approvals = 1;
+}
+
+message DecideApprovalRequest {
+  string id = 1;
+  bool approve = 2;
+  string note = 3;
+  string decided_by = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Policy and identity
+// ---------------------------------------------------------------------------
+
+message Policy {
+  // Stable key, e.g. "deploy.production".
+  string action_type = 1;
+  string label = 2;
+  string description = 3;
+  sdi.common.v1.RiskLevel risk = 4;
+  PolicyDecision decision = 5;
+  // False for REQUIRED and BLOCKED defaults that must not be relaxed.
+  bool editable = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message ListPoliciesRequest {}
+
+message ListPoliciesResponse {
+  repeated Policy policies = 1;
+}
+
+message UpdatePolicyRequest {
+  string action_type = 1;
+  PolicyDecision decision = 2;
+}
+
+message PermissionGrant {
+  string permission = 1;
+  // Unset means the grant is part of the identity's base scope.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// The scoped identity actions run as. Never an administrator.
+message Identity {
+  string id = 1;
+  string name = 2;
+  // "simulated" | "github" | "cloud"
+  string kind = 3;
+  string description = 4;
+  repeated PermissionGrant grants = 5;
+}
+
+message ListIdentitiesRequest {}
+
+message ListIdentitiesResponse {
+  repeated Identity identities = 1;
+}
+
+message GrantPermissionRequest {
+  string identity_id = 1;
+  repeated string permissions = 2;
+  // Lifetime of the grant. 0 uses the default of 30 minutes.
+  uint32 ttl_minutes = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+
+message GetDeliveryStatsRequest {
+  // Empty aggregates every project.
+  string project_id = 1;
+}
+
+message DeliveryStats {
+  uint32 executions_total = 1;
+  uint32 executions_active = 2;
+  uint32 executions_paused = 3;
+  uint32 executions_succeeded = 4;
+  uint32 executions_failed = 5;
+  // 0.0 – 1.0 over finished executions.
+  double success_rate = 6;
+  uint32 avg_duration_seconds = 7;
+  uint32 approvals_pending = 8;
+  uint32 steps_executed = 9;
+  uint32 failures_recovered = 10;
+}

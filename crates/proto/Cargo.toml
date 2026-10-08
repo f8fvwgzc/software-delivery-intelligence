@@ -1,0 +1,16 @@
+[package]
+name = "sdi-proto"
+description = "Generated gRPC clients, servers and messages for every SDI service."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true

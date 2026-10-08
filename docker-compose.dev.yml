@@ -1,0 +1,23 @@
+# Development dependencies only. Services and the web app run on the host
+# (see `make dev`); this just provides Postgres with pgvector.
+name: sdi-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: sdi
+      POSTGRES_PASSWORD: sdi
+      POSTGRES_DB: sdi
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - sdi-dev-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdi -d sdi"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  sdi-dev-pgdata:
