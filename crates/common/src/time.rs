@@ -15,7 +15,8 @@ pub fn opt_to_proto(at: Option<DateTime<Utc>>) -> Option<Timestamp> {
 }
 
 pub fn from_proto(at: &Timestamp) -> Option<DateTime<Utc>> {
-    Utc.timestamp_opt(at.seconds, at.nanos.max(0) as u32).single()
+    Utc.timestamp_opt(at.seconds, at.nanos.max(0) as u32)
+        .single()
 }
 
 pub fn opt_from_proto(at: Option<&Timestamp>) -> Option<DateTime<Utc>> {

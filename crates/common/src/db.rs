@@ -27,10 +27,12 @@ pub async fn connect(database_url: &str, schema: &str) -> Result<PgPool> {
         .connect_with(base.clone())
         .await
         .context("could not reach Postgres")?;
-    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA IF NOT EXISTS {schema}")))
-        .execute(&bootstrap)
-        .await
-        .with_context(|| format!("could not create schema {schema}"))?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE SCHEMA IF NOT EXISTS {schema}"
+    )))
+    .execute(&bootstrap)
+    .await
+    .with_context(|| format!("could not create schema {schema}"))?;
     bootstrap.close().await;
 
     let options = base.options([("search_path", format!("{schema},public"))]);

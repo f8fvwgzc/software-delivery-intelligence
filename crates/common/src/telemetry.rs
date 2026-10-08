@@ -10,7 +10,9 @@ pub fn init(service: &'static str) {
 
     let registry = tracing_subscriber::registry().with(filter);
     if json {
-        registry.with(fmt::layer().json().flatten_event(true)).init();
+        registry
+            .with(fmt::layer().json().flatten_event(true))
+            .init();
     } else {
         registry.with(fmt::layer().compact()).init();
     }

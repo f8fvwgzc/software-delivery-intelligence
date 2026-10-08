@@ -1,0 +1,233 @@
+# Production-shaped stack: nginx edge on :80, two gateway replicas, the three
+# gRPC services and Postgres with pgvector, on private networks. Secrets come
+# from the host environment or a git-ignored .env (compose interpolates it).
+#
+#   make up            build + start, waits for every healthcheck
+#   open http://localhost
+name: sdi
+
+x-rust-service: &rust-service
+  restart: unless-stopped
+  stop_grace_period: 15s
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # Images are slim (no curl); the probe is bash /dev/tcp against the
+  # service's own port (deploy/docker/healthcheck.sh).
+  healthcheck:
+    test: ["CMD", "bash", "/usr/local/bin/healthcheck"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 20s
+
+x-rust-env: &rust-env
+  DATABASE_URL: postgres://sdi:sdi@postgres:5432/sdi
+  LOG_FORMAT: json
+  RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+
+x-rust-build: &rust-build
+  context: .
+  dockerfile: deploy/docker/rust.Dockerfile
+
+x-small: &small
+  resources:
+    limits:
+      cpus: "0.50"
+      memory: 256M
+    reservations:
+      memory: 64M
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sdi
+      POSTGRES_PASSWORD: sdi
+      POSTGRES_DB: sdi
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdi -d sdi"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          memory: 128M
+    logging: *logging
+
+  knowledge:
+    <<: *rust-service
+    image: sdi/knowledge:${SDI_TAG:-local}
+    build:
+      <<: *rust-build
+      args:
+        SERVICE: knowledge
+    environment:
+      <<: *rust-env
+      KNOWLEDGE_LISTEN: 0.0.0.0:50051
+      # Read-only token for scanning; `scripts/dev.sh` takes it from `gh`.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      # Repository analysis holds file trees in memory; give it headroom.
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          memory: 64M
+
+  intelligence:
+    <<: *rust-service
+    image: sdi/intelligence:${SDI_TAG:-local}
+    build:
+      <<: *rust-build
+      args:
+        SERVICE: intelligence
+    environment:
+      <<: *rust-env
+      INTELLIGENCE_LISTEN: 0.0.0.0:50052
+      KNOWLEDGE_GRPC_URL: http://knowledge:50051
+      EXECUTION_GRPC_URL: http://execution:50053
+      # Optional: enables the Claude reasoner; ranking stays deterministic.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge:
+        condition: service_healthy
+      execution:
+        condition: service_healthy
+    deploy: *small
+
+  execution:
+    <<: *rust-service
+    image: sdi/execution:${SDI_TAG:-local}
+    build:
+      <<: *rust-build
+      args:
+        SERVICE: execution
+    environment:
+      <<: *rust-env
+      EXECUTION_LISTEN: 0.0.0.0:50053
+      KNOWLEDGE_GRPC_URL: http://knowledge:50051
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge:
+        condition: service_healthy
+    deploy: *small
+
+  # Two replicas of one image behind nginx's least_conn pool. gateway-1 owns
+  # the build; gateway-2 reuses the tag and never pulls.
+  gateway-1:
+    <<: *rust-service
+    image: sdi/gateway:${SDI_TAG:-local}
+    build:
+      <<: *rust-build
+      args:
+        SERVICE: gateway
+    environment: &gateway-env
+      <<: *rust-env
+      GATEWAY_LISTEN: 0.0.0.0:8080
+      KNOWLEDGE_GRPC_URL: http://knowledge:50051
+      INTELLIGENCE_GRPC_URL: http://intelligence:50052
+      EXECUTION_GRPC_URL: http://execution:50053
+    networks:
+      - frontend
+      - backend
+    depends_on: &gateway-deps
+      knowledge:
+        condition: service_healthy
+      intelligence:
+        condition: service_healthy
+      execution:
+        condition: service_healthy
+    deploy: *small
+
+  gateway-2:
+    <<: *rust-service
+    image: sdi/gateway:${SDI_TAG:-local}
+    pull_policy: never
+    environment: *gateway-env
+    networks:
+      - frontend
+      - backend
+    depends_on: *gateway-deps
+    deploy: *small
+
+  web:
+    image: sdi/web:${SDI_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/docker/web.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "${SDI_HTTP_PORT:-80}:8080"
+    networks:
+      - frontend
+    depends_on:
+      gateway-1:
+        condition: service_healthy
+      gateway-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 16M
+    logging: *logging
+
+networks:
+  # Only web and the gateways sit on the edge network; Postgres and the gRPC
+  # services are reachable solely through the gateway. Neither network is
+  # `internal: true` because knowledge needs GitHub and intelligence needs
+  # the Anthropic API.
+  frontend:
+  backend:
+
+volumes:
+  pgdata:

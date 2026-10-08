@@ -1,0 +1,15 @@
+# Keep the build context small: both Dockerfiles use the repo root as context.
+target
+**/target
+**/node_modules
+web/dist
+.git
+.github
+.env
+.env.*
+docs
+.ui-craft
+*.log
+.DS_Store
+.idea
+.vscode

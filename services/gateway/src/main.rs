@@ -1,34 +1,47 @@
-use axum::{Json, Router};
-use serde::Serialize;
-use utoipa::{OpenApi, ToSchema};
-use utoipa_axum::{router::OpenApiRouter, routes};
-use utoipa_scalar::{Scalar, Servable};
+//! Public REST gateway: HTTP + JSON in, gRPC out. The only HTTP surface of
+//! the platform (CONTRACT.md §2 and §8).
 
-#[derive(OpenApi)]
-#[openapi(info(title = "Software Delivery Intelligence API", version = "0.1.0"))]
-struct ApiDoc;
+mod app;
+mod dto;
+mod error;
+mod routes;
+mod sse;
+mod state;
 
-#[derive(Serialize, ToSchema)]
-struct Health {
-    status: String,
-}
+use anyhow::Context;
 
-#[utoipa::path(get, path = "/api/v1/health", tag = "system", responses((status = 200, body = Health)))]
-async fn health() -> Json<Health> {
-    Json(Health { status: "ok".into() })
-}
+const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // The contract file is generated from the binary itself so it can never
+    // drift from the routes; this path must work with nothing else running.
+    if std::env::args().any(|arg| arg == "--print-openapi") {
+        let json = app::openapi()
+            .to_pretty_json()
+            .context("could not serialise the OpenAPI document")?;
+        println!("{json}");
+        return Ok(());
+    }
+
     sdi_common::telemetry::init("gateway");
-    let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .routes(routes!(health))
-        .split_for_parts();
-    let spec = api.clone();
-    let app: Router = router
-        .route("/api/openapi.json", axum::routing::get(move || async move { Json(spec) }))
-        .merge(Scalar::with_url("/api/docs", api));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
-    axum::serve(listener, app).with_graceful_shutdown(sdi_common::shutdown::signal()).await?;
+
+    let state = state::AppState::from_env()?;
+    for link in state.services.iter() {
+        tracing::info!(service = link.name, url = %link.url, "upstream configured");
+    }
+
+    let addr = sdi_common::config::listen_addr("GATEWAY_LISTEN", DEFAULT_LISTEN)?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("could not bind {addr}"))?;
+    tracing::info!(%addr, version = state.version, "gateway listening");
+
+    axum::serve(listener, app::router(state))
+        .with_graceful_shutdown(sdi_common::shutdown::signal())
+        .await
+        .context("server error")?;
+
+    tracing::info!("gateway stopped");
     Ok(())
 }

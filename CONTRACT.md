@@ -33,7 +33,7 @@ Four principles every component honours:
 | Component | Kind | Port | Talks to |
 |---|---|---|---|
 | `web` | React 19 + Vite + shadcn/ui + TanStack Query | 5173 (dev) | gateway over HTTP |
-| `nginx` | web server, reverse proxy, rate limiter, load balancer | 80 | web static files, gateway replicas |
+| `nginx` | web server, reverse proxy, rate limiter, load balancer | 80 (host) / 8080 (container, unprivileged) | web static files, gateway replicas |
 | `services/gateway` | axum REST + OpenAPI (public API) | 8080 | knowledge, intelligence, execution over gRPC |
 | `services/knowledge` | tonic gRPC | 50051 | Postgres (`knowledge` schema), GitHub API |
 | `services/intelligence` | tonic gRPC | 50052 | Postgres (`intelligence` schema), knowledge, execution |
@@ -43,7 +43,9 @@ Four principles every component honours:
 Service-to-service calls are **gRPC only** (`/proto/sdi/*/v1/*.proto`, compiled
 by `crates/proto`). The gateway is the only HTTP surface. Services never share
 tables: each owns one Postgres schema and reaches the others' data through
-gRPC.
+gRPC. Building needs `protoc` with its include directory
+(`google/protobuf/timestamp.proto`): Homebrew `protobuf` on the host,
+`protobuf-compiler` + `libprotobuf-dev` in the Docker builder and CI.
 
 Shared crates:
 
@@ -100,6 +102,31 @@ cloud:azure         cloud:aws           cloud:gcp
 tests:unit          tests:e2e           migrations
 static_site         monorepo            docs:readme         docs:architecture
 ```
+
+Capabilities are derived only from facts with `confidence ≥ 0.8`, so a cloud
+inferred from an SDK (0.6) never satisfies a pattern's `requires`. Fact keys
+carry their category and are unique per analysis (the knowledge service
+upserts by `(project_id, key)`); the prefixes other services may rely on are:
+
+```
+lang:<l>  framework:<f>  package:<p>  cloud:<c>  ci:github_actions | ci:gitlab_ci  ci:workflow:<path>
+datastore:<engine>  infra:datastore:<engine>  container:dockerfile:<path>  container:compose:<path>
+iac:<tool>  k8s:manifests | k8s:helm  migrations:<tool>  tests:unit | tests:e2e
+security:lockfile | security:env_example | security:dependabot
+repository:static_site | repository:monorepo  docs:readme | docs:architecture
+deploy:pipeline:<path>  environment:<name>
+```
+
+Graph node keys follow `<kind>:<name>` (`service:<name>`,
+`container_image:<name>`, `pipeline:<path>`, `iac_module:<dir>`,
+`datastore:<engine>`, `environment:<name>`); every service, library,
+pipeline and IaC module hangs under the `repository:<owner/name>` node.
+Relations (upper snake case verbs on `Edge.relation`): `CONTAINS`,
+`DEPENDS_ON`, `USES` (external API), `DEPLOYED_TO`, `BUILDS`, `DEPLOYS`,
+`RELEASES`, `TESTED_BY`, `PROVISIONS` (iac_module → infrastructure),
+`PROVIDES` (infrastructure → datastore), `PACKAGED_AS` (service →
+container_image), `APPLIES_TO` (migration → datastore), `DOCUMENTED_BY`,
+`OWNED_BY`. Consumers key on the verb, not on `RelationCategory`.
 
 ### 5.2 Policy action types (`Policy.action_type`, `PlanStep.action_type`)
 
@@ -185,8 +212,10 @@ architecture_fit 0.15 · cost 0.10 · security 0.10
 
 - `semantic_similarity`: cosine(project profile embedding, pattern embedding).
 - `policy`: 1.0 if the pattern agrees with every active decision tag
-  (`cloud:*`, `runtime:*`, `iac:*`), 0.0 if it contradicts one, 0.6 if no
-  decision applies.
+  (`cloud:*`, `runtime:*`, `iac:*`, `ci:*`), 0.0 if it contradicts one, 0.6 if
+  no decision applies. A pattern whose cloud/runtime/iac is `any` or empty is
+  neutral; a `ci:*` tag is matched against the pattern's `requires` and named
+  technologies (a pattern naming no CI system is neutral).
 - `recency`: decays with `last_used_at` (1.0 ≤ 30 days … 0.3 ≥ 2 years);
   catalog patterns 0.8.
 - `success`: pattern `success_rate`, shrunk toward 0.7 for < 5 deployments.
@@ -198,9 +227,20 @@ architecture_fit 0.15 · cost 0.10 · security 0.10
 Negotiation changes **constraints** and **weights**, never the signals: "we
 need private networking" adds a constraint and re-ranks; "cheaper" raises the
 cost weight; "we standardise on X" records a `Decision` with tags and reruns
-policy. Every assistant reply cites `Evidence`. If `ANTHROPIC_API_KEY` is set
-the reply text is written by Claude from the structured context (model
-`ANTHROPIC_MODEL`); the ranking is always deterministic.
+policy. Parsing is deterministic (`intelligence/src/domain/negotiation.rs`):
+a weight word shifts that weight by +0.15 and renormalises; "not X",
+"avoid X", "cheaper than X", "instead of X" add `exclude:x`; "use X" /
+"prefer X" add `prefer:x`; "need X" / "keep X" add `require:x`;
+"standardise on X because Y" records an organization-scope decision whose
+tags come from X (`cloud:*`, `runtime:*`, `iac:*`, `ci:*`) and whose reasons
+come from Y. Constraints act on `overall` only: `exclude` removes candidates,
+`prefer` adds 0.10, `require` subtracts 0.10 and is listed under
+`unmet_requirements`. Option ids are `opt-<pattern_id>` so they survive
+re-ranking; every revision bumps `revision` and sets
+`changed_recommendation` on the reply when rank 1 changed. Every assistant
+reply cites `Evidence`. If `ANTHROPIC_API_KEY` is set the reply text is
+written by Claude from the structured context (model `ANTHROPIC_MODEL`); the
+ranking is always deterministic.
 
 ## 7. Execution state machine
 
@@ -220,6 +260,13 @@ PLANNING ─start─▶ WAITING_FOR_APPROVAL ─all approved─▶ AUTHORIZED �
 - Steps form a DAG (`depends_on`). A step is `READY` when all dependencies
   are checkpointed. One step runs at a time (v1). When a step fails, every
   transitive dependent becomes `BLOCKED`.
+- Gating is per step: `StartExecution` moves `PLANNING → AUTHORIZED` and each
+  gated step then goes `AUTHORIZED → WAITING_FOR_APPROVAL → AUTHORIZED`, so
+  the execution returned by start may already be waiting, executing or even
+  paused. `REPLANNING` continues the same way. `POLICY_BLOCKED` on a step with
+  dependents offers `skip_branch` (step and its blocked dependents become
+  `SKIPPED`). A fault injected at start fires once, then clears, so the
+  retry succeeds.
 - Before each step: permission check (identity grants) → policy check →
   approval if `approval`/`required` → run → verify → `CHECKPOINT` event.
 - Every transition writes an `ExecutionEvent` (monotonic `seq`) and
@@ -279,7 +326,12 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 The gateway converts gRPC status codes: `NOT_FOUND`→404,
 `INVALID_ARGUMENT`→400, `ALREADY_EXISTS`→409, `FAILED_PRECONDITION`→412,
 `PERMISSION_DENIED`→403, `UNAVAILABLE`→502, `DEADLINE_EXCEEDED`→504,
-other→500. Mutating routes answer 201 for creates and 200 otherwise.
+`RESOURCE_EXHAUSTED`→429, `UNAUTHENTICATED`→401, other→500 with an opaque
+`internal` body (the real message is only logged). Mutating routes answer
+201 for creates (`POST /projects`, `/proposals`, `/proposals/{id}/messages`,
+`/decisions`, `/projects/{id}/documents`, `/executions`) and 200 otherwise.
+Required proto timestamps a service leaves unset serialise as
+`1970-01-01T00:00:00Z`; optional ones are `null`, as are empty id strings.
 
 ## 9. Web app conventions
 
@@ -311,7 +363,11 @@ web/src
   (least_conn, health-aware via `max_fails`), forwarding `X-Request-Id`.
 - Rate limits: `limit_req_zone … zone=api rate=20r/s` with `burst=40 nodelay`
   on `/api/`, a stricter `zone=mutations rate=5r/s` for POST/PATCH/DELETE,
-  `limit_conn` 32 per address; 429 returns the JSON error body.
+  `limit_conn` 32 per address; 429 returns the JSON error body
+  (`{"code":"rate_limited","message":"Too many requests"}`). When no replica
+  answers, the edge itself answers JSON `502 {"code":"upstream_unavailable"}`
+  or `504 {"code":"upstream_timeout"}`; gateway-generated bodies pass through
+  unchanged.
 - SSE route `/api/v1/executions/*/events/stream`: `proxy_buffering off`,
   `proxy_read_timeout 1h`, `Cache-Control: no-cache`.
 - Security headers, gzip, `server_tokens off`.

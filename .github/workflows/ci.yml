@@ -1,0 +1,155 @@
+# Definition of done from CONTRACT.md §11, run on every push and PR. The
+# cheap checks (rust, web, nginx) gate the image builds, which are slow.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -D warnings
+  PNPM_VERSION: 10.18.1
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      # Same image and dev port as docker-compose.dev.yml so tests that need
+      # a database find CONTRACT.md's default DATABASE_URL.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: sdi
+          POSTGRES_PASSWORD: sdi
+          POSTGRES_DB: sdi
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U sdi -d sdi"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://sdi:sdi@127.0.0.1:5440/sdi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        # libprotobuf-dev provides google/protobuf/*.proto imported by the contracts.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          protoc --version
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  web:
+    name: Web (typecheck, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm build
+
+  nginx:
+    name: nginx -t
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deploy/nginx in the runtime image
+        run: >-
+          docker run --rm -v "$PWD/deploy/nginx:/etc/nginx:ro"
+          nginxinc/nginx-unprivileged:1.28-alpine nginx -t
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+
+  docker:
+    name: Image ${{ matrix.image }}
+    needs: [rust, web, nginx]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [gateway, knowledge, intelligence, execution, web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve build settings
+        id: cfg
+        run: |
+          if [ "${{ matrix.image }}" = web ]; then
+            {
+              echo "dockerfile=deploy/docker/web.Dockerfile"
+              echo "args="
+              echo "scope=web"
+            } >> "$GITHUB_OUTPUT"
+          else
+            # One cache scope for all Rust images: the cargo-chef dependency
+            # layer is identical across SERVICE values.
+            {
+              echo "dockerfile=deploy/docker/rust.Dockerfile"
+              echo "args=SERVICE=${{ matrix.image }}"
+              echo "scope=rust"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.cfg.outputs.dockerfile }}
+          build-args: ${{ steps.cfg.outputs.args }}
+          push: false
+          load: false
+          tags: sdi/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ steps.cfg.outputs.scope }}
+          cache-to: type=gha,mode=max,scope=${{ steps.cfg.outputs.scope }}
