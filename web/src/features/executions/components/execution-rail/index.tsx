@@ -10,6 +10,7 @@ import { FailedStepPanel } from './failed-step-panel'
 import { InlineApproval } from './inline-approval'
 import { RailNode } from './rail-node'
 import { StepRow } from './step-row'
+import { useLatestLogByStep } from './use-latest-log'
 
 export { ExecutionRailSkeleton } from './skeleton'
 
@@ -25,6 +26,7 @@ interface ExecutionRailProps {
 export function ExecutionRail({ execution }: ExecutionRailProps) {
   const steps = [...execution.steps].sort((a, b) => a.position - b.position)
   const failure = isPausedOnFailure(execution.status) ? execution.failure : null
+  const latestLog = useLatestLogByStep(execution.id)
 
   if (steps.length === 0) {
     return <EmptyState icon={ListChecksIcon} title="This plan has no steps" description="Nothing to run." />
@@ -63,7 +65,7 @@ export function ExecutionRail({ execution }: ExecutionRailProps) {
                 isFailed && 'ring-destructive/30',
               )}
             >
-              <StepRow step={step} emphasized={isFailed} />
+              <StepRow step={step} emphasized={isFailed} liveLine={latestLog[step.key]} />
               {awaitingDecision && step.approvalId && (
                 <InlineApproval approvalId={step.approvalId} stepTitle={step.title} />
               )}

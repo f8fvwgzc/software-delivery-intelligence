@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { api, unwrap } from '@/lib/api/client'
+import { fallbackPoll } from '@/lib/live/connection-store'
 import type { components } from '@/lib/api/schema'
 
 import { isTerminal } from '../lib/labels'
@@ -15,12 +16,12 @@ function hasLiveExecution(executions: Execution[] | undefined) {
 }
 
 export const executionQueries = {
-  /** Newest first. Polls every 3s while any execution is still running. */
+  /** Newest first. Polls every 3s while any execution is still running and the live stream is down. */
   list: (filters: ExecutionListFilters = {}) =>
     queryOptions({
       queryKey: executionKeys.list(filters),
       queryFn: () => unwrap(api.GET('/api/v1/executions', { params: { query: filters } })),
-      refetchInterval: (query) => (hasLiveExecution(query.state.data) ? LIVE_INTERVAL : false),
+      refetchInterval: (query) => (hasLiveExecution(query.state.data) ? fallbackPoll(LIVE_INTERVAL) : false),
     }),
 
   /** Steps and, while paused, the failure. Polls as a fallback to the SSE stream. */
@@ -30,7 +31,7 @@ export const executionQueries = {
       queryFn: () => unwrap(api.GET('/api/v1/executions/{id}', { params: { path: { id: executionId } } })),
       refetchInterval: (query) => {
         const status = query.state.data?.status
-        return status && !isTerminal(status) ? LIVE_INTERVAL : false
+        return status && !isTerminal(status) ? fallbackPoll(LIVE_INTERVAL) : false
       },
     }),
 

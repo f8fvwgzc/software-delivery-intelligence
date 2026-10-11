@@ -5,6 +5,7 @@ mod config;
 mod convert;
 mod db;
 mod domain;
+mod events;
 mod grpc;
 mod knowledge;
 mod runner;
@@ -18,7 +19,7 @@ use sdi_proto::execution::v1::execution_service_server::ExecutionServiceServer;
 use tonic::transport::Server;
 
 use crate::{
-    adapters::{Registry, SimulatedAdapter},
+    adapters::{DockerAdapter, GithubAdapter, Registry, SimulatedAdapter},
     config::{SCHEMA, Settings},
     grpc::ExecutionGrpc,
     knowledge::GrpcPatternOutcomes,
@@ -35,8 +36,24 @@ async fn main() -> anyhow::Result<()> {
         .run(&pool)
         .await
         .context("execution migrations failed")?;
+    // The github-token identity mirrors the environment, not the migration
+    // history: it is (re)seeded or withdrawn on every start (§5.3).
+    db::identities::seed_github_token(&pool, settings.github_token.is_some())
+        .await
+        .context("could not seed the github-token identity")?;
 
-    let adapters = Registry::new(Arc::new(SimulatedAdapter::new(settings.sim_delay_ms)));
+    let adapters = Registry::new(
+        Arc::new(SimulatedAdapter::new(settings.sim_delay_ms)),
+        Arc::new(DockerAdapter::new(
+            settings.run_dir.clone(),
+            settings.github_token.clone(),
+            &settings.github_api_url,
+        )),
+        Arc::new(GithubAdapter::new(
+            settings.github_token.clone(),
+            &settings.github_api_url,
+        )),
+    );
     let outcomes = Arc::new(GrpcPatternOutcomes::new(&settings.knowledge_url)?);
     let rt = Runtime::new(
         pool,
@@ -51,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
         .set_serving::<ExecutionServiceServer<ExecutionGrpc>>()
         .await;
 
-    tracing::info!(addr = %settings.listen, resumed, "execution service listening");
+    tracing::info!(
+        addr = %settings.listen,
+        resumed,
+        run_dir = %settings.run_dir.display(),
+        github_token = settings.github_token.is_some(),
+        "execution service listening"
+    );
     Server::builder()
         .add_service(health)
         .add_service(ExecutionServiceServer::new(ExecutionGrpc::new(rt)))

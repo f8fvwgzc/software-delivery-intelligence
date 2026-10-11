@@ -42,6 +42,13 @@ pub enum Effect {
     },
     Decision(DecisionDraft),
     Question(Question),
+    /// Monthly budget in USD ("under $15 a month"). Replaces an earlier one.
+    Budget(f64),
+    /// A generator parameter: `region`, `port` or `runtime`.
+    Param {
+        name: String,
+        value: String,
+    },
 }
 
 impl Effect {
@@ -166,6 +173,197 @@ pub fn technology_tags(term: &str) -> Vec<String> {
     tags.into_iter().map(str::to_owned).collect()
 }
 
+/// Leading number of `rest`, after optional whitespace and a currency sign.
+fn leading_number(rest: &str) -> Option<f64> {
+    let rest = rest
+        .trim_start()
+        .trim_start_matches(['$', '€', '£'])
+        .trim_start();
+    let digits: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .collect();
+    let digits = digits.replace(',', "");
+    let value: f64 = digits.trim_end_matches('.').parse().ok()?;
+    let after = &rest[digits.len().min(rest.len())..];
+    // "under 10%" or "max 3 replicas" are not money.
+    if after.trim_start().starts_with('%') {
+        return None;
+    }
+    (value > 0.0).then_some(value)
+}
+
+fn mentions_money(text: &str) -> bool {
+    ["$", "dollar", "usd", "€", "eur", "£", "gbp"]
+        .iter()
+        .any(|w| text.contains(w))
+}
+
+fn mentions_month(text: &str) -> bool {
+    text.contains("month") || text.contains("/mo") || text.contains("budget")
+}
+
+/// "under $15 a month", "max 20 dollars", "budget 30", "no more than 40 usd",
+/// "$25/month". A bare number only counts when money or a month is mentioned.
+pub fn parse_budget(text: &str) -> Option<f64> {
+    const TRIGGERS: &[&str] = &[
+        "no more than ",
+        "not more than ",
+        "less than ",
+        "at most ",
+        "budget of ",
+        "budget is ",
+        "budget: ",
+        "budget ",
+        "under ",
+        "below ",
+        "within ",
+        "max ",
+        "maximum ",
+        "capped at ",
+        "cap at ",
+        "cap of ",
+        "up to ",
+    ];
+    let mut best: Option<(usize, f64)> = None;
+    for trigger in TRIGGERS {
+        let mut from = 0;
+        while let Some(found) = text[from..].find(trigger) {
+            let start = from + found;
+            let bounded = start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric();
+            if bounded && let Some(value) = leading_number(&text[start + trigger.len()..]) {
+                // A bare "under 10" is ambiguous; money or a month makes it a budget.
+                let explicit =
+                    trigger.contains("budget") || mentions_money(text) || mentions_month(text);
+                if explicit && best.is_none_or(|(s, _)| start < s) {
+                    best = Some((start, value));
+                }
+            }
+            from = start + trigger.len();
+        }
+    }
+    if let Some((_, value)) = best {
+        return Some(value);
+    }
+    // "$25/month", "25 dollars per month", "25 usd monthly"
+    if mentions_month(text) {
+        for (i, c) in text.char_indices() {
+            if c == '$'
+                && let Some(value) = leading_number(&text[i..])
+            {
+                return Some(value);
+            }
+        }
+        for marker in [" dollars", " usd", " dollar"] {
+            if let Some(end) = text.find(marker) {
+                let before = text[..end].trim_end();
+                let start = before
+                    .rfind(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                if let Some(value) = leading_number(&before[start..]) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+const RUNTIMES: &[&str] = &[
+    "node", "nodejs", "python", "java", "go", "golang", "dotnet", ".net", "ruby", "php", "rust",
+];
+
+/// "node 20", "python 3.12", "runtime java 21" -> ("runtime", "node 20").
+fn find_runtime(text: &str) -> Option<String> {
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || c == '.')))
+        .filter(|w| !w.is_empty())
+        .collect();
+    for pair in words.windows(2) {
+        let name = pair[0].to_lowercase();
+        let version = pair[1].trim_start_matches('v');
+        if RUNTIMES.contains(&name.as_str())
+            && version.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            let name = match name.as_str() {
+                "nodejs" => "node",
+                "golang" => "go",
+                ".net" => "dotnet",
+                other => other,
+            };
+            return Some(format!("{name} {}", version.trim_end_matches('.')));
+        }
+    }
+    None
+}
+
+/// Region ("region westeurope", "in west europe"), port ("port 3000") and
+/// runtime ("node 20") parameters a turn may change.
+pub fn parse_params(text: &str) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    if let Some(region) = parse_region(text) {
+        params.push(("region".to_owned(), region));
+    }
+    if let Some((term, _)) = after_phrase(text, &["port to ", "port "]) {
+        let digits: String = term.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.parse::<u16>().is_ok_and(|p| p > 0) {
+            params.push(("port".to_owned(), digits));
+        }
+    }
+    if let Some(runtime) = find_runtime(text) {
+        params.push(("runtime".to_owned(), runtime));
+    }
+    params
+}
+
+const DIRECTIONS: &[&str] = &["west", "east", "north", "south", "central", "uk", "us"];
+
+fn region_token(words: &[&str]) -> Option<String> {
+    let region = match words {
+        [first, second, ..] if DIRECTIONS.contains(first) => format!("{first}{second}"),
+        [first, ..] => (*first).to_owned(),
+        [] => return None,
+    };
+    let valid = region
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && region.chars().any(|c| c.is_ascii_alphabetic())
+        && !matches!(
+            region.as_str(),
+            "the" | "a" | "in" | "to" | "same" | "another"
+        );
+    valid.then_some(region)
+}
+
+/// "region eastus", "deploy in region eastus", "use west europe region".
+fn parse_region(text: &str) -> Option<String> {
+    if let Some((term, _)) =
+        after_phrase(text, &["region to ", "region ", "deploy in ", "deploy to "])
+    {
+        // "deploy in region eastus" matches the earlier phrase; drop the noun.
+        let term = term
+            .trim_start_matches("the ")
+            .trim_start_matches("region ")
+            .trim_start_matches("to ");
+        let words: Vec<&str> = term.split_whitespace().collect();
+        if let Some(region) = region_token(&words) {
+            return Some(region);
+        }
+    }
+    // "<x> region": the one or two words before the noun.
+    let idx = text.find(" region")?;
+    let before: Vec<&str> = text[..idx].split_whitespace().collect();
+    let tail: Vec<&str> = before.iter().rev().take(2).rev().copied().collect();
+    match tail.as_slice() {
+        [first, second] if DIRECTIONS.contains(first) => region_token(&[first, second]),
+        [.., last] => region_token(&[last]),
+        [] => None,
+    }
+}
+
 fn weight_triggers(text: &str) -> Vec<(Signal, &'static str)> {
     const TABLE: &[(&str, Signal)] = &[
         ("cheaper", Signal::Cost),
@@ -254,6 +452,26 @@ pub fn parse(content: &str) -> Vec<Effect> {
     }
     let is_question = effects.iter().any(|e| matches!(e, Effect::Question(_)));
 
+    let budget = parse_budget(&text);
+    if let Some(value) = budget {
+        effects.push(Effect::Budget(value));
+    }
+    let params = parse_params(&text);
+    for (name, value) in &params {
+        effects.push(Effect::Param {
+            name: name.clone(),
+            value: value.clone(),
+        });
+    }
+    let numeric = |term: &str| term.chars().any(|c| c.is_ascii_digit());
+    // "use west europe region" is a parameter, not a preference for "west europe".
+    let consumed = |term: &str| {
+        term.contains("region")
+            || params
+                .iter()
+                .any(|(_, v)| term.replace(' ', "").contains(v.as_str()))
+    };
+
     for (signal, trigger) in weight_triggers(&text) {
         effects.push(Effect::WeightShift {
             signal,
@@ -283,6 +501,7 @@ pub fn parse(content: &str) -> Vec<Effect> {
         ],
     ) && technology_tags(&term).len() + usize::from(term.split_whitespace().count() <= 3) > 0
         && decision_subject.as_deref() != Some(term.as_str())
+        && !(budget.is_some() && numeric(&term))
     {
         effects.push(Effect::constraint("exclude", &term, &format!("not {term}")));
     }
@@ -300,6 +519,8 @@ pub fn parse(content: &str) -> Vec<Effect> {
         ],
     ) && decision_subject.is_none()
         && weight_triggers(&term).is_empty()
+        && !numeric(&term)
+        && !consumed(&term)
         && !effects.iter().any(
             |e| matches!(e, Effect::Constraint { key, .. } if key == &format!("exclude:{term}")),
         )
@@ -320,6 +541,8 @@ pub fn parse(content: &str) -> Vec<Effect> {
         ],
     ) && weight_triggers(&term).is_empty()
         && !term.starts_with("to ")
+        && !numeric(&term)
+        && !consumed(&term)
     {
         effects.push(Effect::constraint(
             "require",
@@ -353,6 +576,22 @@ pub fn apply(
                     });
                 }
             }
+            Effect::Budget(value) => {
+                let constraint = ConstraintData {
+                    source_message_id: message_id.to_owned(),
+                    ..ConstraintData::budget(*value)
+                };
+                constraints.retain(|c| !c.same_family(&constraint));
+                constraints.push(constraint);
+            }
+            Effect::Param { name, value } => {
+                let constraint = ConstraintData {
+                    source_message_id: message_id.to_owned(),
+                    ..ConstraintData::param(name, value)
+                };
+                constraints.retain(|c| !c.same_family(&constraint));
+                constraints.push(constraint);
+            }
             Effect::Decision(_) | Effect::Question(_) => {}
         }
     }
@@ -374,6 +613,8 @@ mod tests {
                 }
                 Effect::Question(Question::WhatIf { subject }) => format!("whatif:{subject}"),
                 Effect::Question(Question::Compare) => "compare".to_owned(),
+                Effect::Budget(value) => format!("budget:{value}"),
+                Effect::Param { name, value } => format!("param:{name}:{value}"),
             })
             .collect()
     }
@@ -421,10 +662,58 @@ mod tests {
                 ],
             ),
             ("", &[]),
+            ("under $15 a month", &["budget:15"]),
+            ("max 20 dollars", &["budget:20"]),
+            ("budget 30", &["budget:30", "weight:cost"]),
+            ("no more than 40 usd per month please", &["budget:40"]),
+            ("keep it below $25/month", &["budget:25"]),
+            ("we need it under 12.50 dollars a month", &["budget:12.5"]),
+            ("under 10% failure rate", &[]),
+            ("deploy in region eastus", &["param:region:eastus"]),
+            ("use west europe region", &["param:region:westeurope"]),
+            ("run on port 4000", &["param:port:4000"]),
+            ("move to node 22", &["param:runtime:node 22"]),
+            (
+                "python 3.12 please, max $20 a month",
+                &["budget:20", "param:runtime:python 3.12"],
+            ),
         ];
         for (input, expected) in cases {
             assert_eq!(keys(&parse(input)), *expected, "input: {input:?}");
         }
+    }
+
+    #[test]
+    fn budget_and_params_replace_their_family() {
+        let mut weights = Weights::default();
+        let mut constraints = Vec::new();
+        apply(
+            &parse("under $15 a month"),
+            &mut weights,
+            &mut constraints,
+            "m1",
+        );
+        apply(
+            &parse("ok, max 20 dollars"),
+            &mut weights,
+            &mut constraints,
+            "m2",
+        );
+        apply(
+            &parse("region westeurope"),
+            &mut weights,
+            &mut constraints,
+            "m3",
+        );
+        apply(
+            &parse("region eastus"),
+            &mut weights,
+            &mut constraints,
+            "m4",
+        );
+        let keys: Vec<&str> = constraints.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, vec!["budget_monthly_usd:20", "param:region:eastus"]);
+        assert_eq!(constraints[0].source_message_id, "m2");
     }
 
     #[test]

@@ -25,6 +25,7 @@ export const routes = {
 
   policies: () => '/policies',
   system: () => '/system',
+  settings: () => '/settings',
 
   apiDocs: () => '/api/docs',
 } as const

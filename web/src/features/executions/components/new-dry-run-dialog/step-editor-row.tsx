@@ -1,10 +1,11 @@
 import { Trash2Icon } from 'lucide-react'
 
+import { RISK } from '@/components/shared/data/risk'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-import { ACTION_TYPES, ADAPTERS, RISK } from '../../lib/labels'
+import { ACTION_TYPES, ADAPTERS } from '../../lib/labels'
 import type { DraftStep } from '../../lib/plan-template'
 import { DependsOnSelect } from './depends-on-select'
 

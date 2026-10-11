@@ -4,14 +4,17 @@
 use std::sync::Arc;
 
 use sdi_common::grpc::db_status;
-use sdi_proto::execution::v1::{
-    Approval, CancelExecutionRequest, CreateExecutionRequest, DecideApprovalRequest, DeliveryStats,
-    Execution, ExecutionEvent, GetDeliveryStatsRequest, GetExecutionRequest,
-    GrantPermissionRequest, Identity, ListApprovalsRequest, ListApprovalsResponse,
-    ListEventsRequest, ListEventsResponse, ListExecutionsRequest, ListExecutionsResponse,
-    ListIdentitiesRequest, ListIdentitiesResponse, ListPoliciesRequest, ListPoliciesResponse,
-    Policy, ResolveFailureRequest, StartExecutionRequest, UpdatePolicyRequest,
-    WatchExecutionRequest, execution_service_server::ExecutionService,
+use sdi_proto::{
+    common::v1::{PlatformEvent, WatchEventsRequest},
+    execution::v1::{
+        Approval, CancelExecutionRequest, CreateExecutionRequest, DecideApprovalRequest,
+        DeliveryStats, Execution, ExecutionEvent, GetDeliveryStatsRequest, GetExecutionRequest,
+        GrantPermissionRequest, Identity, ListApprovalsRequest, ListApprovalsResponse,
+        ListEventsRequest, ListEventsResponse, ListExecutionsRequest, ListExecutionsResponse,
+        ListIdentitiesRequest, ListIdentitiesResponse, ListPoliciesRequest, ListPoliciesResponse,
+        Policy, ResolveFailureRequest, StartExecutionRequest, UpdatePolicyRequest,
+        WatchExecutionRequest, execution_service_server::ExecutionService,
+    },
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -185,5 +188,14 @@ impl ExecutionService for ExecutionGrpc {
         stats::get(&self.rt, request.into_inner())
             .await
             .map(Response::new)
+    }
+
+    type WatchEventsStream = ReceiverStream<Result<PlatformEvent, Status>>;
+
+    async fn watch_events(
+        &self,
+        _request: Request<WatchEventsRequest>,
+    ) -> Result<Response<Self::WatchEventsStream>, Status> {
+        Ok(Response::new(events::watch_platform(&self.rt)))
     }
 }

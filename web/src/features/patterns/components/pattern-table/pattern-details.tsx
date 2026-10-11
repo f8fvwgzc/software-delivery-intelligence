@@ -1,10 +1,9 @@
 import { CheckIcon, MinusIcon } from 'lucide-react'
 
-import { RelativeTime, ScoreBar } from '@/components/shared/data'
+import { PlanRail, RelativeTime, ScoreBar } from '@/components/shared/data'
 import { Badge } from '@/components/ui/badge'
 import type { components } from '@/lib/api/schema'
 
-import { PlanRail } from '../plan-rail'
 
 type Pattern = components['schemas']['Pattern']
 
@@ -52,7 +51,7 @@ export function PatternDetails({ pattern }: { pattern: Pattern }) {
         <h4 className="text-xs font-medium text-muted-foreground">
           Plan template <span className="tabular-nums">({pattern.plan.length} steps)</span>
         </h4>
-        <PlanRail steps={pattern.plan} />
+        <PlanRail steps={pattern.plan} compact emptyMessage="This pattern has no plan template." />
       </section>
     </div>
   )

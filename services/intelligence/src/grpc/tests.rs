@@ -4,19 +4,24 @@
 
 use std::sync::Arc;
 
-use sdi_proto::intelligence::v1::{
-    AcceptProposalRequest, CreateDecisionRequest, DecisionScope, DecisionSource, DocumentKind,
-    GenerateDocumentRequest, GenerateProposalRequest, GetIntelligenceStatsRequest,
-    ListDecisionsRequest, ListMessagesRequest, MessageRole, NegotiateRequest, ProposalKind,
-    ProposalStatus, SupersedeDecisionRequest, intelligence_service_server::IntelligenceService,
+use sdi_proto::{
+    common::v1::WatchEventsRequest,
+    intelligence::v1::{
+        AcceptProposalRequest, CreateDecisionRequest, DecisionScope, DecisionSource, DocumentKind,
+        GenerateDocumentRequest, GenerateProposalRequest, GetIntelligenceStatsRequest,
+        GetProposalRequest, GetSettingsRequest, IntelligenceSettings, ListDecisionsRequest,
+        ListMessagesRequest, ListProposalsRequest, MessageRole, NegotiateRequest, ProposalKind,
+        ProposalStatus, ScoreWeights, SupersedeDecisionRequest, UpdateSettingsRequest,
+        intelligence_service_server::IntelligenceService,
+    },
 };
+use tokio_stream::StreamExt;
 use tonic::{Code, Request};
 
-use super::IntelligenceGrpc;
+use super::{IntelligenceGrpc, ReasonerConfig};
 use crate::{
     domain::ranking::fixtures,
     gateway::fake::{FakeExecution, FakeKnowledge},
-    reasoner::HeuristicReasoner,
 };
 
 /// One schema per test so they can run in parallel without truncating each other.
@@ -29,14 +34,25 @@ async fn service(schema: &str) -> (IntelligenceGrpc, Arc<FakeKnowledge>, Arc<Fak
         .run(&pool)
         .await
         .expect("migrations");
-    for table in ["messages", "proposals", "decisions", "documents"] {
+    for table in [
+        "messages",
+        "proposals",
+        "decisions",
+        "documents",
+        "settings",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("TRUNCATE {table} CASCADE")))
             .execute(&pool)
             .await
             .unwrap();
     }
+    let mut context = fixtures::context();
+    context.understanding = Some(sdi_proto::knowledge::v1::Understanding {
+        commit_sha: "0123456789abcdef".into(),
+        ..Default::default()
+    });
     let knowledge = Arc::new(FakeKnowledge {
-        context: Some(fixtures::context()),
+        context: Some(context),
         patterns: fixtures::catalog(),
         ..Default::default()
     });
@@ -45,7 +61,10 @@ async fn service(schema: &str) -> (IntelligenceGrpc, Arc<FakeKnowledge>, Arc<Fak
         pool,
         knowledge.clone(),
         execution.clone(),
-        Arc::new(HeuristicReasoner),
+        ReasonerConfig {
+            anthropic_api_key: None,
+            anthropic_model: crate::config::DEFAULT_MODEL.to_owned(),
+        },
     );
     (svc, knowledge, execution)
 }
@@ -60,6 +79,7 @@ async fn propose_negotiate_accept_document_flow() {
             project_id: "proj-1".into(),
             kind: ProposalKind::Deployment as i32,
             prompt: "deploy this".into(),
+            budget_monthly_usd: 0.0,
         }))
         .await
         .unwrap()
@@ -77,6 +97,7 @@ async fn propose_negotiate_accept_document_flow() {
             project_id: "nope".into(),
             kind: ProposalKind::Deployment as i32,
             prompt: String::new(),
+            budget_monthly_usd: 0.0,
         }))
         .await
         .unwrap_err();
@@ -148,6 +169,7 @@ async fn propose_negotiate_accept_document_flow() {
             id: proposal.id.clone(),
             option_id: String::new(),
             create_execution: true,
+            adapter: String::new(),
         }))
         .await
         .unwrap()
@@ -170,6 +192,7 @@ async fn propose_negotiate_accept_document_flow() {
             id: proposal.id.clone(),
             option_id: String::new(),
             create_execution: false,
+            adapter: String::new(),
         }))
         .await
         .unwrap_err();
@@ -267,6 +290,7 @@ async fn validation_errors_are_invalid_argument() {
             project_id: "proj-1".into(),
             kind: ProposalKind::Unspecified as i32,
             prompt: String::new(),
+            budget_monthly_usd: 0.0,
         }))
         .await
         .unwrap_err();
@@ -285,4 +309,379 @@ async fn validation_errors_are_invalid_argument() {
         }))
         .await;
     assert!(err.is_ok_and(|r| r.into_inner().messages.is_empty()));
+}
+
+async fn propose(svc: &IntelligenceGrpc, budget: f64) -> sdi_proto::intelligence::v1::Proposal {
+    svc.generate_proposal(Request::new(GenerateProposalRequest {
+        project_id: "proj-1".into(),
+        kind: ProposalKind::Deployment as i32,
+        prompt: String::new(),
+        budget_monthly_usd: budget,
+    }))
+    .await
+    .unwrap()
+    .into_inner()
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn accept_with_each_adapter_hands_the_right_plan_to_execution() {
+    let (svc, _, execution) = service("intelligence_test_adapters").await;
+
+    // docker: the local verification loop with image/port/health/test params.
+    let proposal = propose(&svc, 0.0).await;
+    let accepted = svc
+        .accept_proposal(Request::new(AcceptProposalRequest {
+            id: proposal.id.clone(),
+            option_id: String::new(),
+            create_execution: true,
+            adapter: "docker".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(accepted.status(), ProposalStatus::Accepted);
+    {
+        let created = execution.created.lock().unwrap();
+        let request = created.last().unwrap();
+        assert_eq!(request.adapter, "docker");
+        // The option's generated files ride along so the checkout is overlaid
+        // with them before `docker build`.
+        assert!(request.artifacts.contains_key("Dockerfile"));
+        let actions: Vec<&str> = request
+            .steps
+            .iter()
+            .map(|s| s.action_type.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            vec![
+                "repo.checkout",
+                "container.build",
+                "container.run",
+                "tests.run_local",
+                "env.destroy_temporary"
+            ]
+        );
+        assert_eq!(
+            request.steps[1].params.get("image").map(String::as_str),
+            Some("view-engine:sdi-0123456")
+        );
+        assert_eq!(
+            request.steps[2]
+                .params
+                .get("health_path")
+                .map(String::as_str),
+            Some("/health")
+        );
+        assert_eq!(
+            request.steps[3]
+                .params
+                .get("test_command")
+                .map(String::as_str),
+            Some("npm test")
+        );
+        assert!(request.title.starts_with("Verify "));
+    }
+
+    // github: checkout → open_pull_request with the option's files.
+    let proposal = propose(&svc, 0.0).await;
+    let option = proposal.options[0].clone();
+    assert!(
+        !option.artifacts.is_empty(),
+        "deployment options carry files"
+    );
+    let accepted = svc
+        .accept_proposal(Request::new(AcceptProposalRequest {
+            id: proposal.id.clone(),
+            option_id: option.id.clone(),
+            create_execution: true,
+            adapter: "GitHub".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(accepted.execution_id, "exec-2");
+    {
+        let created = execution.created.lock().unwrap();
+        let request = created.last().unwrap();
+        assert_eq!(request.adapter, "github");
+        assert_eq!(request.steps.len(), 2);
+        assert_eq!(request.steps[0].action_type, "repo.checkout");
+        assert_eq!(request.steps[1].action_type, "repo.open_pull_request");
+        let short: String = proposal.id.chars().take(8).collect();
+        assert_eq!(
+            request.steps[1].params.get("branch").map(String::as_str),
+            Some(format!("sdi/{short}").as_str())
+        );
+        assert_eq!(
+            request.steps[1].params.get("title").map(String::as_str),
+            Some(option.title.as_str())
+        );
+        let body = request.steps[1].params.get("body").unwrap();
+        assert!(body.contains("### Files"));
+        assert!(body.contains("### Evidence"));
+        assert_eq!(request.artifacts.len(), option.artifacts.len());
+        for file in &option.artifacts {
+            assert_eq!(request.artifacts.get(&file.path), Some(&file.content));
+            assert!(body.contains(&format!("`{}`", file.path)));
+        }
+    }
+
+    // simulated (default): the option's own plan.
+    let proposal = propose(&svc, 0.0).await;
+    svc.accept_proposal(Request::new(AcceptProposalRequest {
+        id: proposal.id.clone(),
+        option_id: String::new(),
+        create_execution: true,
+        adapter: String::new(),
+    }))
+    .await
+    .unwrap();
+    {
+        let created = execution.created.lock().unwrap();
+        let request = created.last().unwrap();
+        assert_eq!(request.adapter, "simulated");
+        assert_eq!(request.steps.len(), 2);
+        assert_eq!(request.steps[0].action_type, "container.build");
+    }
+
+    let proposal = propose(&svc, 0.0).await;
+    let bad = svc
+        .accept_proposal(Request::new(AcceptProposalRequest {
+            id: proposal.id,
+            option_id: String::new(),
+            create_execution: true,
+            adapter: "cloud".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn settings_drive_ranking_and_validate_input() {
+    let (svc, _, _) = service("intelligence_test_settings").await;
+    let defaults = svc
+        .get_settings(Request::new(GetSettingsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(defaults.reasoner, "claude");
+    assert_eq!(defaults.model, "claude-sonnet-5-5", "env default until set");
+    assert!(!defaults.api_key_configured);
+    assert_eq!(defaults.cost_ceiling_usd, 500.0);
+    let weights = defaults.default_weights.unwrap();
+    assert!((weights.cost - 0.10).abs() < 1e-9);
+
+    // Unnormalised weights are accepted and renormalised.
+    let updated = svc
+        .update_settings(Request::new(UpdateSettingsRequest {
+            settings: Some(IntelligenceSettings {
+                default_weights: Some(ScoreWeights {
+                    semantic_similarity: 10.0,
+                    policy: 10.0,
+                    recency: 10.0,
+                    success: 10.0,
+                    architecture_fit: 10.0,
+                    cost: 40.0,
+                    security: 10.0,
+                }),
+                reasoner: "heuristic".into(),
+                model: "claude-opus-5".into(),
+                api_key_configured: true,
+                cost_ceiling_usd: 100.0,
+            }),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let w = updated.default_weights.unwrap();
+    assert!((w.cost - 0.4).abs() < 1e-9);
+    assert!((w.policy - 0.1).abs() < 1e-9);
+    assert_eq!(updated.reasoner, "heuristic");
+    assert_eq!(updated.model, "claude-opus-5");
+    assert!(
+        !updated.api_key_configured,
+        "comes from the environment, never from the request"
+    );
+    assert_eq!(updated.cost_ceiling_usd, 100.0);
+
+    // Ranking reads the stored defaults: the proposal's weights are the new ones.
+    let proposal = propose(&svc, 0.0).await;
+    assert!((proposal.weights.unwrap().cost - 0.4).abs() < 1e-9);
+    assert_eq!(proposal.reasoner, "heuristic");
+    // With a $100 ceiling the $250 Kubernetes option's cost signal is 0.
+    let k8s = proposal
+        .options
+        .iter()
+        .find(|o| o.pattern_id == "kubernetes-helm")
+        .unwrap();
+    assert_eq!(k8s.score.as_ref().unwrap().cost, 0.0);
+
+    let bad = svc
+        .update_settings(Request::new(UpdateSettingsRequest {
+            settings: Some(IntelligenceSettings {
+                reasoner: "gpt".into(),
+                ..Default::default()
+            }),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad.code(), Code::InvalidArgument);
+    let bad = svc
+        .update_settings(Request::new(UpdateSettingsRequest {
+            settings: Some(IntelligenceSettings {
+                default_weights: Some(ScoreWeights::default()),
+                ..Default::default()
+            }),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn budget_artifacts_list_and_events() {
+    let (svc, _, _) = service("intelligence_test_budget").await;
+    let mut events = svc
+        .watch_events(Request::new(WatchEventsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let proposal = propose(&svc, 30.0).await;
+    assert!(
+        proposal
+            .constraints
+            .iter()
+            .any(|c| c.key == "budget_monthly_usd:30")
+    );
+    let k8s = proposal
+        .options
+        .iter()
+        .find(|o| o.pattern_id == "kubernetes-helm")
+        .unwrap();
+    assert!(k8s.unmet_requirements.contains(&"budget:30".to_owned()));
+    let vm = proposal
+        .options
+        .iter()
+        .find(|o| o.pattern_id == "vm-docker-compose")
+        .unwrap();
+    assert!(
+        !vm.unmet_requirements
+            .iter()
+            .any(|u| u.starts_with("budget:"))
+    );
+    assert!(
+        proposal
+            .options
+            .iter()
+            .all(|o| !o.cost_breakdown.is_empty())
+    );
+    assert!(proposal.options.iter().all(|o| !o.artifacts.is_empty()));
+
+    let created = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            created.entity.as_str(),
+            created.action.as_str(),
+            created.status.as_str()
+        ),
+        ("proposal", "created", "proposed")
+    );
+    assert_eq!(created.entity_id, proposal.id);
+    assert_eq!(created.data.get("revision").map(String::as_str), Some("1"));
+
+    // A negotiation turn can replace the budget and change parameters; the
+    // artifacts are regenerated with the new region.
+    let turn = svc
+        .negotiate(Request::new(NegotiateRequest {
+            proposal_id: proposal.id.clone(),
+            content: "max 20 dollars a month, deploy in region eu-central-1".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let after = turn.proposal.unwrap();
+    let keys: Vec<&str> = after.constraints.iter().map(|c| c.key.as_str()).collect();
+    assert!(keys.contains(&"budget_monthly_usd:20"));
+    assert!(keys.contains(&"param:region:eu-central-1"));
+    assert!(!keys.contains(&"budget_monthly_usd:30"));
+    assert!(
+        turn.reply
+            .unwrap()
+            .content
+            .contains("Set the monthly budget to $20")
+    );
+    let aws = after
+        .options
+        .iter()
+        .find(|o| o.pattern_id == "aws-ecs-fargate")
+        .unwrap();
+    let variables = aws
+        .artifacts
+        .iter()
+        .find(|a| a.path == "infra/aws/variables.tf")
+        .unwrap();
+    assert!(variables.content.contains("eu-central-1"));
+    let updated = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (updated.action.as_str(), updated.status.as_str()),
+        ("updated", "negotiating")
+    );
+    assert_eq!(updated.data.get("revision").map(String::as_str), Some("2"));
+
+    // List responses omit artifacts; the single get carries them.
+    let listed = svc
+        .list_proposals(Request::new(ListProposalsRequest {
+            project_id: "proj-1".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .proposals;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].options.iter().all(|o| o.artifacts.is_empty()));
+    assert!(
+        listed[0]
+            .options
+            .iter()
+            .all(|o| !o.cost_breakdown.is_empty())
+    );
+    let got = svc
+        .get_proposal(Request::new(GetProposalRequest {
+            id: proposal.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(got.options.iter().all(|o| !o.artifacts.is_empty()));
+    assert_eq!(got.revision, 2);
+
+    // A new proposal of the same kind supersedes the old one and says so.
+    let newer = propose(&svc, 0.0).await;
+    let created = events.next().await.unwrap().unwrap();
+    assert_eq!(created.entity_id, newer.id);
+    let superseded = events.next().await.unwrap().unwrap();
+    assert_eq!(superseded.entity_id, proposal.id);
+    assert_eq!(superseded.status, "superseded");
+
+    let document = svc
+        .generate_document(Request::new(GenerateDocumentRequest {
+            project_id: "proj-1".into(),
+            kind: DocumentKind::Runbook as i32,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(document.markdown.contains("## Rollback"));
+    let event = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (event.entity.as_str(), event.entity_id.as_str()),
+        ("document", document.id.as_str())
+    );
+    assert_eq!(event.data.get("kind").map(String::as_str), Some("runbook"));
 }

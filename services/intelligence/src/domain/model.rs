@@ -194,6 +194,36 @@ pub struct PlanStepData {
     pub verification: String,
 }
 
+/// A generated file, complete and ready to commit (CONTRACT.md §14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactData {
+    pub path: String,
+    pub content: String,
+    /// "dockerfile" | "yaml" | "hcl" | "bicep" | "json" | "markdown" | "nginx" | "text"
+    pub language: String,
+    pub purpose: String,
+    pub replaces_existing: bool,
+}
+
+/// One line of an option's monthly cost model. The lines sum to
+/// `RankedOption::estimated_monthly_cost_usd`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostLineData {
+    pub item: String,
+    pub monthly_usd: f64,
+    pub note: String,
+}
+
+impl CostLineData {
+    pub fn new(item: impl Into<String>, monthly_usd: f64, note: impl Into<String>) -> Self {
+        Self {
+            item: item.into(),
+            monthly_usd,
+            note: note.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RankedOption {
     pub id: String,
@@ -212,6 +242,12 @@ pub struct RankedOption {
     /// can record a decision without refetching the pattern.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Generated files. Stored in the proposal row but stripped from list
+    /// responses, so deserialising without them must work.
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactData>,
+    #[serde(default)]
+    pub cost_breakdown: Vec<CostLineData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +258,11 @@ pub struct ConstraintData {
     pub source_message_id: String,
 }
 
+/// Constraint key prefix of the monthly budget (CONTRACT.md §6 Budget).
+pub const BUDGET_KEY: &str = "budget_monthly_usd";
+/// Constraint key prefix of a negotiated generator parameter: `param:<name>:<value>`.
+pub const PARAM_KEY: &str = "param";
+
 impl ConstraintData {
     /// `require:x` / `prefer:x` / `exclude:x` - the term after the colon.
     pub fn split(&self) -> (&str, &str) {
@@ -229,6 +270,66 @@ impl ConstraintData {
             .split_once(':')
             .unwrap_or(("require", self.key.as_str()))
     }
+
+    pub fn budget(monthly_usd: f64) -> Self {
+        Self {
+            key: format!("{BUDGET_KEY}:{}", fmt_usd(monthly_usd)),
+            description: format!("budget under ${}/month", fmt_usd(monthly_usd)),
+            source_message_id: String::new(),
+        }
+    }
+
+    pub fn param(name: &str, value: &str) -> Self {
+        Self {
+            key: format!("{PARAM_KEY}:{name}:{value}"),
+            description: format!("{name} {value}"),
+            source_message_id: String::new(),
+        }
+    }
+
+    /// The budget this constraint carries, if it is one.
+    pub fn as_budget(&self) -> Option<f64> {
+        let (kind, value) = self.split();
+        (kind == BUDGET_KEY).then(|| value.parse().ok()).flatten()
+    }
+
+    /// `(name, value)` when this is a negotiated generator parameter.
+    pub fn as_param(&self) -> Option<(&str, &str)> {
+        let (kind, rest) = self.split();
+        (kind == PARAM_KEY).then(|| rest.split_once(':')).flatten()
+    }
+
+    /// Two constraints of the same family (budget, or the same parameter)
+    /// replace each other instead of piling up.
+    pub fn same_family(&self, other: &ConstraintData) -> bool {
+        match (self.as_param(), other.as_param()) {
+            (Some((a, _)), Some((b, _))) => a == b,
+            _ => self.as_budget().is_some() && other.as_budget().is_some(),
+        }
+    }
+}
+
+/// Budgets print as integers when they are whole ("15", not "15.0").
+pub fn fmt_usd(value: f64) -> String {
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+/// The budget active on a proposal, if any constraint sets one.
+pub fn budget_of(constraints: &[ConstraintData]) -> Option<f64> {
+    constraints.iter().find_map(ConstraintData::as_budget)
+}
+
+/// Negotiated generator parameters (`region`, `port`, `runtime`), last one wins.
+pub fn params_of(constraints: &[ConstraintData]) -> BTreeMap<String, String> {
+    constraints
+        .iter()
+        .filter_map(ConstraintData::as_param)
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -240,6 +341,26 @@ mod tests {
         let w = Weights::default();
         let total: f64 = Signal::ALL.iter().map(|s| w.get(*s)).sum();
         assert!((total - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_and_param_constraints_round_trip() {
+        let budget = ConstraintData::budget(15.0);
+        assert_eq!(budget.key, "budget_monthly_usd:15");
+        assert_eq!(budget.as_budget(), Some(15.0));
+        assert_eq!(ConstraintData::budget(12.5).key, "budget_monthly_usd:12.50");
+        let region = ConstraintData::param("region", "westeurope");
+        assert_eq!(region.as_param(), Some(("region", "westeurope")));
+        assert!(region.same_family(&ConstraintData::param("region", "eastus")));
+        assert!(!region.same_family(&ConstraintData::param("port", "3000")));
+        assert!(budget.same_family(&ConstraintData::budget(20.0)));
+        assert!(!budget.same_family(&region));
+        let all = vec![budget, region];
+        assert_eq!(budget_of(&all), Some(15.0));
+        assert_eq!(
+            params_of(&all).get("region").map(String::as_str),
+            Some("westeurope")
+        );
     }
 
     #[test]

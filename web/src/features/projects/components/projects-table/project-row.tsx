@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 
 import { projectQueries, type Project } from '../../api/queries'
 import { DeleteProjectDialog } from '../delete-project-dialog'
+import { MaturityMeter } from '../maturity-meter'
 import { ModeSwitch } from '../mode-switch'
 import { ProjectStatus } from '../project-status'
 import { RescanButton } from '../rescan-button'
@@ -58,6 +59,10 @@ export function ProjectRow({ project }: ProjectRowProps) {
         ) : (
           <span className="text-xs text-muted-foreground">Not scanned yet</span>
         )}
+      </TableCell>
+
+      <TableCell className={COLUMN_CLASS.maturity}>
+        <MaturityMeter score={project.maturityScore} unscored={!project.lastScannedAt} />
       </TableCell>
 
       <TableCell className={cn(COLUMN_CLASS.questions, project.openQuestions === 0 && 'text-muted-foreground')}>

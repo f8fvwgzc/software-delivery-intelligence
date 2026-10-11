@@ -22,12 +22,40 @@ use crate::{
         proposals::{self as repo, ProposalRow},
     },
     domain::{
-        model::{ConstraintData, RankedOption, Weights},
-        narrative, ranking,
+        model::{self, ConstraintData, RankedOption, Weights},
+        narrative, plans, ranking,
     },
+    generators,
 };
 
 const SIMILAR_PROJECTS: u32 = 5;
+
+/// Broadcasts a proposal change with its status and revision.
+pub(super) fn emit_proposal(svc: &IntelligenceGrpc, row: &ProposalRow, action: &str) {
+    svc.events.emit(
+        "proposal",
+        &row.id.to_string(),
+        &row.project_id,
+        action,
+        &row.status,
+        &[
+            ("revision", row.revision.to_string()),
+            ("kind", row.kind.clone()),
+            ("recommended_option_id", row.recommended_option_id.clone()),
+        ],
+    );
+}
+
+pub(super) fn emit_decision(svc: &IntelligenceGrpc, row: &DecisionRow, action: &str) {
+    svc.events.emit(
+        "decision",
+        &row.id.to_string(),
+        &row.project_id,
+        action,
+        &row.status,
+        &[("scope", row.scope.clone()), ("source", row.source.clone())],
+    );
+}
 
 /// Context and candidates from knowledge, decisions from our own schema, then
 /// the pure ranker. Similar projects are evidence only, so their failure is
@@ -38,14 +66,33 @@ pub(super) async fn rank_for(
     kind: ProposalKind,
     constraints: &[ConstraintData],
     weights: &Weights,
+    cost_ceiling: f64,
 ) -> Result<(ProjectContext, Vec<RankedOption>), Status> {
-    let category =
-        ranking::category_for(kind).ok_or_else(|| Status::invalid_argument("kind is required"))?;
     let context = svc
         .knowledge
         .project_context(project_id)
         .await
         .map_err(|e| e.into_status())?;
+    let options = rank_with(svc, &context, kind, constraints, weights, cost_ceiling).await?;
+    Ok((context, options))
+}
+
+/// `rank_for` with a context the caller already holds.
+pub(super) async fn rank_with(
+    svc: &IntelligenceGrpc,
+    context: &ProjectContext,
+    kind: ProposalKind,
+    constraints: &[ConstraintData],
+    weights: &Weights,
+    cost_ceiling: f64,
+) -> Result<Vec<RankedOption>, Status> {
+    let category =
+        ranking::category_for(kind).ok_or_else(|| Status::invalid_argument("kind is required"))?;
+    let project_id = context
+        .project
+        .as_ref()
+        .map(|p| p.id.as_str())
+        .unwrap_or_default();
     let patterns = svc
         .knowledge
         .list_patterns(category)
@@ -68,16 +115,30 @@ pub(super) async fn rank_for(
             Vec::new()
         }
     };
-    let options = ranking::rank(&ranking::RankingInput {
-        context: &context,
+    Ok(ranking::rank(&ranking::RankingInput {
+        context,
         patterns: &patterns,
         decisions: &ranking::applicable_decisions(&decisions, project_id),
         similar: &similar,
         constraints,
         weights,
         now: Utc::now(),
-    });
-    Ok((context, options))
+        kind,
+        cost_ceiling,
+    }))
+}
+
+/// The budget constraint of a new proposal: the request wins, then `.sdi.yml`.
+fn initial_constraints(request_budget: f64, context: &ProjectContext) -> Vec<ConstraintData> {
+    let configured = generators::input::usable_config(context)
+        .map(|c| c.budget_monthly_usd)
+        .filter(|b| *b > 0.0);
+    let budget = if request_budget > 0.0 {
+        Some(request_budget)
+    } else {
+        configured
+    };
+    budget.map(ConstraintData::budget).into_iter().collect()
 }
 
 pub(super) async fn load(svc: &IntelligenceGrpc, id: &str) -> Result<ProposalRow, Status> {
@@ -95,8 +156,39 @@ pub(super) async fn generate(
         return Err(Status::invalid_argument("kind is required"));
     }
 
-    let weights = Weights::default();
-    let (context, options) = rank_for(svc, &project_id, kind, &[], &weights).await?;
+    if request.budget_monthly_usd < 0.0 || !request.budget_monthly_usd.is_finite() {
+        return Err(Status::invalid_argument(
+            "budget_monthly_usd must be positive",
+        ));
+    }
+    let settings = svc.settings().await?;
+    let weights = settings.default_weights.0.clone();
+    // The budget can only be known once the context (with `.sdi.yml`) is
+    // loaded, so a budgeted proposal ranks twice: the first pass is cheap.
+    let (context, options) = rank_for(
+        svc,
+        &project_id,
+        kind,
+        &[],
+        &weights,
+        settings.cost_ceiling_usd,
+    )
+    .await?;
+    let constraints = initial_constraints(request.budget_monthly_usd, &context);
+    let options = if constraints.is_empty() {
+        options
+    } else {
+        rank_for(
+            svc,
+            &project_id,
+            kind,
+            &constraints,
+            &weights,
+            settings.cost_ceiling_usd,
+        )
+        .await?
+        .1
+    };
     let project_name = context
         .project
         .as_ref()
@@ -121,17 +213,28 @@ pub(super) async fn generate(
         accepted_option_id: String::new(),
         execution_id: String::new(),
         options: Json(options),
-        constraints: Json(Vec::new()),
+        constraints: Json(constraints),
         weights: Json(weights),
         revision: 1,
-        reasoner: svc.reasoner.name().to_owned(),
+        reasoner: svc.reasoner_for(&settings).name().to_owned(),
         created_at: now,
         updated_at: now,
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
-    repo::supersede_open(&svc.pool, &project_id, &row.kind, row.id)
+    let superseded = repo::supersede_open(&svc.pool, &project_id, &row.kind, row.id)
         .await
         .map_err(db_status)?;
+    emit_proposal(svc, &row, "created");
+    for id in superseded {
+        svc.events.emit(
+            "proposal",
+            &id.to_string(),
+            &project_id,
+            "updated",
+            "superseded",
+            &[("superseded_by", row.id.to_string())],
+        );
+    }
 
     let opening = MessageRow::new(
         row.id,
@@ -197,16 +300,63 @@ pub(super) async fn accept(
     let option = row.option(&option_id).cloned().ok_or_else(|| {
         Status::invalid_argument(format!("option {option_id} is not part of this proposal"))
     })?;
+    let adapter = match request.adapter.trim().to_lowercase().as_str() {
+        "" => "simulated".to_owned(),
+        a if plans::ADAPTERS.contains(&a) => a.to_owned(),
+        other => {
+            return Err(Status::invalid_argument(format!(
+                "adapter {other:?} is not one of simulated, docker, github"
+            )));
+        }
+    };
 
     let execution_id = if request.create_execution {
+        let (title, steps, artifacts) = match adapter.as_str() {
+            "docker" => {
+                let context = svc
+                    .knowledge
+                    .project_context(&row.project_id)
+                    .await
+                    .map_err(|e| e.into_status())?;
+                let input =
+                    generators::input::build(&context, &model::params_of(&row.constraints.0), "");
+                // The generated files ride along so the checkout is overlaid
+                // with them: a containerize option verifies its own Dockerfile.
+                (
+                    format!("Verify {} locally", option.title),
+                    plans::verification_plan(&context, &input),
+                    option.artifacts.clone(),
+                )
+            }
+            "github" => {
+                if option.artifacts.is_empty() {
+                    return Err(Status::failed_precondition(
+                        "this option generated no files to open a pull request with",
+                    ));
+                }
+                let context = svc
+                    .knowledge
+                    .project_context(&row.project_id)
+                    .await
+                    .map_err(|e| e.into_status())?;
+                (
+                    format!("Pull request: {}", option.title),
+                    plans::pull_request_plan(&context, &option, &row.id.to_string()),
+                    option.artifacts.clone(),
+                )
+            }
+            _ => (option.title.clone(), option.plan.clone(), Vec::new()),
+        };
         let execution = svc
             .execution
             .create_execution(CreateExecutionRequest {
                 project_id: row.project_id.clone(),
                 proposal_id: row.id.to_string(),
                 pattern_id: option.pattern_id.clone(),
-                title: option.title.clone(),
-                steps: option.plan.iter().map(convert::plan_step).collect(),
+                title,
+                steps: steps.iter().map(convert::plan_step).collect(),
+                adapter: adapter.clone(),
+                artifacts: plans::artifact_map(&artifacts),
             })
             .await
             .map_err(|e| e.into_status())?;
@@ -226,12 +376,18 @@ pub(super) async fn accept(
             "Accepted option {} of proposal {} ({}).",
             option.title, row.title, option.summary
         ),
-        reasons: option
-            .evidence
-            .iter()
-            .map(|e| format!("{}: {}", e.label, e.detail))
-            .chain(option.pros.iter().cloned())
-            .collect(),
+        // Two decisions with the same title and tag yield the same evidence
+        // sentence twice; a reason list reads once.
+        reasons: {
+            let mut seen = std::collections::BTreeSet::new();
+            option
+                .evidence
+                .iter()
+                .map(|e| format!("{}: {}", e.label, e.detail))
+                .chain(option.pros.iter().cloned())
+                .filter(|reason| seen.insert(reason.clone()))
+                .collect()
+        },
         approved_by: String::new(),
         proposal_id: row.id.to_string(),
         tags: option
@@ -248,6 +404,7 @@ pub(super) async fn accept(
         .await
         .map_err(db_status)?;
     index_decision(svc, &decision).await;
+    emit_decision(svc, &decision, "created");
 
     repo::accept(&svc.pool, row.id, &option_id, &execution_id)
         .await
@@ -262,7 +419,7 @@ pub(super) async fn accept(
             )
         } else {
             format!(
-                "Accepted {}; decision {} recorded; execution {execution_id} created.",
+                "Accepted {}; decision {} recorded; execution {execution_id} created ({adapter} adapter).",
                 option.title, decision.id
             )
         },
@@ -273,9 +430,9 @@ pub(super) async fn accept(
         .await
         .map_err(db_status)?;
 
-    load(svc, &request.id)
-        .await
-        .map(|row| convert::proposal(&row))
+    let row = load(svc, &request.id).await?;
+    emit_proposal(svc, &row, "updated");
+    Ok(convert::proposal(&row))
 }
 
 pub(super) async fn reject(
@@ -307,9 +464,9 @@ pub(super) async fn reject(
     crate::db::messages::insert(&svc.pool, &note)
         .await
         .map_err(db_status)?;
-    load(svc, &request.id)
-        .await
-        .map(|row| convert::proposal(&row))
+    let row = load(svc, &request.id).await?;
+    emit_proposal(svc, &row, "updated");
+    Ok(convert::proposal(&row))
 }
 
 /// Decisions become semantic memory; losing the index entry is not fatal.

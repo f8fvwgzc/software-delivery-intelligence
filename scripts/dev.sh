@@ -16,6 +16,12 @@ if [[ -f .env ]]; then
   set -a; source .env; set +a
 fi
 
+# Workdirs of the docker adapter. Absolute, because the adapter hands paths
+# under it to the Docker daemon, which resolves them on the host, not
+# relative to this shell. DOCKER_HOST is left alone: the CLI default applies.
+export SDI_RUN_DIR="${SDI_RUN_DIR:-$PWD/.run}"
+mkdir -p "$SDI_RUN_DIR"
+
 cargo build --workspace
 
 pids=()

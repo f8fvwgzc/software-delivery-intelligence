@@ -8,6 +8,7 @@ pub mod config;
 pub mod convert;
 pub mod db;
 pub mod domain;
+pub mod events;
 pub mod github;
 pub mod grpc;
 pub mod scanner;

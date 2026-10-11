@@ -23,6 +23,9 @@ export const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   'firewall.modify': ['cloud:write'],
   'secrets.rotate': ['secrets:write'],
   'db.destroy_production': ['database:write'],
+  'repo.checkout': ['repository:read'],
+  'env.destroy_temporary': ['environment:write'],
+  'repo.open_pull_request': ['repository:write'],
 }
 
 /** What the editor holds per step; the rest of `PlanStep` is derived on submit. */

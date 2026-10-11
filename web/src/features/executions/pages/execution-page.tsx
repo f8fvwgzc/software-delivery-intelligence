@@ -9,6 +9,7 @@ import { executionQueries } from '../api/queries'
 import { EventLog, EventLogSkeleton } from '../components/event-log'
 import { ExecutionHeader } from '../components/execution-header'
 import { ExecutionRail, ExecutionRailSkeleton } from '../components/execution-rail'
+import { OutputsPanel } from '../components/outputs-panel'
 
 export default function ExecutionPage() {
   const { executionId = '' } = useParams()
@@ -28,7 +29,8 @@ function ExecutionView({ executionId }: { executionId: string }) {
       <ExecutionHeader execution={execution} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]">
         <ExecutionRail execution={execution} />
-        <aside className="min-w-0 lg:sticky lg:top-16 lg:self-start">
+        <aside className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-16 lg:self-start">
+          <OutputsPanel outputs={execution.outputs} />
           <QueryBoundary fallback={<EventLogSkeleton />}>
             <EventLog executionId={execution.id} status={execution.status} steps={execution.steps} />
           </QueryBoundary>

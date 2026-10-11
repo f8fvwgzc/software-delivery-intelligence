@@ -3,7 +3,7 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { components } from '@/lib/api/schema'
 
 export type ExecutionEvent = components['schemas']['ExecutionEvent']
-export type StreamState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended'
+export type StreamState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'unavailable' | 'ended'
 
 interface UseEventStreamOptions {
   executionId: string
@@ -18,6 +18,8 @@ interface UseEventStreamOptions {
 
 const MIN_BACKOFF = 1_000
 const MAX_BACKOFF = 15_000
+/** Refused connections (readyState CLOSED, which browsers do not retry) before giving up. */
+const MAX_REFUSALS = 5
 
 function streamUrl(executionId: string, afterSeq: number) {
   return `/api/v1/executions/${encodeURIComponent(executionId)}/events/stream?afterSeq=${afterSeq}`
@@ -25,10 +27,11 @@ function streamUrl(executionId: string, afterSeq: number) {
 
 /**
  * Subscribes to the gateway's SSE stream, resumes from the last seen `seq`
- * after a dropped connection (exponential backoff) and stops on `end`.
+ * after a dropped connection (exponential backoff) and stops on `end`. The
+ * events themselves go to `onEvent` only: the caller owns their store (the
+ * query cache), so there is one list, not two to merge on every line.
  */
 export function useEventStream({ executionId, afterSeq, enabled, onEvent, onEnd }: UseEventStreamOptions) {
-  const [events, setEvents] = useState<ExecutionEvent[]>([])
   const [state, setState] = useState<StreamState>(enabled ? 'connecting' : 'ended')
 
   // The cursor is only touched inside the effect; callbacks are effect events
@@ -53,14 +56,15 @@ export function useEventStream({ executionId, afterSeq, enabled, onEvent, onEnd 
 
     const connect = () => {
       setState(attempt === 0 ? 'connecting' : 'reconnecting')
-      source = new EventSource(streamUrl(executionId, cursorRef.current))
+      const next = new EventSource(streamUrl(executionId, cursorRef.current))
+      source = next
 
-      source.onopen = () => {
+      next.onopen = () => {
         attempt = 0
         setState('live')
       }
 
-      source.onmessage = (message: MessageEvent<string>) => {
+      next.onmessage = (message: MessageEvent<string>) => {
         let event: ExecutionEvent
         try {
           event = JSON.parse(message.data) as ExecutionEvent
@@ -69,11 +73,10 @@ export function useEventStream({ executionId, afterSeq, enabled, onEvent, onEnd 
         }
         if (event.seq <= cursorRef.current) return
         cursorRef.current = event.seq
-        setEvents((previous) => [...previous, event])
         emitEvent(event)
       }
 
-      source.addEventListener('end', () => {
+      next.addEventListener('end', () => {
         stopped = true
         close()
         setState('ended')
@@ -81,10 +84,18 @@ export function useEventStream({ executionId, afterSeq, enabled, onEvent, onEnd 
       })
 
       // Fires for both a dropped connection and the gateway's named `error` event.
-      source.onerror = () => {
-        if (stopped) return
+      next.onerror = () => {
+        if (stopped || next !== source) return
+        const refused = next.readyState === EventSource.CLOSED
         close()
         attempt += 1
+        if (refused && attempt >= MAX_REFUSALS) {
+          // The gateway will not serve this stream; the detail query's
+          // fallback poll keeps the page current instead.
+          stopped = true
+          setState('unavailable')
+          return
+        }
         setState('reconnecting')
         const delay = Math.min(MIN_BACKOFF * 2 ** (attempt - 1), MAX_BACKOFF)
         timer = setTimeout(connect, delay)
@@ -100,14 +111,18 @@ export function useEventStream({ executionId, afterSeq, enabled, onEvent, onEnd 
     }
   }, [executionId, enabled, afterSeq])
 
-  return { events, state: enabled ? state : 'ended' }
+  return { state: enabled ? state : 'ended' }
 }
 
-/** Initial page plus the live tail, deduplicated and in sequence order. */
-export function mergeEvents(initial: ExecutionEvent[], streamed: ExecutionEvent[]) {
-  if (streamed.length === 0) return initial
-  const bySeq = new Map<number, ExecutionEvent>()
-  for (const event of initial) bySeq.set(event.seq, event)
-  for (const event of streamed) bySeq.set(event.seq, event)
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+/**
+ * Appends a streamed event to the cached page. Both sources are in `seq`
+ * order, so the common case is a push; an out-of-order arrival (a resumed
+ * stream overlapping the page) is placed, and a duplicate is dropped.
+ */
+export function appendEvent(cached: ExecutionEvent[], event: ExecutionEvent): ExecutionEvent[] {
+  const last = cached[cached.length - 1]
+  if (!last || last.seq < event.seq) return [...cached, event]
+  if (cached.some((known) => known.seq === event.seq)) return cached
+  const index = cached.findIndex((known) => known.seq > event.seq)
+  return [...cached.slice(0, index), event, ...cached.slice(index)]
 }

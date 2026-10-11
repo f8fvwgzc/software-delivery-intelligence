@@ -1,6 +1,7 @@
 import { ExternalLinkIcon } from 'lucide-react'
 
 import type { Project } from '@/features/projects/api/queries'
+import { testIds } from '@/test-ids'
 
 import type { Fact } from '../../api/queries'
 import { sourceFileUrl } from '../../lib/github'
@@ -16,7 +17,9 @@ export function FactRow({ fact, project }: FactRowProps) {
 
   return (
     <>
-      <dt className="border-b border-border/60 py-2 pr-2 text-sm">{fact.label}</dt>
+      <dt data-testid={testIds.understanding.detectedFact} className="border-b border-border/60 py-2 pr-2 text-sm">
+        {fact.label}
+      </dt>
       <dd className="flex min-w-0 flex-col gap-0.5 border-b border-border/60 py-2">
         <span className="truncate text-sm" title={fact.value}>
           {fact.value || <span className="text-muted-foreground">present</span>}

@@ -15,12 +15,15 @@ use sdi_proto::execution::v1::{
     EventType, ExecutionEvent, ExecutionStatus, PolicyDecision, StepStatus,
 };
 use sqlx::PgPool;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot},
+    time::Instant,
+};
 use tonic::Status;
 use uuid::Uuid;
 
 use crate::{
-    adapters::{Fault, Registry, RunContext, StepInput, StepOutcome},
+    adapters::{self, Fault, LogSink, Registry, RunContext, StepInput, StepOutcome},
     convert,
     db::{
         self, Tx,
@@ -34,12 +37,19 @@ use crate::{
         policy::{self, Gate},
         state,
     },
+    events::PlatformEvents,
     knowledge::PatternOutcomes,
 };
 
 pub const GRANT_TTL_MINUTES: i64 = 30;
 const BROADCAST_CAPACITY: usize = 512;
 const COMMAND_CAPACITY: usize = 16;
+/// Adapter log lines are coalesced into one LOG event per window, which
+/// caps the event rate at 20/s however chatty a build is.
+const LOG_WINDOW: Duration = Duration::from_millis(50);
+/// Lines buffered between the adapter and the runner; a faster producer
+/// loses lines here but keeps them in the failure's raw output.
+const LOG_CHANNEL: usize = 4096;
 
 pub type Reply = oneshot::Sender<Result<(), Status>>;
 
@@ -113,6 +123,8 @@ pub struct Runtime {
     pub adapters: Registry,
     pub outcomes: Arc<dyn PatternOutcomes>,
     pub bus: EventBus,
+    /// Execution/approval change notifications for `WatchEvents`.
+    pub platform: PlatformEvents,
     /// How long the simulated verification phase takes.
     pub verify_delay: Duration,
     runners: Mutex<HashMap<Uuid, mpsc::Sender<Command>>>,
@@ -130,6 +142,7 @@ impl Runtime {
             adapters,
             outcomes,
             bus: EventBus::default(),
+            platform: PlatformEvents::default(),
             verify_delay,
             runners: Mutex::new(HashMap::new()),
         })
@@ -172,7 +185,12 @@ impl Runtime {
 
     /// Resumes every execution that was mid-flight when the service last
     /// stopped. EXECUTING/VERIFYING ones become PAUSED with an UNKNOWN
-    /// diagnosis because the step's real outcome is lost.
+    /// diagnosis because the step's real outcome is lost; whatever a real
+    /// adapter left running for them (containers named `sdi-<id>`) is
+    /// stopped in the background. Their workdir stays: the diagnosis offers
+    /// a retry of the interrupted step, and `container.build` needs the
+    /// checkout that `repo.checkout` (already SUCCEEDED, never re-run)
+    /// produced. The directory goes when the run ends or is cancelled.
     pub async fn recover(self: &Arc<Self>) -> sqlx::Result<usize> {
         let statuses = [
             ExecutionStatus::WaitingForApproval,
@@ -187,6 +205,19 @@ impl Runtime {
         let rows = db::executions::with_status(&self.pool, &statuses).await?;
         for row in &rows {
             tracing::info!(execution = %row.id, status = %row.status, "resuming execution");
+            let mid_step = matches!(
+                convert::status_from_db(&row.status),
+                ExecutionStatus::Executing | ExecutionStatus::Verifying
+            );
+            if mid_step && row.adapter != adapters::SIMULATED {
+                let adapters = self.adapters.clone();
+                let id = row.id;
+                tokio::spawn(async move {
+                    for adapter in adapters.real() {
+                        adapter.stop(id).await;
+                    }
+                });
+            }
             self.ensure_runner(row.id);
         }
         Ok(rows.len())
@@ -211,6 +242,8 @@ struct Batch {
     tx: Tx,
     exec: ExecutionRow,
     events: Vec<EventRow>,
+    /// Status when the batch opened, to tell the platform feed what changed.
+    initial_status: String,
 }
 
 impl Batch {
@@ -261,10 +294,47 @@ impl Batch {
         Ok(())
     }
 
-    async fn commit(self, bus: &EventBus) -> Result<(), Status> {
+    /// Commits, then fans the events out: the per-execution log to
+    /// `WatchExecution` watchers and, when something other than adapter
+    /// output happened, an `execution updated` (plus `approval created` for
+    /// each approval requested) to the platform feed.
+    async fn commit(self, rt: &Runtime) -> Result<(), Status> {
         self.tx.commit().await.map_err(db_status)?;
+        let log_type = convert::event_type_to_db(EventType::Log);
+        let requested_type = convert::event_type_to_db(EventType::ApprovalRequested);
+        let notable = self.exec.status != self.initial_status
+            || self.events.iter().any(|e| e.r#type != log_type);
+        let mut approvals = Vec::new();
+        let mut step_key = String::new();
         for row in self.events {
-            bus.publish(convert::event_to_proto(row));
+            if row.r#type == requested_type
+                && let Some(id) = row.data.0.get("approval_id")
+            {
+                approvals.push(id.clone());
+            }
+            if !row.step_key.is_empty() {
+                step_key = row.step_key.clone();
+            }
+            rt.bus.publish(convert::event_to_proto(row));
+        }
+        let id = self.exec.id.to_string();
+        if notable {
+            let mut info =
+                BTreeMap::from([("revision".to_owned(), self.exec.revision.to_string())]);
+            if !step_key.is_empty() {
+                info.insert("step_key".to_owned(), step_key);
+            }
+            rt.platform.execution(
+                &id,
+                &self.exec.project_id,
+                "updated",
+                &self.exec.status.to_ascii_lowercase(),
+                info,
+            );
+        }
+        for approval in approvals {
+            rt.platform
+                .approval(&approval, &id, &self.exec.project_id, "created", "pending");
         }
         Ok(())
     }
@@ -286,6 +356,13 @@ fn nodes(steps: &[StepRow]) -> Vec<dag::Node<'_>> {
 
 fn step_is(step: &StepRow, status: StepStatus) -> bool {
     convert::step_status_from_db(&step.status) == status
+}
+
+/// How a running step's select loop ended.
+enum StepLoop {
+    Done(StepOutcome),
+    Cancel { reason: String, reply: Reply },
+    Stop,
 }
 
 struct Runner {
@@ -343,6 +420,7 @@ impl Runner {
             .map_err(db_status)?;
         Ok(Batch {
             tx,
+            initial_status: exec.status.clone(),
             exec,
             events: Vec::new(),
         })
@@ -352,6 +430,22 @@ impl Runner {
         db::steps::list_for(&self.rt.pool, self.id)
             .await
             .map_err(db_status)
+    }
+
+    /// Closes the loop with knowledge: the pattern's success rate learns
+    /// from every finished run. A missing peer is logged, never fatal.
+    async fn record_outcome(&self, exec: &ExecutionRow, succeeded: bool) {
+        if exec.pattern_id.is_empty() {
+            return;
+        }
+        if let Err(error) = self
+            .rt
+            .outcomes
+            .record(&exec.pattern_id, &exec.project_id, succeeded)
+            .await
+        {
+            tracing::warn!(execution = %self.id, pattern = %exec.pattern_id, %error, "could not record pattern outcome");
+        }
     }
 
     // --- waiting states -----------------------------------------------------
@@ -396,7 +490,7 @@ impl Runner {
                     BTreeMap::new(),
                 )
                 .await?;
-            batch.commit(&self.rt.bus).await?;
+            batch.commit(&self.rt).await?;
             return Ok(Flow::Continue);
         };
         let Some(approval_id) = step.approval_id else {
@@ -512,7 +606,7 @@ impl Runner {
                     .await?;
             }
         }
-        batch.commit(&self.rt.bus).await
+        batch.commit(&self.rt).await
     }
 
     async fn wait_for_resolution(&mut self, exec: &ExecutionRow) -> Result<Flow, Status> {
@@ -569,10 +663,18 @@ impl Runner {
         batch
             .event(EventType::StateChanged, "", message, info)
             .await?;
-        batch.commit(&self.rt.bus).await
+        batch.commit(&self.rt).await
     }
 
     async fn cancel(&self, reason: &str) -> Result<(), Status> {
+        // A cancelled docker run must leave neither its container nor its
+        // workdir behind, whichever state it was cancelled from: a run paused
+        // in diagnosis still holds the checkout on disk.
+        let adapter_name = db::executions::get(&self.rt.pool, self.id)
+            .await
+            .map_err(db_status)?
+            .adapter;
+        self.cleanup_real(&adapter_name).await;
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Cancelled).await?;
         db::steps::cancel_open(&mut batch.tx, self.id)
@@ -594,7 +696,7 @@ impl Runner {
                 data([("reason", reason.trim().to_owned())]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await
+        batch.commit(&self.rt).await
     }
 
     async fn resolve(
@@ -644,6 +746,37 @@ impl Runner {
                 batch.exec.status
             )));
         }
+
+        if resolution == Resolution::GiveUp {
+            // Not a replan: the run ends here and the pattern learns from it.
+            self.cleanup_real(&batch.exec.adapter).await;
+            batch.transition(ExecutionStatus::Failed).await?;
+            db::steps::abandon_open(&mut batch.tx, self.id)
+                .await
+                .map_err(db_status)?;
+            db::approvals::expire_pending(&mut batch.tx, self.id)
+                .await
+                .map_err(db_status)?;
+            batch
+                .event(
+                    EventType::StateChanged,
+                    &step.key,
+                    format!(
+                        "gave up on '{}' after {} attempts ({}); execution failed",
+                        step.title, step.attempts, failure.code
+                    ),
+                    data([
+                        ("reason", "give_up".to_owned()),
+                        ("code", failure.code.clone()),
+                        ("attempts", step.attempts.to_string()),
+                    ]),
+                )
+                .await?;
+            batch.commit(&self.rt).await?;
+            self.record_outcome(exec, false).await;
+            return Ok(());
+        }
+
         let chosen = if option_id.trim().is_empty() {
             format!("instruction \"{}\"", instruction.trim())
         } else {
@@ -680,8 +813,9 @@ impl Runner {
                         data([("reason", "cancel".to_owned())]),
                     )
                     .await?;
-                return batch.commit(&self.rt.bus).await;
+                return batch.commit(&self.rt).await;
             }
+            Resolution::GiveUp => unreachable!("handled before replanning"),
             Resolution::Skip => {
                 batch.step_status(&step, StepStatus::Skipped).await?;
                 format!("step '{}' skipped", step.title)
@@ -746,6 +880,7 @@ impl Runner {
         let revision = db::executions::bump_revision(&mut batch.tx, self.id)
             .await
             .map_err(db_status)?;
+        batch.exec.revision = revision;
         let expired = db::approvals::expire_pending(&mut batch.tx, self.id)
             .await
             .map_err(db_status)?;
@@ -780,7 +915,7 @@ impl Runner {
                 ]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await
+        batch.commit(&self.rt).await
     }
 
     // --- the step pipeline --------------------------------------------------
@@ -807,7 +942,7 @@ impl Runner {
                     batch
                         .transition(ExecutionStatus::WaitingForApproval)
                         .await?;
-                    batch.commit(&self.rt.bus).await?;
+                    batch.commit(&self.rt).await?;
                     Ok(Flow::Continue)
                 }
                 _ => {
@@ -897,7 +1032,7 @@ impl Runner {
                 missing,
             )
             .await?;
-            batch.commit(&self.rt.bus).await?;
+            batch.commit(&self.rt).await?;
             return Ok(Flow::Continue);
         }
         batch
@@ -951,7 +1086,7 @@ impl Runner {
                     vec![],
                 )
                 .await?;
-                batch.commit(&self.rt.bus).await?;
+                batch.commit(&self.rt).await?;
                 Ok(Flow::Continue)
             }
             Gate::AskHuman => {
@@ -1006,14 +1141,36 @@ impl Runner {
                         ]),
                     )
                     .await?;
-                batch.commit(&self.rt.bus).await?;
+                batch.commit(&self.rt).await?;
                 Ok(Flow::Continue)
             }
             Gate::Run => {
-                batch.commit(&self.rt.bus).await?;
+                batch.commit(&self.rt).await?;
                 self.run_step(exec, steps, &ready_step).await
             }
         }
+    }
+
+    /// Writes one LOG event holding the buffered adapter lines.
+    async fn log(&self, step_key: &str, lines: &mut Vec<String>) -> Result<(), Status> {
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let count = lines.len();
+        let message = std::mem::take(lines).join("\n");
+        let mut batch = self.begin().await?;
+        batch
+            .event(
+                EventType::Log,
+                step_key,
+                message,
+                data([
+                    ("lines", count.to_string()),
+                    ("source", "adapter".to_owned()),
+                ]),
+            )
+            .await?;
+        batch.commit(&self.rt).await
     }
 
     async fn run_step(
@@ -1022,7 +1179,10 @@ impl Runner {
         steps: &[StepRow],
         step: &StepRow,
     ) -> Result<Flow, Status> {
-        let adapter = self.rt.adapters.get(&exec.adapter)?;
+        let adapter = self
+            .rt
+            .adapters
+            .for_step(&exec.adapter, &step.action_type)?;
 
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Executing).await?;
@@ -1049,7 +1209,7 @@ impl Runner {
                 ]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await?;
+        batch.commit(&self.rt).await?;
 
         let input = StepInput {
             key: step.key.clone(),
@@ -1059,25 +1219,67 @@ impl Runner {
             params: step.params.0.clone(),
             attempt: attempt.max(0) as u32,
         };
+        let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_CHANNEL);
         let ctx = RunContext {
+            execution_id: self.id,
+            execution_number: exec.number,
+            proposal_id: exec.proposal_id.clone(),
             fault: exec.fault.as_ref().map(|json| json.0.clone()),
+            outputs: exec.outputs.0.clone(),
+            artifacts: exec.artifacts.0.clone(),
+            logs: LogSink::new(log_tx),
         };
         let fault_targets_step = ctx.fault.as_ref().is_some_and(|f| f.step_key == step.key);
 
-        let run = adapter.run(&input, &ctx);
-        tokio::pin!(run);
-        let outcome = loop {
-            tokio::select! {
-                outcome = &mut run => break outcome,
-                command = self.rx.recv() => match command {
-                    Some(Command::Cancel { reason, reply }) => {
-                        let _ = reply.send(self.cancel(&reason).await);
-                        return Ok(Flow::Continue);
+        // The adapter future lives in this block so that leaving it (cancel)
+        // drops it, which kills whatever child process it was waiting on.
+        let mut pending: Vec<String> = Vec::new();
+        let mut next_flush: Option<Instant> = None;
+        let ended = {
+            let run = adapter.run(&input, &ctx);
+            tokio::pin!(run);
+            loop {
+                let flush = async {
+                    match next_flush {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
                     }
-                    Some(other) => other.reject("a step is running"),
-                    None => return Ok(Flow::Stop),
-                },
+                };
+                tokio::select! {
+                    outcome = &mut run => break StepLoop::Done(outcome),
+                    line = log_rx.recv() => {
+                        if let Some(line) = line {
+                            if pending.is_empty() {
+                                next_flush = Some(Instant::now() + LOG_WINDOW);
+                            }
+                            pending.push(line);
+                        }
+                    }
+                    () = flush => {
+                        next_flush = None;
+                        self.log(&step.key, &mut pending).await?;
+                    }
+                    command = self.rx.recv() => match command {
+                        Some(Command::Cancel { reason, reply }) => break StepLoop::Cancel { reason, reply },
+                        Some(other) => other.reject("a step is running"),
+                        None => break StepLoop::Stop,
+                    },
+                }
             }
+        };
+        while let Ok(line) = log_rx.try_recv() {
+            pending.push(line);
+        }
+        self.log(&step.key, &mut pending).await?;
+
+        let outcome = match ended {
+            StepLoop::Done(outcome) => outcome,
+            StepLoop::Cancel { reason, reply } => {
+                adapter.cleanup(self.id).await;
+                let _ = reply.send(self.cancel(&reason).await);
+                return Ok(Flow::Continue);
+            }
+            StepLoop::Stop => return Ok(Flow::Stop),
         };
 
         let running = StepRow {
@@ -1086,13 +1288,17 @@ impl Runner {
             ..step.clone()
         };
         match outcome {
-            StepOutcome::Succeeded { output } => {
+            StepOutcome::Succeeded { output, outputs } => {
                 if fault_targets_step {
                     self.clear_fault().await?;
                 }
-                self.verify(&running, output).await
+                self.verify(&running, output, outputs).await
             }
-            StepOutcome::Failed { code, raw_output } => {
+            StepOutcome::Failed {
+                code,
+                raw_output,
+                missing_permissions,
+            } => {
                 let mut batch = self.begin().await?;
                 if fault_targets_step {
                     // The rehearsed fault fired once; the retry must pass.
@@ -1108,10 +1314,10 @@ impl Runner {
                     &code,
                     &message,
                     &raw_output,
-                    vec![],
+                    missing_permissions,
                 )
                 .await?;
-                batch.commit(&self.rt.bus).await?;
+                batch.commit(&self.rt).await?;
                 Ok(Flow::Continue)
             }
         }
@@ -1125,7 +1331,12 @@ impl Runner {
         tx.commit().await.map_err(db_status)
     }
 
-    async fn verify(&mut self, step: &StepRow, output: String) -> Result<Flow, Status> {
+    async fn verify(
+        &mut self,
+        step: &StepRow,
+        output: String,
+        outputs: BTreeMap<String, String>,
+    ) -> Result<Flow, Status> {
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Verifying).await?;
         batch.step_status(step, StepStatus::Verifying).await?;
@@ -1142,7 +1353,7 @@ impl Runner {
                 data([("verification", step.verification.clone())]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await?;
+        batch.commit(&self.rt).await?;
 
         tokio::time::sleep(self.rt.verify_delay).await;
 
@@ -1165,13 +1376,22 @@ impl Runner {
         db::executions::set_checkpoint(&mut batch.tx, self.id, &step.key)
             .await
             .map_err(db_status)?;
+        db::executions::merge_outputs(&mut batch.tx, self.id, &outputs)
+            .await
+            .map_err(db_status)?;
         batch.transition(ExecutionStatus::Authorized).await?;
+        let mut info = data([("attempt", step.attempts.to_string())]);
+        info.extend(
+            outputs
+                .iter()
+                .map(|(k, v)| (format!("output.{k}"), v.clone())),
+        );
         batch
             .event(
                 EventType::StepSucceeded,
                 &step.key,
                 format!("'{}' succeeded and verified", step.title),
-                data([("attempt", step.attempts.to_string())]),
+                info,
             )
             .await?;
         batch
@@ -1182,7 +1402,7 @@ impl Runner {
                 data([("last_checkpoint", step.key.clone())]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await?;
+        batch.commit(&self.rt).await?;
         Ok(Flow::Continue)
     }
 
@@ -1313,6 +1533,10 @@ impl Runner {
             action_type: step.map(|s| s.action_type.as_str()).unwrap_or(""),
             params: step.map(|s| &s.params.0).unwrap_or(&empty),
             message: &record.message,
+            attempts: step.map_or(0, |s| s.attempts.max(0) as u32),
+            // The pre-flight grant check writes no raw output; a tool does.
+            refused_by_tool: record.code == diagnosis::PERMISSION_DENIED
+                && !record.raw_output.is_empty(),
         };
         let (text, options) = diagnosis::diagnose(
             &record.code,
@@ -1355,7 +1579,7 @@ impl Runner {
                 ]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await?;
+        batch.commit(&self.rt).await?;
         Ok(Flow::Continue)
     }
 
@@ -1405,7 +1629,7 @@ impl Runner {
                     .await?;
             }
         }
-        batch.commit(&self.rt.bus).await?;
+        batch.commit(&self.rt).await?;
         Ok(Flow::Continue)
     }
 
@@ -1423,17 +1647,19 @@ impl Runner {
                 ]),
             )
             .await?;
-        batch.commit(&self.rt.bus).await?;
-
-        if !exec.pattern_id.is_empty()
-            && let Err(error) = self
-                .rt
-                .outcomes
-                .record(&exec.pattern_id, &exec.project_id, true)
-                .await
-        {
-            tracing::warn!(execution = %self.id, pattern = %exec.pattern_id, %error, "could not record pattern outcome");
-        }
+        batch.commit(&self.rt).await?;
+        self.record_outcome(exec, true).await;
+        // A finished real run leaves nothing on disk: the github plan has no
+        // env.destroy_temporary step, yet its checkout sits under SDI_RUN_DIR.
+        self.cleanup_real(&exec.adapter).await;
         Ok(Flow::Continue)
+    }
+
+    async fn cleanup_real(&self, adapter: &str) {
+        if adapter != adapters::SIMULATED {
+            for adapter in self.rt.adapters.real() {
+                adapter.cleanup(self.id).await;
+            }
+        }
     }
 }

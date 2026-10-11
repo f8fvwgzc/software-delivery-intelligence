@@ -7,7 +7,11 @@ use sdi_proto::intelligence::v1::{
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{IntelligenceGrpc, parse_id, proposals::index_decision, require};
+use super::{
+    IntelligenceGrpc, parse_id,
+    proposals::{emit_decision, index_decision},
+    require,
+};
 use crate::{
     convert,
     db::decisions::{self as repo, DecisionRow},
@@ -72,6 +76,7 @@ pub(super) async fn create(
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
     index_decision(svc, &row).await;
+    emit_decision(svc, &row, "created");
     Ok(convert::decision(&row))
 }
 
@@ -100,5 +105,6 @@ pub(super) async fn supersede(
         .await
         .map_err(db_status)?;
     let row = repo::get(&svc.pool, id).await.map_err(db_status)?;
+    emit_decision(svc, &row, "updated");
     Ok(convert::decision(&row))
 }

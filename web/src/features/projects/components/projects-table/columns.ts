@@ -6,6 +6,7 @@ export const COLUMN_CLASS = {
   status: 'h-11 px-3',
   mode: 'h-11 px-3',
   stack: 'h-11 px-3',
+  maturity: 'h-11 px-3',
   questions: 'h-11 px-3 text-right tabular-nums',
   scanned: 'h-11 px-3',
   actions: 'h-11 px-3 text-right',

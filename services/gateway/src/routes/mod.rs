@@ -15,13 +15,15 @@ pub mod knowledge;
 pub mod policies;
 pub mod projects;
 pub mod proposals;
+pub mod settings;
 pub mod system;
 
-/// Every request/response route under `/api/v1` (the SSE route lives in
+/// Every request/response route under `/api/v1` (the SSE routes live in
 /// `crate::sse`, outside the request timeout).
 pub fn rest() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .merge(system::router())
+        .merge(settings::router())
         .merge(github::router())
         .merge(projects::router())
         .merge(knowledge::router())

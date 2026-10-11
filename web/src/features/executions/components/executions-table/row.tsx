@@ -2,7 +2,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { RelativeTime, StatusBadge } from '@/components/shared/data'
+import { RelativeTime } from '@/components/shared/data/relative-time'
+import { StatusBadge } from '@/components/shared/data/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { TableCell, TableRow } from '@/components/ui/table'
 import type { components } from '@/lib/api/schema'
@@ -30,23 +31,17 @@ export function ExecutionRow({ execution, showProject }: ExecutionRowProps) {
   }
 
   return (
-    <TableRow
-      tabIndex={0}
-      className="cursor-pointer outline-none focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
-      onClick={() => navigate(href)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') navigate(href)
-      }}
-      onMouseEnter={prefetch}
-      onFocus={prefetch}
-    >
+    // The row click is a pointer convenience only; the title link is the
+    // real navigation and the keyboard target, so the row itself stays out
+    // of the tab order and carries no role it cannot honour.
+    <TableRow className="cursor-pointer" onClick={() => navigate(href)} onMouseEnter={prefetch}>
       <TableCell className="w-16 font-mono text-xs tabular-nums text-muted-foreground">#{execution.number}</TableCell>
       <TableCell className="max-w-72">
         <Link
           to={href}
-          className="block truncate font-medium outline-none hover:underline focus-visible:underline"
+          className="block truncate rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
           onClick={(event) => event.stopPropagation()}
-          tabIndex={-1}
+          onFocus={prefetch}
         >
           {execution.title}
         </Link>
@@ -55,11 +50,10 @@ export function ExecutionRow({ execution, showProject }: ExecutionRowProps) {
         <TableCell className="max-w-48">
           <Link
             to={routes.project(execution.projectId)}
-            className="block truncate text-muted-foreground hover:text-foreground hover:underline"
+            className="block truncate rounded-sm text-muted-foreground outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
             onClick={(event) => event.stopPropagation()}
-            tabIndex={-1}
           >
-            {execution.projectName}
+            {execution.projectName || 'Project'}
           </Link>
         </TableCell>
       )}

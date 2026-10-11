@@ -19,6 +19,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
             <TableHead className={HEAD_CLASS}>Status</TableHead>
             <TableHead className={HEAD_CLASS}>Mode</TableHead>
             <TableHead className={HEAD_CLASS}>Stack</TableHead>
+            <TableHead className={HEAD_CLASS}>Maturity</TableHead>
             <TableHead className={`${HEAD_CLASS} text-right`}>Open questions</TableHead>
             <TableHead className={HEAD_CLASS}>Last scanned</TableHead>
             <TableHead className={HEAD_CLASS}>

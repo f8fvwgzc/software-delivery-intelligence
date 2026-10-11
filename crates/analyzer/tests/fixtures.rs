@@ -62,6 +62,35 @@ fn assert_common_invariants(a: &Analysis) {
     assert!(!a.understanding.request_flow.is_empty());
     assert_eq!(a.understanding.sections.len(), 11);
     assert!(!a.profile_text.is_empty());
+    // Maturity: eight axes in contract order, bounded, stage consistent.
+    assert_eq!(a.maturity.axes.len(), 8);
+    assert_eq!(
+        a.maturity
+            .axes
+            .iter()
+            .map(|x| x.key.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "containerization",
+            "ci",
+            "tests",
+            "iac",
+            "dependencies",
+            "docs",
+            "secrets",
+            "runtime"
+        ]
+    );
+    assert!(a.maturity.axes.iter().all(|x| x.score <= 100));
+    assert!(a.maturity.overall <= 100);
+    let expected_stage = if a.maturity.overall < 35 {
+        "legacy"
+    } else if a.maturity.overall < 70 {
+        "transitional"
+    } else {
+        "modern"
+    };
+    assert_eq!(a.maturity.stage, expected_stage);
     // Facts: unique keys, detected == 1.0, inferred < 1.0.
     let mut seen = std::collections::HashSet::new();
     for f in &a.facts {
@@ -69,6 +98,11 @@ fn assert_common_invariants(a: &Analysis) {
         match f.kind {
             FactKind::Detected => assert_eq!(f.confidence, 1.0, "{}", f.key),
             FactKind::Inferred => assert!(f.confidence < 1.0, "{}", f.key),
+            FactKind::Configured => {
+                assert_eq!(f.confidence, 1.0, "{}", f.key);
+                assert_eq!(f.category, FactCategory::Configuration, "{}", f.key);
+                assert_eq!(f.source_path, ".sdi.yml", "{}", f.key);
+            }
         }
     }
     // Graph: unique node keys, every edge endpoint exists, one repository root.
@@ -243,7 +277,39 @@ fn react_vite_repo() {
             a.capabilities
         );
     }
-    assert!(!a.capabilities.contains(&"static_site".to_string()));
+    // Phase 2: a Vite build with no server framework is static output, so the
+    // project keeps React *and* fits the static-hosting patterns.
+    assert!(a.capabilities.contains(&"static_site".to_string()));
+    assert!(a.capabilities.contains(&"framework:react".to_string()));
+    assert!(
+        !a.understanding.tldr.contains("static website"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(
+        a.understanding.architecture.contains("static files"),
+        "{}",
+        a.understanding.architecture
+    );
+    // The publish job pushes an image but deploys nowhere: that is a release.
+    let deploy = a
+        .facts
+        .iter()
+        .find(|f| f.key == "deploy:pipeline:.github/workflows/ci.yml")
+        .expect("release pipeline fact");
+    assert_eq!(deploy.value, "release");
+    assert!(
+        a.understanding
+            .tldr
+            .contains("built and released by GitHub Actions"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(k.contains(&"ci:build:.github/workflows/ci.yml"), "{k:?}");
+    // Runtime from the Dockerfile base image: Node 22 is supported in 2026.
+    assert!(k.contains(&"runtime:node:22"), "{k:?}");
+    assert!(!k.iter().any(|k| k.starts_with("runtime:eol:")), "{k:?}");
+    assert!(a.maturity.overall >= 35, "{:#?}", a.maturity);
 
     assert!(has_edge(
         &a,
@@ -781,4 +847,906 @@ fn garbage_files_do_not_panic() {
     let a = analyze(&snap);
     assert_common_invariants(&a);
     assert!(a.facts.iter().any(|f| f.key == "iac:terraform"));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: legacy and mixed codebases
+// ---------------------------------------------------------------------------
+
+fn fact<'a>(a: &'a Analysis, key: &str) -> Option<&'a FactDraft> {
+    a.facts.iter().find(|f| f.key == key)
+}
+
+fn axis<'a>(a: &'a Analysis, key: &str) -> &'a MaturityAxisDraft {
+    a.maturity.axes.iter().find(|x| x.key == key).unwrap()
+}
+
+const JAVA_EE_POM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId>
+  <artifactId>ordering</artifactId>
+  <version>2.3.1</version>
+  <packaging>war</packaging>
+  <properties>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>3.1.0</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>javax</groupId>
+      <artifactId>javaee-api</artifactId>
+      <version>7.0</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.2.5</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.12</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+"#;
+
+const WEB_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="3.1">
+  <servlet>
+    <servlet-name>orders</servlet-name>
+    <servlet-class>com.acme.OrdersServlet</servlet-class>
+  </servlet>
+  <context-param>
+    <param-name>jdbcUrl</param-name>
+    <param-value>jdbc:postgresql://db.internal/orders</param-value>
+  </context-param>
+</web-app>
+"#;
+
+const FTP_DEPLOY: &str = r#"#!/bin/sh
+# upload the WAR to the production host
+mvn package
+lftp -u deploy,SUPERSECRET ftp://prod.acme.internal -e "put target/ordering.war; bye"
+"#;
+
+#[test]
+fn java_ee_war_on_java_8() {
+    let snap = snapshot(
+        "acme/ordering",
+        &[
+            ("pom.xml", JAVA_EE_POM),
+            ("src/main/webapp/WEB-INF/web.xml", WEB_XML),
+            ("deploy.sh", FTP_DEPLOY),
+            ("README.md", "# ordering\n\nInternal order entry.\n"),
+        ],
+        &[
+            "src/main/webapp/index.jsp",
+            "src/main/webapp/orders.jsp",
+            "src/main/java/com/acme/OrdersServlet.java",
+            "src/test/java/com/acme/OrdersServletTest.java",
+        ],
+    );
+    let a = analyze_at(&snap, (2026, 10, 9));
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:java",
+        "package:maven",
+        "framework:java_ee",
+        "packaging:war",
+        "config:web_xml",
+        "pages:jsp",
+        "deploy:ftp_script",
+        "runtime:java:8",
+        "runtime:eol:java",
+        "testing:junit",
+        "tests:unit",
+        "docs:readme",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    assert!(!k.contains(&"framework:spring"));
+    let java = fact(&a, "runtime:java:8").unwrap();
+    assert_eq!(java.category, FactCategory::Runtime);
+    assert_eq!(java.label, "Java 8");
+    assert_eq!(java.value, "8");
+    assert_eq!(java.source_path, "pom.xml");
+    assert!(
+        java.evidence.contains("maven.compiler.source"),
+        "{}",
+        java.evidence
+    );
+    let eol = fact(&a, "runtime:eol:java").unwrap();
+    assert_eq!(eol.value, "2022-03-31");
+    assert_eq!(eol.kind, FactKind::Detected);
+    assert!(
+        eol.evidence
+            .starts_with("Java 8 reached end of life 2022-03-31"),
+        "{}",
+        eol.evidence
+    );
+    let ftp = fact(&a, "deploy:ftp_script").unwrap();
+    assert_eq!(ftp.source_path, "deploy.sh");
+    assert!(ftp.evidence.contains("lftp"), "{}", ftp.evidence);
+    assert!(!ftp.evidence.contains("SUPERSECRET"));
+    assert!(a.capabilities.contains(&"framework:java_ee".to_string()));
+    assert!(a.capabilities.contains(&"lang:java".to_string()));
+    assert!(has_edge(
+        &a,
+        "repository:acme/ordering",
+        "CONTAINS",
+        "service:ordering"
+    ));
+    assert!(has_edge(
+        &a,
+        "service:ordering",
+        "DEPENDS_ON",
+        "datastore:postgres"
+    ));
+
+    // Maturity: no Dockerfile, no CI, Java 8 past end of life → legacy.
+    assert!(a.maturity.overall < 35, "{:#?}", a.maturity);
+    assert_eq!(a.maturity.stage, "legacy");
+    assert_eq!(axis(&a, "runtime").score, 0);
+    assert!(
+        axis(&a, "runtime").findings[0].starts_with("Java 8 reached end of life 2022-03-31"),
+        "{:?}",
+        axis(&a, "runtime").findings
+    );
+    assert_eq!(
+        axis(&a, "runtime").recommended_patterns,
+        vec!["upgrade-runtime"]
+    );
+    assert!(
+        axis(&a, "containerization")
+            .recommended_patterns
+            .contains(&"containerize-legacy-app".to_string())
+    );
+    assert_eq!(axis(&a, "ci").recommended_patterns[0], "add-ci-baseline");
+    assert!(
+        axis(&a, "secrets")
+            .recommended_patterns
+            .contains(&"config-to-environment".to_string())
+    );
+    assert!(
+        a.understanding.tldr.contains("Java EE"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(
+        a.understanding.architecture.contains("Legacy signals"),
+        "{}",
+        a.understanding.architecture
+    );
+    assert!(a.understanding.architecture.contains("WAR packaging"));
+    assert!(
+        a.understanding
+            .architecture
+            .contains("Java 8 past end of life")
+    );
+    assert!(a.profile_text.contains("Delivery maturity: legacy"));
+    assert!(question(&a, "deployment_target").is_some());
+    // Same commit a year earlier is still legacy; two years before the EOL date the runtime axis is clean.
+    let earlier = analyze_at(&snap, (2021, 1, 1));
+    assert!(!keys(&earlier).contains(&"runtime:eol:java"));
+    assert_eq!(axis(&earlier, "runtime").score, 100);
+}
+
+const DOTNET_SLN: &str = r#"
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Intranet", "Intranet\Intranet.csproj", "{1234}"
+EndProject
+"#;
+
+const DOTNET_CSPROJ: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Acme.Intranet</RootNamespace>
+    <AssemblyName>Acme.Intranet</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Web" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Data.SqlClient, Version=4.6.1.0, Culture=neutral" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Default.aspx" />
+  </ItemGroup>
+</Project>
+"#;
+
+const DOTNET_PACKAGES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<packages>
+  <package id="Newtonsoft.Json" version="12.0.3" targetFramework="net48" />
+  <package id="EntityFramework" version="6.4.4" targetFramework="net48" />
+</packages>
+"#;
+
+const DOTNET_WEB_CONFIG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <appSettings>
+    <add key="SmtpHost" value="mail.acme.internal" />
+  </appSettings>
+  <connectionStrings>
+    <add name="Intranet" connectionString="Server=sql01;Database=Intranet;Password=SUPERSECRET" providerName="System.Data.SqlClient" />
+  </connectionStrings>
+  <system.web>
+    <compilation debug="true" targetFramework="4.8" />
+    <httpRuntime targetFramework="4.8" />
+  </system.web>
+</configuration>
+"#;
+
+#[test]
+fn dotnet_framework_48_web_forms() {
+    let snap = snapshot(
+        "acme/intranet",
+        &[
+            ("Intranet.sln", DOTNET_SLN),
+            ("Intranet/Intranet.csproj", DOTNET_CSPROJ),
+            ("Intranet/packages.config", DOTNET_PACKAGES),
+            ("Intranet/Web.config", DOTNET_WEB_CONFIG),
+        ],
+        &[
+            "Intranet/Default.aspx",
+            "Intranet/Default.aspx.cs",
+            "Intranet/Site.Master",
+            "Intranet/Global.asax",
+            "Intranet/Models/Employee.cs",
+        ],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:csharp",
+        "package:nuget",
+        "framework:aspnet_webforms",
+        "dotnet:framework",
+        "dotnet:packages_config",
+        "config:web_config",
+        "pages:aspx",
+        "runtime:dotnet_framework:4.8",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    assert!(!k.contains(&"framework:aspnet"), "{k:?}");
+    assert!(
+        !k.contains(&"runtime:eol:dotnet_framework"),
+        "4.8 is still supported: {k:?}"
+    );
+    let rt = fact(&a, "runtime:dotnet_framework:4.8").unwrap();
+    assert_eq!(rt.label, ".NET Framework 4.8");
+    assert_eq!(rt.source_path, "Intranet/Intranet.csproj");
+    let fw = fact(&a, "dotnet:framework").unwrap();
+    assert_eq!(fw.value, "v4.8");
+    assert!(
+        a.dependencies
+            .iter()
+            .any(|d| d.name == "EntityFramework" && d.ecosystem == "nuget")
+    );
+    assert!(a.chunks.iter().all(|c| !c.content.contains("SUPERSECRET")));
+    assert!(
+        a.capabilities
+            .contains(&"framework:aspnet_webforms".to_string())
+    );
+    assert!(has_edge(
+        &a,
+        "repository:acme/intranet",
+        "CONTAINS",
+        "service:acme.intranet"
+    ));
+    assert!(
+        a.understanding.tldr.contains("ASP.NET Web Forms"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(a.understanding.architecture.contains(".NET Framework"));
+    assert!(
+        axis(&a, "secrets")
+            .findings
+            .iter()
+            .any(|f| f.contains("web.config"))
+    );
+    assert_eq!(a.maturity.stage, "legacy", "{:#?}", a.maturity);
+}
+
+const WP_COMPOSER: &str = r#"{
+  "name": "acme/blog",
+  "require": {
+    "php": "^7.4",
+    "johnpbloch/wordpress": "^5.8",
+    "wpackagist-plugin/akismet": "^4.2"
+  },
+  "require-dev": { "phpunit/phpunit": "^9" }
+}"#;
+
+const WP_DOCKERFILE: &str = r#"FROM php:7.4-apache
+COPY . /var/www/html
+EXPOSE 80
+"#;
+
+#[test]
+fn php_74_wordpress() {
+    let snap = snapshot(
+        "acme/blog",
+        &[
+            ("composer.json", WP_COMPOSER),
+            ("Dockerfile", WP_DOCKERFILE),
+            (
+                "wp-config.php",
+                "<?php define('DB_PASSWORD', 'SUPERSECRET');",
+            ),
+        ],
+        &[
+            "wp-content/themes/acme/style.css",
+            "wp-content/themes/acme/functions.php",
+            "index.php",
+        ],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:php",
+        "package:composer",
+        "framework:wordpress",
+        "runtime:php:7.4",
+        "runtime:eol:php",
+        "container:dockerfile:Dockerfile",
+        "testing:phpunit",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    assert!(!k.contains(&"php:plain"), "composer is present: {k:?}");
+    let php = fact(&a, "runtime:php:7.4").unwrap();
+    assert_eq!(php.label, "PHP 7.4");
+    // composer.json is read before the Dockerfile, so it is the cited source.
+    assert_eq!(php.source_path, "composer.json");
+    assert!(php.evidence.contains("require.php"), "{}", php.evidence);
+    let eol = fact(&a, "runtime:eol:php").unwrap();
+    assert_eq!(eol.value, "2022-11-28");
+    assert!(a.chunks.iter().all(|c| !c.content.contains("SUPERSECRET")));
+    assert!(
+        a.understanding.tldr.contains("WordPress"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(axis(&a, "runtime").findings[0].contains("PHP 7.4 reached end of life 2022-11-28"));
+    assert!(axis(&a, "containerization").score >= 50);
+}
+
+const RAILS_GEMFILE: &str = r#"source 'https://rubygems.org'
+ruby '2.6.6'
+
+gem 'rails', '~> 5.2.4'
+gem 'pg', '>= 0.18'
+gem 'puma', '~> 3.11'
+
+group :development, :test do
+  gem 'rspec-rails', '~> 3.9'
+end
+"#;
+
+#[test]
+fn rails_5_on_ruby_26() {
+    let snap = snapshot(
+        "acme/crm",
+        &[
+            ("Gemfile", RAILS_GEMFILE),
+            (".ruby-version", "2.6.6\n"),
+            (
+                "config.ru",
+                "require_relative 'config/environment'\nrun Rails.application\n",
+            ),
+        ],
+        &[
+            "Gemfile.lock",
+            "app/models/lead.rb",
+            "spec/models/lead_spec.rb",
+            "db/migrate/20200101_create_leads.rb",
+        ],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:ruby",
+        "package:bundler",
+        "framework:rails",
+        "runtime:ruby:2.6",
+        "runtime:eol:ruby",
+        "testing:rspec",
+        "tests:unit",
+        "security:lockfile",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    let ruby = fact(&a, "runtime:ruby:2.6").unwrap();
+    assert_eq!(ruby.label, "Ruby 2.6");
+    assert_eq!(ruby.source_path, ".ruby-version");
+    assert_eq!(fact(&a, "runtime:eol:ruby").unwrap().value, "2022-04-12");
+    assert!(
+        a.understanding.tldr.contains("Ruby on Rails"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert_eq!(a.maturity.stage, "legacy", "{:#?}", a.maturity);
+    assert!(axis(&a, "runtime").findings[0].contains("Ruby 2.6 reached end of life"));
+}
+
+#[test]
+fn node_16_react_with_nvmrc() {
+    let snap = snapshot(
+        "acme/dashboard",
+        &[
+            (
+                "package.json",
+                r#"{"name":"dashboard","private":true,"engines":{"node":">=16"},"scripts":{"build":"react-scripts build","test":"react-scripts test"},"dependencies":{"react":"^17.0.2","react-dom":"^17.0.2"},"devDependencies":{"jest":"^27"}}"#,
+            ),
+            (".nvmrc", "v16.20.2\n"),
+            (
+                "Dockerfile",
+                "FROM node:16-alpine3.18\nWORKDIR /app\nCOPY . .\nRUN npm ci && npm run build\nHEALTHCHECK CMD wget -qO- http://localhost:3000/ || exit 1\nUSER node\nCMD [\"npx\", \"serve\", \"build\"]\n",
+            ),
+            ("README.md", "# dashboard\n"),
+        ],
+        &["package-lock.json", "src/index.js", "src/App.test.js"],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:javascript",
+        "framework:react",
+        "runtime:node:16",
+        "runtime:eol:node",
+        "runtime:alpine:3.18",
+        "runtime:eol:alpine",
+        "container:healthcheck:Dockerfile",
+        "testing:jest",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    let node = fact(&a, "runtime:node:16").unwrap();
+    assert_eq!(node.label, "Node 16");
+    assert_eq!(node.value, "16");
+    assert_eq!(node.source_path, ".nvmrc");
+    assert_eq!(node.evidence, ".nvmrc: v16.20.2");
+    let eol = fact(&a, "runtime:eol:node").unwrap();
+    assert_eq!(eol.value, "2023-09-11");
+    assert_eq!(
+        eol.evidence,
+        "Node 16 reached end of life 2023-09-11 (.nvmrc: v16.20.2)"
+    );
+    // Two runtimes (node, alpine), both end of life → runtime axis 0.
+    assert_eq!(axis(&a, "runtime").score, 0, "{:#?}", axis(&a, "runtime"));
+    assert!(
+        axis(&a, "runtime")
+            .findings
+            .iter()
+            .any(|f| f.starts_with("Node 16 reached end of life 2023-09-11"))
+    );
+    // Non-root user and a healthcheck earn containerization points.
+    assert!(!k.iter().any(|k| k.starts_with("security:dockerfile_root")));
+    assert_eq!(
+        axis(&a, "containerization").score,
+        80,
+        "{:#?}",
+        axis(&a, "containerization")
+    );
+    assert_eq!(a.maturity.stage, "transitional", "{:#?}", a.maturity);
+    assert!(
+        a.understanding
+            .architecture
+            .contains("Node 16 past end of life")
+    );
+}
+
+#[test]
+fn python_2_django_111() {
+    let snap = snapshot(
+        "acme/portal",
+        &[
+            ("requirements.txt", "Django==1.11.29\npsycopg2==2.8.6\n"),
+            ("runtime.txt", "python-2.7.18\n"),
+            (
+                "setup.py",
+                "from setuptools import setup\nsetup(name='portal')\n",
+            ),
+            (
+                "app.py",
+                "import os\nprint \"starting portal\"\ntry:\n    main()\nexcept Exception, e:\n    print e\n",
+            ),
+        ],
+        &["portal/manage.py", "portal/settings.py"],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:python",
+        "framework:django",
+        "python:2",
+        "dependency:eol:django",
+        "runtime:python:2.7",
+        "runtime:eol:python",
+        "datastore:postgres",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    let py2 = fact(&a, "python:2").unwrap();
+    assert_eq!(py2.kind, FactKind::Detected);
+    assert!(py2.evidence.contains("Django"), "{}", py2.evidence);
+    assert!(py2.evidence.contains("app.py"), "{}", py2.evidence);
+    assert_eq!(fact(&a, "runtime:eol:python").unwrap().value, "2020-01-01");
+    let django = fact(&a, "dependency:eol:django").unwrap();
+    assert_eq!(django.source_path, "requirements.txt");
+    assert!(
+        axis(&a, "dependencies")
+            .findings
+            .iter()
+            .any(|f| f.contains("Django"))
+    );
+    assert_eq!(axis(&a, "runtime").score, 0);
+    assert_eq!(a.maturity.stage, "legacy", "{:#?}", a.maturity);
+    assert!(a.understanding.architecture.contains("Python 2 code"));
+}
+
+const SDI_VALID: &str = r#"version: 1
+deploy:
+  target: azure
+  environments: [staging, production]
+  region: westeurope
+budget:
+  monthly_usd: 20
+test:
+  command: "cargo test"
+  health_path: "/health"
+  port: 8080
+scan:
+  exclude: ["docs/legacy/**", "vendor/**"]
+notes: this key is not in the contract
+"#;
+
+#[test]
+fn sdi_yml_valid_answers_questions() {
+    let files = [
+        (".sdi.yml", SDI_VALID),
+        (
+            "Cargo.toml",
+            "[package]\nname = \"svc\"\nedition = \"2024\"\nrust-version = \"1.85\"\n[dependencies]\naxum = \"0.8\"\n",
+        ),
+        (
+            "docs/legacy/old.md",
+            "# Old\n\nShould be excluded by scan.exclude.\n",
+        ),
+    ];
+    let tree: Vec<TreeEntry> = files
+        .iter()
+        .map(|(p, c)| TreeEntry {
+            path: p.to_string(),
+            size: c.len() as u64,
+            is_dir: false,
+        })
+        .chain([TreeEntry {
+            path: "vendor/x/package.json".into(),
+            size: 10,
+            is_dir: false,
+        }])
+        .collect();
+    // Two-phase scan: read the config first, then rank with its excludes.
+    let first = wanted_files(&tree);
+    assert_eq!(first[0], ".sdi.yml");
+    let cfg = parse_config(SDI_VALID);
+    assert!(config_is_usable(&cfg));
+    let wanted = wanted_files_with(&tree, &cfg.scan_exclude);
+    assert!(
+        !wanted.iter().any(|w| w.starts_with("docs/legacy/")),
+        "{wanted:?}"
+    );
+    assert!(
+        !wanted.iter().any(|w| w.starts_with("vendor/")),
+        "{wanted:?}"
+    );
+    let snap = RepoSnapshot {
+        full_name: "acme/svc".into(),
+        tree,
+        files: files
+            .iter()
+            .filter(|(p, _)| wanted.iter().any(|w| w == p))
+            .map(|(p, c)| (p.to_string(), c.to_string()))
+            .collect(),
+        ..Default::default()
+    };
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    assert!(a.config.present);
+    assert_eq!(a.config.path, ".sdi.yml");
+    assert_eq!(a.config.deploy_target, "azure");
+    assert_eq!(a.config.environments, vec!["staging", "production"]);
+    assert_eq!(a.config.region, "westeurope");
+    assert_eq!(a.config.budget_monthly_usd, 20.0);
+    assert_eq!(a.config.test_command, "cargo test");
+    assert_eq!(a.config.health_path, "/health");
+    assert_eq!(a.config.port, 8080);
+    assert_eq!(a.config.scan_exclude, vec!["docs/legacy/**", "vendor/**"]);
+    assert_eq!(a.config.errors.len(), 1, "{:?}", a.config.errors);
+    assert!(
+        a.config.errors[0].contains("`notes`"),
+        "{:?}",
+        a.config.errors
+    );
+
+    let k = keys(&a);
+    // A manifest that pins both the MSRV and the edition yields both facts.
+    assert!(k.contains(&"runtime:rust:1.85"), "{k:?}");
+    assert!(k.contains(&"runtime:rust:edition-2024"), "{k:?}");
+    for expected in [
+        "config:deploy.target",
+        "config:deploy.environments",
+        "config:deploy.region",
+        "config:budget.monthly_usd",
+        "config:test.command",
+        "config:test.health_path",
+        "config:test.port",
+        "config:scan.exclude",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    let target = fact(&a, "config:deploy.target").unwrap();
+    assert_eq!(target.kind, FactKind::Configured);
+    assert_eq!(target.category, FactCategory::Configuration);
+    assert_eq!(target.value, "azure");
+    assert_eq!(target.confidence, 1.0);
+    assert_eq!(target.source_path, ".sdi.yml");
+    assert!(
+        target.evidence.contains("target: azure"),
+        "{}",
+        target.evidence
+    );
+    assert_eq!(fact(&a, "config:budget.monthly_usd").unwrap().value, "20");
+    assert_eq!(fact(&a, "config:test.port").unwrap().value, "8080");
+
+    let q = question(&a, "deployment_target").expect("question still listed, pre-answered");
+    assert_eq!(q.answer, "Azure");
+    assert_eq!(q.answered_by, "config");
+    let e = question(&a, "environments").expect("question still listed, pre-answered");
+    assert_eq!(e.answer, "Staging and production");
+    assert_eq!(e.answered_by, "config");
+    assert!(k.contains(&"runtime:rust:1.85"), "{k:?}");
+    assert!(
+        a.understanding
+            .sections
+            .iter()
+            .find(|s| s.key == "deployment")
+            .unwrap()
+            .summary
+            .contains("configured target Azure"),
+        "{:#?}",
+        a.understanding.sections
+    );
+    assert!(
+        axis(&a, "tests").summary.contains("cargo test"),
+        "{:#?}",
+        axis(&a, "tests")
+    );
+}
+
+#[test]
+fn sdi_yml_invalid_is_reported_and_ignored() {
+    for (content, needle) in [
+        ("version: 2\ndeploy:\n  target: vm\n", "`version` must be 1"),
+        ("deploy:\n  target: vm\n", "`version: 1` is required"),
+        (
+            "version: 1\ndeploy:\n  target: [vm]\n",
+            "`deploy.target` must be a string",
+        ),
+        (
+            "version: 1\ndeploy:\n  target: mainframe\n",
+            "`deploy.target` must be one of",
+        ),
+        ("version: 1\nbudget: twenty\n", "`budget` must be a mapping"),
+        (
+            "version: 1\ntest:\n  port: \"eighty\"\n",
+            "`test.port` must be a port",
+        ),
+        ("{{{ not yaml", "does not parse"),
+    ] {
+        let snap = snapshot(
+            "acme/svc",
+            &[
+                (".sdi.yml", content),
+                ("package.json", "{\"name\":\"svc\"}"),
+            ],
+            &[],
+        );
+        let a = analyze(&snap);
+        assert_common_invariants(&a);
+        assert!(a.config.present, "{content}");
+        assert!(a.config.deploy_target.is_empty(), "{content}");
+        assert!(
+            a.config.errors.iter().any(|e| e.contains(needle)),
+            "{content}: {:?}",
+            a.config.errors
+        );
+        assert!(a.config.errors.iter().any(|e| e.starts_with("error:")));
+        assert!(!config_is_usable(&a.config));
+        assert!(
+            !keys(&a).iter().any(|k| k.starts_with("config:")),
+            "{content}"
+        );
+        let q = question(&a, "deployment_target").unwrap();
+        assert!(q.answer.is_empty(), "{content}");
+        assert!(q.answered_by.is_empty(), "{content}");
+    }
+}
+
+#[test]
+fn deploy_to_cloud_is_not_a_release() {
+    let workflow = r#"name: Deploy
+on: { push: { branches: [main] } }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t app .
+      - uses: azure/login@v2
+      - uses: azure/container-apps-deploy-action@v2
+"#;
+    let snap = snapshot(
+        "acme/api",
+        &[
+            ("Dockerfile", "FROM python:3.12-slim\n"),
+            ("requirements.txt", "fastapi\n"),
+            (".github/workflows/deploy.yml", workflow),
+        ],
+        &[],
+    );
+    let a = analyze(&snap);
+    let d = fact(&a, "deploy:pipeline:.github/workflows/deploy.yml").unwrap();
+    assert_eq!(d.value, "azure");
+    assert!(
+        a.understanding
+            .tldr
+            .contains("built and deployed by GitHub Actions"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(keys(&a).contains(&"runtime:python:3.12"));
+    assert!(!keys(&a).iter().any(|k| k.starts_with("runtime:eol:")));
+}
+
+#[test]
+fn release_only_pipeline_is_worded_as_release() {
+    let workflow = r#"name: Release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - run: cargo test
+      - uses: softprops/action-gh-release@v2
+"#;
+    let snap = snapshot(
+        "acme/cli",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"cli\"\nedition = \"2021\"\n",
+            ),
+            (".github/workflows/release.yml", workflow),
+        ],
+        &["src/main.rs"],
+    );
+    let a = analyze(&snap);
+    let d = fact(&a, "deploy:pipeline:.github/workflows/release.yml").unwrap();
+    assert_eq!(d.value, "release");
+    assert_eq!(d.label, "Releases from CI");
+    assert!(
+        a.understanding
+            .tldr
+            .contains("built and released by GitHub Actions"),
+        "{}",
+        a.understanding.tldr
+    );
+    assert!(
+        a.understanding
+            .architecture
+            .contains("releases every change")
+    );
+    assert!(keys(&a).contains(&"runtime:rust:edition-2021"));
+    assert!(
+        axis(&a, "ci").summary.contains("releases"),
+        "{:#?}",
+        axis(&a, "ci")
+    );
+}
+
+#[test]
+fn mixed_legacy_signals_go_c_perl_asp_static() {
+    let snap = snapshot(
+        "acme/misc",
+        &[
+            (
+                "go.mod",
+                "module acme/misc\n\ngo 1.20\n\nrequire github.com/gorilla/mux v1.8.0\n",
+            ),
+            (
+                "CMakeLists.txt",
+                "cmake_minimum_required(VERSION 3.10)\nproject(misc C CXX)\n",
+            ),
+            ("cpanfile", "requires 'Mojolicious', '9.0';\n"),
+            (".ftpconfig", "{\"host\":\"ftp.acme.internal\"}"),
+        ],
+        &[
+            "native/main.cpp",
+            "scripts/report.pl",
+            "legacy/default.asp",
+            "legacy/orders.asp",
+        ],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    for expected in [
+        "lang:go",
+        "framework:gorilla",
+        "runtime:go:1.20",
+        "runtime:eol:go",
+        "build:cmake",
+        "lang:perl",
+        "package:cpan",
+        "framework:mojolicious",
+        "pages:classic_asp",
+        "deploy:ftp_script",
+    ] {
+        assert!(k.contains(&expected), "missing fact {expected}; got {k:?}");
+    }
+    assert_eq!(fact(&a, "pages:classic_asp").unwrap().value, "2 pages");
+    assert_eq!(
+        fact(&a, "deploy:ftp_script").unwrap().source_path,
+        ".ftpconfig"
+    );
+}
+
+#[test]
+fn plain_php_without_composer() {
+    let snap = snapshot(
+        "acme/shop",
+        &[
+            ("index.php", "<?php echo 'hi';"),
+            ("deploy.bat", "ftp -s:upload.txt ftp.acme.internal\n"),
+        ],
+        &["inc/db.php", "admin/orders.php"],
+    );
+    let a = analyze(&snap);
+    let k = keys(&a);
+    assert!(k.contains(&"lang:php"), "{k:?}");
+    assert!(k.contains(&"php:plain"), "{k:?}");
+    assert!(k.contains(&"deploy:ftp_script"), "{k:?}");
+    assert!(
+        a.understanding
+            .architecture
+            .contains("plain PHP without Composer")
+    );
+    assert_eq!(a.maturity.stage, "legacy");
 }

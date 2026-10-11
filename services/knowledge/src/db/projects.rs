@@ -23,6 +23,10 @@ pub struct ProjectRow {
     pub deployments_synced_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Delivery maturity 0–100; 0 until the first successful scan.
+    pub maturity_score: i32,
+    /// True when the last scan found a `.sdi.yml`.
+    pub has_config: bool,
     /// Computed: unanswered questions, so list views need no second query.
     pub open_questions: i64,
 }
@@ -139,20 +143,31 @@ pub async fn set_metadata(
     Ok(())
 }
 
+/// What a successful scan leaves on the project row.
+#[derive(Debug, Clone, Default)]
+pub struct ScanOutcome<'a> {
+    pub tldr: &'a str,
+    pub stack: &'a [String],
+    pub maturity_score: u32,
+    pub has_config: bool,
+}
+
 pub async fn finish_scan(
     exec: impl PgExecutor<'_>,
     id: Uuid,
     scan_id: Uuid,
-    tldr: &str,
-    stack: &[String],
+    outcome: &ScanOutcome<'_>,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE projects SET status = 'ready', last_scan_id = $2, last_scanned_at = now(), tldr = $3, stack = $4, updated_at = now() WHERE id = $1",
+        "UPDATE projects SET status = 'ready', last_scan_id = $2, last_scanned_at = now(), tldr = $3, stack = $4,
+                maturity_score = $5, has_config = $6, updated_at = now() WHERE id = $1",
     )
     .bind(id)
     .bind(scan_id)
-    .bind(tldr)
-    .bind(stack)
+    .bind(outcome.tldr)
+    .bind(outcome.stack)
+    .bind(outcome.maturity_score.min(100) as i32)
+    .bind(outcome.has_config)
     .execute(exec)
     .await?;
     Ok(())

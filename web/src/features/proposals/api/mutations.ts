@@ -7,6 +7,7 @@ import { proposalKeys } from './keys'
 
 type GenerateProposalRequest = components['schemas']['GenerateProposalRequest']
 type AcceptProposalRequest = components['schemas']['AcceptProposalRequest']
+type OpenPullRequestRequest = components['schemas']['OpenPullRequestRequest']
 
 /** POST /proposals — generates a ranked proposal for a project. */
 export function useGenerateProposal() {
@@ -64,6 +65,29 @@ export function useAcceptProposal(proposalId: string) {
       if (proposal.executionId) {
         queryClient.invalidateQueries({ queryKey: ['executions'] })
       }
+    },
+  })
+}
+
+/**
+ * POST /proposals/{id}/pull-request — accepts an option and opens a pull
+ * request with its generated files through a `github`-adapter execution.
+ */
+export function useOpenPullRequest(proposalId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: OpenPullRequestRequest) =>
+      unwrap(
+        api.POST('/api/v1/proposals/{id}/pull-request', {
+          params: { path: { id: proposalId } },
+          body,
+        }),
+      ),
+    onSuccess: (proposal) => {
+      queryClient.setQueryData(proposalKeys.detail(proposalId), proposal)
+      queryClient.invalidateQueries({ queryKey: proposalKeys.all })
+      queryClient.invalidateQueries({ queryKey: ['decisions'] })
+      queryClient.invalidateQueries({ queryKey: ['executions'] })
     },
   })
 }

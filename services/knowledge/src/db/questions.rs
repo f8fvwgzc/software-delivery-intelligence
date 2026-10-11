@@ -14,11 +14,18 @@ pub struct QuestionRow {
     pub allow_free_text: bool,
     pub answer: String,
     pub answered_at: Option<DateTime<Utc>>,
+    /// `user` | `config`; empty while open.
+    pub answered_by: String,
     pub created_at: DateTime<Utc>,
 }
 
 /// Questions are asked once and remembered: an existing key keeps its answer,
 /// and only unanswered questions the scan no longer asks are dropped.
+///
+/// A question `.sdi.yml` answers arrives pre-filled (`answered_by=config`)
+/// and overrides whatever was stored, because the repository is the source
+/// of truth for its own configuration. A question the config stopped
+/// answering keeps a user's answer and reopens a config one.
 pub async fn sync(
     conn: &mut PgConnection,
     project_id: Uuid,
@@ -31,12 +38,22 @@ pub async fn sync(
         .execute(&mut *conn)
         .await?;
     for question in questions {
+        let configured = question.answered_by == "config" && !question.answer.trim().is_empty();
         sqlx::query(
-            "INSERT INTO questions (id, project_id, key, prompt, reason, options, allow_free_text)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "INSERT INTO questions (id, project_id, key, prompt, reason, options, allow_free_text, answer, answered_at, answered_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 THEN now() END, CASE WHEN $9 THEN 'config' ELSE '' END)
              ON CONFLICT (project_id, key) DO UPDATE
                SET prompt = EXCLUDED.prompt, reason = EXCLUDED.reason,
-                   options = EXCLUDED.options, allow_free_text = EXCLUDED.allow_free_text",
+                   options = EXCLUDED.options, allow_free_text = EXCLUDED.allow_free_text,
+                   answer = CASE WHEN $9 THEN EXCLUDED.answer
+                                 WHEN questions.answered_by = 'config' THEN ''
+                                 ELSE questions.answer END,
+                   answered_at = CASE WHEN $9 THEN now()
+                                      WHEN questions.answered_by = 'config' THEN NULL
+                                      ELSE questions.answered_at END,
+                   answered_by = CASE WHEN $9 THEN 'config'
+                                      WHEN questions.answered_by = 'config' THEN ''
+                                      ELSE questions.answered_by END",
         )
         .bind(Uuid::now_v7())
         .bind(project_id)
@@ -45,6 +62,8 @@ pub async fn sync(
         .bind(&question.reason)
         .bind(&question.options)
         .bind(question.allow_free_text)
+        .bind(if configured { question.answer.trim() } else { "" })
+        .bind(configured)
         .execute(&mut *conn)
         .await?;
     }
@@ -78,7 +97,7 @@ pub async fn answer(
     answer: &str,
 ) -> sqlx::Result<QuestionRow> {
     sqlx::query_as::<_, QuestionRow>(
-        "UPDATE questions SET answer = $2, answered_at = now() WHERE id = $1 RETURNING *",
+        "UPDATE questions SET answer = $2, answered_at = now(), answered_by = 'user' WHERE id = $1 RETURNING *",
     )
     .bind(id)
     .bind(answer)

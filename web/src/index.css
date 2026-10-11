@@ -91,9 +91,10 @@
   --ring: oklch(0.74 0.03 268);
 
   --brand: oklch(0.55 0.17 268);
-  --success: oklch(0.6 0.13 158);
-  --warning: oklch(0.7 0.14 72);
-  --info: oklch(0.6 0.12 238);
+  /* Dark enough to read at 11px on their own /10 tints (WCAG AA 4.5:1). */
+  --success: oklch(0.5 0.13 158);
+  --warning: oklch(0.52 0.14 72);
+  --info: oklch(0.52 0.12 238);
 
   --chart-1: oklch(0.55 0.17 268);
   --chart-2: oklch(0.6 0.13 158);

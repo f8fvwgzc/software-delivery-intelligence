@@ -51,6 +51,8 @@ async fn list_executions(
 }
 
 /// Creates an execution from a plan. It stays in `planning` until started.
+/// `adapter` picks the runtime (CONTRACT.md §5.4); `artifacts` are the files
+/// a `repo.open_pull_request` step commits.
 #[utoipa::path(
     post,
     path = "/executions",
@@ -70,6 +72,8 @@ async fn create_execution(
             pattern_id: body.pattern_id.unwrap_or_default(),
             title: body.title,
             steps: body.steps.into_iter().map(Into::into).collect(),
+            adapter: body.adapter.unwrap_or_default().as_str().to_owned(),
+            artifacts: body.artifacts.unwrap_or_default().into_iter().collect(),
         })
         .await?
         .into_inner();

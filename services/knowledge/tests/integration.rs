@@ -62,11 +62,51 @@ async fn migrations_catalog_projects_and_search() {
     };
 
     // Catalog seeds idempotently and keeps usage across re-seeds.
-    assert_eq!(catalog::seed(&pool).await.unwrap(), 15);
-    assert_eq!(catalog::seed(&pool).await.unwrap(), 15);
+    let expected = catalog::catalog().len();
+    assert_eq!(catalog::seed(&pool).await.unwrap(), expected);
+    assert_eq!(catalog::seed(&pool).await.unwrap(), expected);
     let patterns = db::patterns::list(&pool, None, false).await.unwrap();
-    assert_eq!(patterns.len(), 15);
+    assert_eq!(patterns.len(), expected);
     assert!(patterns.iter().all(|p| p.source == "catalog"));
+    // The cost model and maturity targets round-trip through jsonb.
+    let modernization = db::patterns::list(&pool, Some("modernization"), false)
+        .await
+        .unwrap();
+    assert_eq!(modernization.len(), 6);
+    assert!(modernization.iter().all(|p| {
+        !p.attributes.0["targets_axes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    }));
+    let hetzner = db::patterns::get(&pool, "hetzner-vm-compose")
+        .await
+        .unwrap();
+    assert_eq!(
+        hetzner.attributes.0["cost_lines"].as_array().unwrap().len(),
+        3
+    );
+
+    // Settings: seeded row, update, re-read.
+    let settings = db::settings::get(&pool).await.unwrap();
+    assert_eq!(settings.scan_max_files, 150);
+    assert_eq!(settings.scan_max_file_bytes, 200_000);
+    assert_eq!(settings.scan_concurrency, 6);
+    assert_eq!(settings.pipeline_runs_limit, 50);
+    assert!(settings.cache_github);
+    let updated = db::settings::update(
+        &pool,
+        &db::settings::SettingsRow {
+            scan_max_files: 80,
+            cache_github: false,
+            ..settings
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.scan_max_files, 80);
+    assert!(!updated.cache_github);
+    assert_eq!(db::settings::get(&pool).await.unwrap().scan_max_files, 80);
 
     // Projects: insert, duplicate rejected, lookup by repo is case-insensitive.
     let a = db::projects::insert(&pool, &project("f8fvwgzc/view-engine"))
@@ -88,6 +128,148 @@ async fn migrations_catalog_projects_and_search() {
     let b = db::projects::insert(&pool, &project("f8fvwgzc/texc-symphony"))
         .await
         .unwrap();
+    assert_eq!(a.maturity_score, 0);
+    assert!(!a.has_config);
+
+    // Maturity, config and configured answers persist with the scan outcome.
+    let maturity = sdi_analyzer::MaturityDraft {
+        overall: 42,
+        stage: "transitional".to_owned(),
+        axes: vec![sdi_analyzer::MaturityAxisDraft {
+            key: "ci".to_owned(),
+            label: "CI".to_owned(),
+            score: 60,
+            summary: "CI runs tests but never deploys".to_owned(),
+            findings: vec!["No deploy job".to_owned()],
+            recommended_patterns: vec!["gha-docker-publish".to_owned()],
+        }],
+    };
+    let config = sdi_analyzer::ProjectConfigDraft {
+        present: true,
+        path: ".sdi.yml".to_owned(),
+        deploy_target: "azure".to_owned(),
+        environments: vec!["staging".to_owned(), "production".to_owned()],
+        budget_monthly_usd: 20.0,
+        port: 8080,
+        scan_exclude: vec!["vendor/**".to_owned()],
+        ..Default::default()
+    };
+    let mut tx = pool.begin().await.unwrap();
+    db::maturity::upsert(&mut *tx, a.id, &maturity)
+        .await
+        .unwrap();
+    db::config::upsert(&mut *tx, a.id, &config).await.unwrap();
+    db::questions::sync(
+        &mut tx,
+        a.id,
+        &[
+            sdi_analyzer::QuestionDraft {
+                key: "deployment_target".to_owned(),
+                prompt: "Where does this deploy?".to_owned(),
+                reason: "No deployment files".to_owned(),
+                options: vec!["azure".to_owned(), "aws".to_owned()],
+                allow_free_text: false,
+                answer: "azure".to_owned(),
+                answered_by: "config".to_owned(),
+            },
+            sdi_analyzer::QuestionDraft {
+                key: "owner".to_owned(),
+                prompt: "Who owns it?".to_owned(),
+                reason: "No CODEOWNERS".to_owned(),
+                options: vec![],
+                allow_free_text: true,
+                answer: String::new(),
+                answered_by: String::new(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    db::projects::finish_scan(
+        &pool,
+        a.id,
+        uuid::Uuid::now_v7(),
+        &db::projects::ScanOutcome {
+            tldr: "A view engine",
+            stack: &["TypeScript".to_owned()],
+            maturity_score: maturity.overall,
+            has_config: config.present,
+        },
+    )
+    .await
+    .unwrap();
+
+    let stored = db::maturity::get(&pool, a.id).await.unwrap().unwrap();
+    assert_eq!(stored.overall, 42);
+    assert_eq!(stored.stage, "transitional");
+    assert_eq!(
+        stored.axes.0[0].recommended_patterns,
+        vec!["gha-docker-publish"]
+    );
+    let stored = db::config::get(&pool, a.id).await.unwrap().unwrap();
+    assert_eq!(stored.config.0, config);
+    assert!(db::config::get(&pool, b.id).await.unwrap().is_none());
+    let a_now = db::projects::get(&pool, a.id).await.unwrap();
+    assert_eq!(a_now.maturity_score, 42);
+    assert!(a_now.has_config);
+    assert_eq!(a_now.status, "ready");
+    assert_eq!(a_now.open_questions, 1, "the config answered one of two");
+    let questions = db::questions::list(&pool, a.id, false).await.unwrap();
+    let target = questions
+        .iter()
+        .find(|q| q.key == "deployment_target")
+        .unwrap();
+    assert_eq!(target.answer, "azure");
+    assert_eq!(target.answered_by, "config");
+    assert!(target.answered_at.is_some());
+    let owner = questions.iter().find(|q| q.key == "owner").unwrap();
+    assert_eq!(owner.answered_by, "");
+    let owner = db::questions::answer(&pool, owner.id, "platform team")
+        .await
+        .unwrap();
+    assert_eq!(owner.answered_by, "user");
+    // A rescan whose config no longer answers the question reopens it, but
+    // keeps the user's answer on the other one.
+    let mut tx = pool.begin().await.unwrap();
+    db::questions::sync(
+        &mut tx,
+        a.id,
+        &[
+            sdi_analyzer::QuestionDraft {
+                key: "deployment_target".to_owned(),
+                prompt: "Where does this deploy?".to_owned(),
+                reason: "No deployment files".to_owned(),
+                options: vec!["azure".to_owned(), "aws".to_owned()],
+                allow_free_text: false,
+                answer: String::new(),
+                answered_by: String::new(),
+            },
+            sdi_analyzer::QuestionDraft {
+                key: "owner".to_owned(),
+                prompt: "Who owns it?".to_owned(),
+                reason: "No CODEOWNERS".to_owned(),
+                options: vec![],
+                allow_free_text: true,
+                answer: String::new(),
+                answered_by: String::new(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let questions = db::questions::list(&pool, a.id, true).await.unwrap();
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].key, "deployment_target");
+    assert_eq!(questions[0].answered_by, "");
+    let owner = db::questions::list(&pool, a.id, false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|q| q.key == "owner")
+        .unwrap();
+    assert_eq!(owner.answer, "platform team");
 
     // Pattern outcomes roll up per project.
     db::patterns::record_outcome(&pool, "vm-docker-compose", a.id, true, false)
@@ -200,7 +382,7 @@ async fn migrations_catalog_projects_and_search() {
     let counts = db::stats::counts(&pool).await.unwrap();
     assert_eq!(counts.projects, 2);
     assert_eq!(counts.chunks, 3);
-    assert_eq!(counts.patterns, 15);
+    assert_eq!(counts.patterns, expected as i64);
     assert!(db::projects::delete(&pool, a.id).await.unwrap());
     assert!(!db::projects::delete(&pool, a.id).await.unwrap());
     let counts = db::stats::counts(&pool).await.unwrap();

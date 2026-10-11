@@ -97,6 +97,58 @@ pub async fn grant(
     Ok(())
 }
 
+/// Name and fixed id of the identity that stands for the connected token.
+pub const GITHUB_TOKEN_IDENTITY: &str = "github-token";
+const GITHUB_TOKEN_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0003);
+const GITHUB_TOKEN_SCOPES: [&str; 2] = ["repository:read", "repository:write"];
+
+/// Seeds (or withdraws) the `github-token` identity. It only exists while a
+/// token is configured (CONTRACT.md §5.3), so this runs on every start:
+/// with a token the identity and its base grants are upserted; without one
+/// the base grants go and the identity itself is dropped unless an old
+/// execution still references it.
+pub async fn seed_github_token(pool: &sqlx::PgPool, configured: bool) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    if configured {
+        sqlx::query(
+            "INSERT INTO identities (id, name, kind, description) VALUES ($1, $2, 'github', $3) \
+             ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description",
+        )
+        .bind(GITHUB_TOKEN_ID)
+        .bind(GITHUB_TOKEN_IDENTITY)
+        .bind("The connected GITHUB_TOKEN. Reads and writes the repositories the token can reach; present only while the token is configured.")
+        .execute(&mut *tx)
+        .await?;
+        for permission in GITHUB_TOKEN_SCOPES {
+            sqlx::query(
+                "INSERT INTO grants (identity_id, permission, expires_at) \
+                 SELECT id, $2, NULL FROM identities WHERE name = $1 \
+                 ON CONFLICT (identity_id, permission) DO UPDATE SET expires_at = NULL",
+            )
+            .bind(GITHUB_TOKEN_IDENTITY)
+            .bind(permission)
+            .execute(&mut *tx)
+            .await?;
+        }
+    } else {
+        sqlx::query(
+            "DELETE FROM grants WHERE expires_at IS NULL \
+             AND identity_id IN (SELECT id FROM identities WHERE name = $1)",
+        )
+        .bind(GITHUB_TOKEN_IDENTITY)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM identities i WHERE i.name = $1 \
+             AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.identity_id = i.id)",
+        )
+        .bind(GITHUB_TOKEN_IDENTITY)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
 /// An identity other than `except` that currently holds every permission.
 pub async fn holding_all<'e>(
     exec: impl PgExecutor<'e>,

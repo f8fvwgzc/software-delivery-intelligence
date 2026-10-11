@@ -693,6 +693,27 @@
         }
       }
     },
+    "/api/v1/events/stream": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Every change on the platform as it happens, merged from the three\nservices (CONTRACT.md §8, \"Live events\"). Each `data:` line is a\n`PlatformEvent`. The stream never ends: a service that goes away is\nreconnected with backoff while the others keep flowing, so the web app\nopens it once per tab and invalidates its caches by `entity`.",
+        "operationId": "watch_platform_events",
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events, one PlatformEvent per message; never ends",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/executions": {
       "get": {
         "tags": [
@@ -801,7 +822,7 @@
         "tags": [
           "executions"
         ],
-        "summary": "Creates an execution from a plan. It stays in `planning` until started.",
+        "summary": "Creates an execution from a plan. It stays in `planning` until started.\n`adapter` picks the runtime (CONTRACT.md §5.4); `artifacts` are the files\na `repo.open_pull_request` step commits.",
         "operationId": "create_execution",
         "requestBody": {
           "content": {
@@ -2883,6 +2904,97 @@
         }
       }
     },
+    "/api/v1/projects/{id}/config": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "What the repository declares in `.sdi.yml` (CONTRACT.md §12). A project\nwithout the file answers `present: false`.",
+        "operationId": "get_config",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/dependencies": {
       "get": {
         "tags": [
@@ -3524,6 +3636,97 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ImpactAnalysis"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/maturity": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delivery maturity: eight axes 0–100 with findings and the patterns that\nwould raise each (CONTRACT.md §13).",
+        "operationId": "get_maturity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaturityScore"
                 }
               }
             }
@@ -4487,7 +4690,7 @@
         "tags": [
           "proposals"
         ],
-        "summary": "Generates a ranked, evidence-backed proposal for a project.",
+        "summary": "Generates a ranked, evidence-backed proposal for a project. A\n`budgetMonthlyUsd` becomes a constraint the options are marked against.",
         "operationId": "generate_proposal",
         "requestBody": {
           "content": {
@@ -4577,7 +4780,7 @@
         "tags": [
           "proposals"
         ],
-        "summary": "One proposal with its options.",
+        "summary": "One proposal with its options. Artifacts are summarised as\n`artifactCount`; fetch them per option.",
         "operationId": "get_proposal",
         "parameters": [
           {
@@ -4668,7 +4871,7 @@
         "tags": [
           "proposals"
         ],
-        "summary": "Accepts an option (the recommended one by default), optionally creating an execution.",
+        "summary": "Accepts an option (the recommended one by default), optionally creating\nan execution on the chosen adapter.",
         "operationId": "accept_proposal",
         "parameters": [
           {
@@ -4890,6 +5093,210 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NegotiateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/proposals/{id}/options/{optionId}/artifacts": {
+      "get": {
+        "tags": [
+          "proposals"
+        ],
+        "summary": "The generated files of one option, complete and ready to commit. Kept\noff the proposal body because they can be large.",
+        "operationId": "list_option_artifacts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Proposal id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "optionId",
+            "in": "path",
+            "description": "Option id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Artifact"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/proposals/{id}/pull-request": {
+      "post": {
+        "tags": [
+          "proposals"
+        ],
+        "summary": "Accepts an option and opens a pull request with its generated files:\nan execution on the `github` adapter (`repo.checkout` →\n`repo.open_pull_request`). The returned proposal carries the\n`executionId`; the execution's `outputs.pull_request_url` appears once\nthe step succeeds.",
+        "operationId": "open_pull_request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Proposal id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenPullRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Proposal"
                 }
               }
             }
@@ -5250,6 +5657,266 @@
         }
       }
     },
+    "/api/v1/scans/{id}/stream": {
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "summary": "Streams a scan's progress live. Each `data:` line is the whole `Scan`\n(stages included) after a change; a final event named `end` is sent once\nthe scan succeeded or failed, and one named `error` if the upstream watch\nfails midway.",
+        "operationId": "watch_scan",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scan id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events, one Scan per message",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Scan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Scanner limits and ranking defaults, composed from both services.",
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Changes either part (or both). Omitted fields keep their current value.\nA part that is not in the body is read back unchanged.",
+        "operationId": "update_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/status": {
       "get": {
         "tags": [
@@ -5277,6 +5944,17 @@
         "type": "object",
         "description": "Body of `POST /proposals/{id}/accept`.",
         "properties": {
+          "adapter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Adapter",
+                "description": "Runtime for that execution (CONTRACT.md §5.4). `simulated` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "createExecution": {
             "type": [
               "boolean",
@@ -5292,6 +5970,15 @@
             "description": "Option to accept. Empty accepts the recommended option."
           }
         }
+      },
+      "Adapter": {
+        "type": "string",
+        "description": "Runtime that runs a whole execution (CONTRACT.md §5.4). The proto carries\nit as a free string; the API narrows it to the adapters that exist so a\ntypo is a 400 here instead of an `INVALID_ARGUMENT` three hops later.",
+        "enum": [
+          "simulated",
+          "docker",
+          "github"
+        ]
       },
       "AnalyzeImpactRequest": {
         "type": "object",
@@ -5457,6 +6144,39 @@
           "expired"
         ]
       },
+      "Artifact": {
+        "type": "object",
+        "description": "A generated file an option would add to the repository (CONTRACT.md §14).\nContent is complete and ready to commit.",
+        "required": [
+          "path",
+          "content",
+          "language",
+          "purpose",
+          "replacesExisting"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Full file content."
+          },
+          "language": {
+            "type": "string",
+            "description": "`dockerfile`, `yaml`, `hcl`, `bicep`, `json`, `markdown`, `nginx` or `text`."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative path, e.g. `.github/workflows/deploy.yml`."
+          },
+          "purpose": {
+            "type": "string",
+            "description": "One sentence: why this file exists."
+          },
+          "replacesExisting": {
+            "type": "boolean",
+            "description": "True when the repository already has a file at this path."
+          }
+        }
+      },
       "CancelExecutionRequest": {
         "type": "object",
         "description": "Body of `POST /executions/{id}/cancel`.",
@@ -5503,6 +6223,30 @@
           "sourceMessageId": {
             "type": "string",
             "description": "Message that introduced it."
+          }
+        }
+      },
+      "CostLine": {
+        "type": "object",
+        "description": "One line of an option's cost model. The lines sum to `estimatedMonthlyCostUsd`.",
+        "required": [
+          "item",
+          "monthlyUsd",
+          "note"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "description": "What is billed, e.g. `compute`, `database`, `registry`, `networking`, `ci_minutes`."
+          },
+          "monthlyUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Monthly cost in USD."
+          },
+          "note": {
+            "type": "string",
+            "description": "How the estimate was made."
           }
         }
       },
@@ -5566,6 +6310,30 @@
           "steps"
         ],
         "properties": {
+          "adapter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Adapter",
+                "description": "Runtime for the whole run (CONTRACT.md §5.4). `simulated` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artifacts": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Files a `repo.open_pull_request` step commits, keyed by repository path.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "patternId": {
             "type": [
               "string",
@@ -6257,7 +7025,8 @@
           "steps",
           "revision",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "outputs"
         ],
         "properties": {
           "adapter": {
@@ -6308,6 +7077,16 @@
             "format": "int64",
             "description": "Human-friendly sequence number.",
             "minimum": 0
+          },
+          "outputs": {
+            "type": "object",
+            "description": "Things the run produced: `pull_request_url`, `image`, `container_url`, `workdir`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "patternId": {
             "type": [
@@ -6527,16 +7306,19 @@
           "security",
           "documentation",
           "deployment",
-          "migration"
+          "migration",
+          "runtime",
+          "configuration"
         ]
       },
       "FactKind": {
         "type": "string",
-        "description": "Detected facts are read from the repository; inferred facts are conclusions drawn from them.",
+        "description": "Detected facts are read from the repository; inferred facts are conclusions\ndrawn from them; configured facts were declared in `.sdi.yml` (CONTRACT.md §12).",
         "enum": [
           "unspecified",
           "detected",
-          "inferred"
+          "inferred",
+          "configured"
         ]
       },
       "Failure": {
@@ -6641,6 +7423,14 @@
           "kind"
         ],
         "properties": {
+          "budgetMonthlyUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Monthly budget in USD; becomes the `budget_monthly_usd` constraint (CONTRACT.md §6).\nUnset or 0 means no budget beyond what `.sdi.yml` declares."
+          },
           "kind": {
             "$ref": "#/components/schemas/ProposalKind",
             "description": "What to propose."
@@ -7089,6 +7879,85 @@
           }
         }
       },
+      "IntelligenceSettings": {
+        "type": "object",
+        "description": "Ranking defaults and the reasoner, changed from the settings page.",
+        "required": [
+          "reasoner",
+          "model",
+          "apiKeyConfigured",
+          "costCeilingUsd"
+        ],
+        "properties": {
+          "apiKeyConfigured": {
+            "type": "boolean",
+            "description": "True when `ANTHROPIC_API_KEY` is configured. Read-only."
+          },
+          "costCeilingUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Options above this monthly cost lose ranking unless a budget says otherwise."
+          },
+          "defaultWeights": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScoreWeights",
+                "description": "Signal weights every new proposal starts from."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used by the `claude` reasoner."
+          },
+          "reasoner": {
+            "type": "string",
+            "description": "`heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise."
+          }
+        }
+      },
+      "IntelligenceSettingsPatch": {
+        "type": "object",
+        "description": "The `intelligence` part of `PATCH /settings`: every field is optional and\nunset fields keep their current value. `apiKeyConfigured` is read-only.",
+        "properties": {
+          "costCeilingUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Options above this monthly cost lose ranking unless a budget says otherwise."
+          },
+          "defaultWeights": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScoreWeights",
+                "description": "Signal weights every new proposal starts from. Replaced as a whole."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model used by the `claude` reasoner."
+          },
+          "reasoner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`heuristic` or `claude`."
+          }
+        }
+      },
       "IntelligenceStats": {
         "type": "object",
         "description": "Counters of the intelligence store.",
@@ -7220,6 +8089,96 @@
           "public_template"
         ]
       },
+      "KnowledgeSettings": {
+        "type": "object",
+        "description": "Scanner limits, changed from the settings page.",
+        "required": [
+          "scanMaxFiles",
+          "scanMaxFileBytes",
+          "scanConcurrency",
+          "pipelineRunsLimit",
+          "cacheGithub"
+        ],
+        "properties": {
+          "cacheGithub": {
+            "type": "boolean",
+            "description": "GitHub API ETag caching."
+          },
+          "pipelineRunsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Pipeline runs synced from the provider per refresh.",
+            "minimum": 0
+          },
+          "scanConcurrency": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Files fetched concurrently.",
+            "minimum": 0
+          },
+          "scanMaxFileBytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum size of one analysed file in bytes.",
+            "minimum": 0
+          },
+          "scanMaxFiles": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum files analysed per scan.",
+            "minimum": 0
+          }
+        }
+      },
+      "KnowledgeSettingsPatch": {
+        "type": "object",
+        "description": "The `knowledge` part of `PATCH /settings`: every field is optional and\nunset fields keep their current value.",
+        "properties": {
+          "cacheGithub": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "GitHub API ETag caching."
+          },
+          "pipelineRunsLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pipeline runs synced from the provider per refresh.",
+            "minimum": 0
+          },
+          "scanConcurrency": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Files fetched concurrently.",
+            "minimum": 0
+          },
+          "scanMaxFileBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum size of one analysed file in bytes.",
+            "minimum": 0
+          },
+          "scanMaxFiles": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum files analysed per scan.",
+            "minimum": 0
+          }
+        }
+      },
       "KnowledgeStats": {
         "type": "object",
         "description": "Counters of the knowledge store.",
@@ -7274,6 +8233,91 @@
             "format": "int32",
             "description": "Connected projects.",
             "minimum": 0
+          }
+        }
+      },
+      "MaturityAxis": {
+        "type": "object",
+        "description": "One of the eight delivery maturity axes (CONTRACT.md §13).",
+        "required": [
+          "key",
+          "label",
+          "score",
+          "summary",
+          "findings",
+          "recommendedPatterns"
+        ],
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Findings that lowered the score, e.g. `No Dockerfile`."
+          },
+          "key": {
+            "type": "string",
+            "description": "`containerization`, `ci`, `tests`, `iac`, `dependencies`, `docs`, `secrets` or `runtime`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human label."
+          },
+          "recommendedPatterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pattern ids that would raise this axis, best first."
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 – 100.",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line summary of the axis."
+          }
+        }
+      },
+      "MaturityScore": {
+        "type": "object",
+        "description": "Delivery maturity of a project, computed from facts only.",
+        "required": [
+          "projectId",
+          "overall",
+          "stage",
+          "axes",
+          "computedAt"
+        ],
+        "properties": {
+          "axes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaturityAxis"
+            },
+            "description": "The eight axes in display order."
+          },
+          "computedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was computed."
+          },
+          "overall": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Weighted mean of the axes, 0 – 100.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project id."
+          },
+          "stage": {
+            "type": "string",
+            "description": "`legacy` (< 35), `transitional` (35–69) or `modern` (≥ 70)."
           }
         }
       },
@@ -7419,6 +8463,19 @@
           "migration"
         ]
       },
+      "OpenPullRequestRequest": {
+        "type": "object",
+        "description": "Body of `POST /proposals/{id}/pull-request`.",
+        "properties": {
+          "optionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Option whose artifacts to commit. Empty uses the recommended option."
+          }
+        }
+      },
       "Pattern": {
         "type": "object",
         "description": "A reusable, outcome-tracked way of doing something.",
@@ -7446,7 +8503,9 @@
           "pros",
           "cons",
           "plan",
-          "createdAt"
+          "createdAt",
+          "targetsAxes",
+          "costLines"
         ],
         "properties": {
           "category": {
@@ -7469,6 +8528,13 @@
               "type": "string"
             },
             "description": "Drawbacks."
+          },
+          "costLines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CostLine"
+            },
+            "description": "The catalog's cost model: the baseline a proposal rescales per project."
           },
           "createdAt": {
             "type": "string",
@@ -7566,6 +8632,13 @@
           "summary": {
             "type": "string",
             "description": "Short summary."
+          },
+          "targetsAxes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Maturity axes a modernization pattern raises (CONTRACT.md §13 keys); empty otherwise."
           },
           "technologies": {
             "type": "array",
@@ -7948,6 +9021,58 @@
           }
         }
       },
+      "PlatformEvent": {
+        "type": "object",
+        "description": "A change notification from one of the services, as streamed by\n`GET /events/stream`. The web app invalidates its query caches by\n`entity` (CONTRACT.md §8, \"Live events\").",
+        "required": [
+          "entity",
+          "entityId",
+          "action",
+          "status",
+          "at",
+          "data"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`created`, `updated`, `deleted` or `progress`."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it happened."
+          },
+          "data": {
+            "type": "object",
+            "description": "Extra data.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "entity": {
+            "type": "string",
+            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval` or `pattern`."
+          },
+          "entityId": {
+            "type": "string",
+            "description": "Id of the entity that changed."
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project the entity belongs to; null for entities not tied to one."
+          },
+          "status": {
+            "type": "string",
+            "description": "Entity status after the change, in the entity's own vocabulary (e.g. `scanning`)."
+          }
+        }
+      },
       "Policy": {
         "type": "object",
         "description": "The decision applied to one action type.",
@@ -8022,7 +9147,9 @@
           "createdAt",
           "tldr",
           "stack",
-          "openQuestions"
+          "openQuestions",
+          "maturityScore",
+          "hasConfig"
         ],
         "properties": {
           "createdAt": {
@@ -8037,6 +9164,10 @@
           "description": {
             "type": "string",
             "description": "Repository description."
+          },
+          "hasConfig": {
+            "type": "boolean",
+            "description": "True when the repository carries a `.sdi.yml`."
           },
           "id": {
             "type": "string",
@@ -8060,6 +9191,12 @@
             ],
             "format": "date-time",
             "description": "When the latest scan finished."
+          },
+          "maturityScore": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Delivery maturity 0–100 (CONTRACT.md §13). 0 until the first scan succeeds.",
+            "minimum": 0
           },
           "mode": {
             "$ref": "#/components/schemas/ProjectMode",
@@ -8101,6 +9238,95 @@
           "tldr": {
             "type": "string",
             "description": "One-line understanding. Empty until the first scan succeeds."
+          }
+        }
+      },
+      "ProjectConfig": {
+        "type": "object",
+        "description": "What the repository declared in `.sdi.yml` (CONTRACT.md §12). Values that\nthe file does not set are null, so the UI can tell \"not configured\" from\na configured empty value.",
+        "required": [
+          "present",
+          "environments",
+          "scanExclude",
+          "errors"
+        ],
+        "properties": {
+          "budgetMonthlyUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Monthly budget in USD; becomes the budget constraint on every proposal."
+          },
+          "deployTarget": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`vm`, `azure`, `aws`, `gcp`, `kubernetes`, `fly`, `render` or `none`."
+          },
+          "environments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Declared environments, e.g. `staging`, `production`."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Parse problems, in plain words. The config is ignored when non-empty."
+          },
+          "healthPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Health path polled by `container.run`."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repository path of the file, when present."
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Port the service listens on.",
+            "minimum": 0
+          },
+          "present": {
+            "type": "boolean",
+            "description": "True when the repository carries the file."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cloud region."
+          },
+          "scanExclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs excluded from the scan."
+          },
+          "testCommand": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Test command used by the docker adapter's `tests.run_local`."
           }
         }
       },
@@ -8241,7 +9467,7 @@
       },
       "ProposalKind": {
         "type": "string",
-        "description": "What a proposal is about.",
+        "description": "What a proposal is about. `modernization` moves a legacy or transitional\nproject up the maturity axes (CONTRACT.md §6).",
         "enum": [
           "unspecified",
           "deployment",
@@ -8250,12 +9476,13 @@
           "testing",
           "security",
           "documentation",
-          "dependency"
+          "dependency",
+          "modernization"
         ]
       },
       "ProposalOption": {
         "type": "object",
-        "description": "One ranked option of a proposal.",
+        "description": "One ranked option of a proposal. The generated files are not inlined\n(they can be large); `artifactCount` says how many\n`GET /proposals/{id}/options/{optionId}/artifacts` returns.",
         "required": [
           "id",
           "title",
@@ -8267,15 +9494,30 @@
           "evidence",
           "estimatedMonthlyCostUsd",
           "unmetRequirements",
-          "plan"
+          "plan",
+          "artifactCount",
+          "costBreakdown"
         ],
         "properties": {
+          "artifactCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of generated files; fetch them from the artifacts route.",
+            "minimum": 0
+          },
           "cons": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Drawbacks."
+          },
+          "costBreakdown": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CostLine"
+            },
+            "description": "Cost model behind `estimatedMonthlyCostUsd`."
           },
           "estimatedMonthlyCostUsd": {
             "type": "number",
@@ -8388,6 +9630,13 @@
             ],
             "format": "date-time",
             "description": "When it was answered."
+          },
+          "answeredBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`user` or `config` (answered by `.sdi.yml`). Null while open."
           },
           "id": {
             "type": "string",
@@ -8849,6 +10098,24 @@
           }
         }
       },
+      "Settings": {
+        "type": "object",
+        "description": "Response of `GET /settings` and `PATCH /settings`.",
+        "required": [
+          "knowledge",
+          "intelligence"
+        ],
+        "properties": {
+          "intelligence": {
+            "$ref": "#/components/schemas/IntelligenceSettings",
+            "description": "Ranking defaults and the reasoner (intelligence service)."
+          },
+          "knowledge": {
+            "$ref": "#/components/schemas/KnowledgeSettings",
+            "description": "Scanner limits (knowledge service)."
+          }
+        }
+      },
       "SimilarProject": {
         "type": "object",
         "description": "A project that looks like the requested one.",
@@ -9188,6 +10455,17 @@
             "format": "date-time",
             "description": "When it was generated."
           },
+          "maturity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MaturityScore",
+                "description": "Delivery maturity, when computed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "projectId": {
             "type": "string",
             "description": "Project id."
@@ -9260,6 +10538,34 @@
           "decision": {
             "$ref": "#/components/schemas/PolicyDecision",
             "description": "New decision."
+          }
+        }
+      },
+      "UpdateSettingsRequest": {
+        "type": "object",
+        "description": "Body of `PATCH /settings`. Either part may be omitted; within a part,\nomitted fields keep their current value.",
+        "properties": {
+          "intelligence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IntelligenceSettingsPatch",
+                "description": "Changes to the ranking defaults and the reasoner."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "knowledge": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KnowledgeSettingsPatch",
+                "description": "Changes to the scanner limits."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       }

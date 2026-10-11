@@ -14,6 +14,7 @@ export function ProjectsTableSkeleton({ rows = 5 }: { rows?: number }) {
             <TableHead className={HEAD_CLASS}>Status</TableHead>
             <TableHead className={HEAD_CLASS}>Mode</TableHead>
             <TableHead className={HEAD_CLASS}>Stack</TableHead>
+            <TableHead className={HEAD_CLASS}>Maturity</TableHead>
             <TableHead className={`${HEAD_CLASS} text-right`}>Open questions</TableHead>
             <TableHead className={HEAD_CLASS}>Last scanned</TableHead>
             <TableHead className={HEAD_CLASS}>
@@ -38,6 +39,13 @@ export function ProjectsTableSkeleton({ rows = 5 }: { rows?: number }) {
                   <Skeleton className="h-5 w-14" />
                   <Skeleton className="h-5 w-12" />
                   <Skeleton className="h-5 w-16" />
+                </div>
+              </TableCell>
+              <TableCell className={COLUMN_CLASS.maturity}>
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-4 w-6" />
+                  <Skeleton className="h-2 w-9" />
+                  <Skeleton className="h-3 w-14" />
                 </div>
               </TableCell>
               <TableCell className={COLUMN_CLASS.questions}>

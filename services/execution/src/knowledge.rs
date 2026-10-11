@@ -1,5 +1,6 @@
-//! The one call this service makes to knowledge: closing the loop with the
-//! outcome of a pattern-backed run. Trait-abstracted so tests need no peer.
+//! The calls this service makes to knowledge: closing the loop with the
+//! outcome of a pattern-backed run, and naming the project an execution
+//! belongs to. Trait-abstracted so tests need no peer.
 
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
@@ -7,13 +8,21 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sdi_proto::knowledge::v1::{
-    RecordPatternOutcomeRequest, knowledge_service_client::KnowledgeServiceClient,
+    GetProjectRequest, RecordPatternOutcomeRequest,
+    knowledge_service_client::KnowledgeServiceClient,
 };
 use tonic::transport::Channel;
 
 #[async_trait]
 pub trait PatternOutcomes: Send + Sync {
     async fn record(&self, pattern_id: &str, project_id: &str, succeeded: bool) -> Result<()>;
+
+    /// Display name of a project, or empty when knowledge cannot say: the
+    /// execution list and header show it next to the title, and
+    /// `CreateExecutionRequest` only carries the id.
+    async fn project_name(&self, _project_id: &str) -> String {
+        String::new()
+    }
 }
 
 pub struct GrpcPatternOutcomes {
@@ -42,6 +51,22 @@ impl PatternOutcomes for GrpcPatternOutcomes {
             .await
             .context("RecordPatternOutcome failed")?;
         Ok(())
+    }
+
+    async fn project_name(&self, project_id: &str) -> String {
+        let mut client = KnowledgeServiceClient::new(self.channel.clone());
+        match client
+            .get_project(GetProjectRequest {
+                id: project_id.to_owned(),
+            })
+            .await
+        {
+            Ok(project) => project.into_inner().name,
+            Err(status) => {
+                tracing::warn!(project_id, %status, "could not resolve the project name");
+                String::new()
+            }
+        }
     }
 }
 

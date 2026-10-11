@@ -14,7 +14,8 @@ const TONE_CLASS: Record<StatusTone, string> = {
   brand: 'border-brand/20 bg-brand/10 text-brand',
 }
 
-const DOT_CLASS: Record<StatusTone, string> = {
+/** 6px dot fill per tone; StatusDot and the badge read the same. */
+export const TONE_DOT_CLASS: Record<StatusTone, string> = {
   neutral: 'bg-muted-foreground/60',
   info: 'bg-info',
   success: 'bg-success',
@@ -39,9 +40,9 @@ export function StatusBadge({ tone, children, live = false, dot = true, classNam
       {dot && (
         <span className="relative flex size-1.5">
           {live && (
-            <span className={cn('absolute inline-flex size-full animate-ping rounded-full opacity-60', DOT_CLASS[tone])} />
+            <span className={cn('absolute inline-flex size-full rounded-full opacity-60 motion-safe:animate-ping', TONE_DOT_CLASS[tone])} />
           )}
-          <span className={cn('relative inline-flex size-1.5 rounded-full', DOT_CLASS[tone])} />
+          <span className={cn('relative inline-flex size-1.5 rounded-full', TONE_DOT_CLASS[tone])} />
         </span>
       )}
       {children}

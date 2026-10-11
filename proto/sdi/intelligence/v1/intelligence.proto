@@ -128,7 +128,7 @@ message ProposalOption {
   // Real files this option would add to the repository, generated from the
   // project's facts. Committed by a `repo.open_pull_request` step.
   repeated Artifact artifacts = 13;
-  repeated CostLine cost_breakdown = 14;
+  repeated sdi.common.v1.CostLine cost_breakdown = 14;
 }
 
 // A generated file. Content is complete and ready to commit.
@@ -142,12 +142,6 @@ message Artifact {
   string purpose = 4;
   // True when the repository already has a file at this path.
   bool replaces_existing = 5;
-}
-
-message CostLine {
-  string item = 1;
-  double monthly_usd = 2;
-  string note = 3;
 }
 
 // A condition agreed during negotiation, e.g. "keep the current networking".

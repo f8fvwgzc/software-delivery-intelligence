@@ -20,7 +20,7 @@ export type MessageRole = components['schemas']['MessageRole']
 export type ScoreBreakdown = components['schemas']['ScoreBreakdown']
 export type ScoreWeights = components['schemas']['ScoreWeights']
 
-/** The seven kinds a proposal can be about, in the order they are offered. */
+/** The eight kinds a proposal can be about, in the order they are offered. */
 export const PROPOSAL_KINDS = [
   'deployment',
   'infrastructure',
@@ -29,6 +29,7 @@ export const PROPOSAL_KINDS = [
   'security',
   'documentation',
   'dependency',
+  'modernization',
 ] as const satisfies readonly ProposalKind[]
 
 export const PROPOSAL_KIND_LABEL: Record<ProposalKind, string> = {
@@ -40,6 +41,12 @@ export const PROPOSAL_KIND_LABEL: Record<ProposalKind, string> = {
   security: 'Security',
   documentation: 'Documentation',
   dependency: 'Dependencies',
+  modernization: 'Modernization',
+}
+
+/** True for a string that names one of the offered kinds (e.g. from `?kind=`). */
+export function isProposalKind(value: string | null | undefined): value is (typeof PROPOSAL_KINDS)[number] {
+  return PROPOSAL_KINDS.includes(value as (typeof PROPOSAL_KINDS)[number])
 }
 
 export const PROPOSAL_STATUS: Record<ProposalStatus, { label: string; tone: StatusTone; live?: boolean }> = {
@@ -83,47 +90,4 @@ export const MESSAGE_ROLE_LABEL: Record<MessageRole, string> = {
   user: 'You',
   assistant: 'Assistant',
   system: 'System',
-}
-
-/** Risk per policy action type (CONTRACT §5.2). Unknown types read as medium. */
-export type RiskLevel = 'safe' | 'medium' | 'high' | 'blocked'
-
-const ACTION_RISK: Record<string, RiskLevel> = {
-  'repo.read': 'safe',
-  'repo.analyze': 'safe',
-  'tests.run_local': 'safe',
-  'docs.generate': 'safe',
-  'deps.install': 'medium',
-  'container.build': 'medium',
-  'container.run': 'medium',
-  'env.create_temporary': 'medium',
-  'db.create_temporary': 'medium',
-  'cloud.create_dev_resource': 'medium',
-  'cloud.modify_resource': 'high',
-  'deploy.staging': 'high',
-  'deploy.production': 'high',
-  'db.migrate_production': 'high',
-  'backup.restore_production': 'high',
-  'resource.delete': 'high',
-  'firewall.modify': 'high',
-  'secrets.rotate': 'high',
-  'db.destroy_production': 'blocked',
-}
-
-export function riskOf(actionType: string): RiskLevel {
-  return ACTION_RISK[actionType] ?? 'medium'
-}
-
-export const RISK_TONE: Record<RiskLevel, StatusTone> = {
-  safe: 'success',
-  medium: 'warning',
-  high: 'destructive',
-  blocked: 'destructive',
-}
-
-export const RISK_LABEL: Record<RiskLevel, string> = {
-  safe: 'Safe',
-  medium: 'Medium risk',
-  high: 'High risk',
-  blocked: 'Blocked',
 }

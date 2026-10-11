@@ -107,6 +107,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/events/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every change on the platform as it happens, merged from the three
+         *     services (CONTRACT.md §8, "Live events"). Each `data:` line is a
+         *     `PlatformEvent`. The stream never ends: a service that goes away is
+         *     reconnected with backoff while the others keep flowing, so the web app
+         *     opens it once per tab and invalidates its caches by `entity`.
+         */
+        get: operations["watch_platform_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/executions": {
         parameters: {
             query?: never;
@@ -117,7 +140,11 @@ export interface paths {
         /** Executions, newest first, optionally of one project. */
         get: operations["list_executions"];
         put?: never;
-        /** Creates an execution from a plan. It stays in `planning` until started. */
+        /**
+         * Creates an execution from a plan. It stays in `planning` until started.
+         *     `adapter` picks the runtime (CONTRACT.md §5.4); `artifacts` are the files
+         *     a `repo.open_pull_request` step commits.
+         */
         post: operations["create_execution"];
         delete?: never;
         options?: never;
@@ -471,6 +498,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the repository declares in `.sdi.yml` (CONTRACT.md §12). A project
+         *     without the file answers `present: false`.
+         */
+        get: operations["get_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{id}/dependencies": {
         parameters: {
             query?: never;
@@ -568,6 +615,26 @@ export interface paths {
         put?: never;
         /** What a change to one node or path would touch. */
         post: operations["analyze_impact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/maturity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Delivery maturity: eight axes 0–100 with findings and the patterns that
+         *     would raise each (CONTRACT.md §13).
+         */
+        get: operations["get_maturity"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -704,7 +771,10 @@ export interface paths {
         /** Proposals, optionally of one project. */
         get: operations["list_proposals"];
         put?: never;
-        /** Generates a ranked, evidence-backed proposal for a project. */
+        /**
+         * Generates a ranked, evidence-backed proposal for a project. A
+         *     `budgetMonthlyUsd` becomes a constraint the options are marked against.
+         */
         post: operations["generate_proposal"];
         delete?: never;
         options?: never;
@@ -719,7 +789,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One proposal with its options. */
+        /**
+         * One proposal with its options. Artifacts are summarised as
+         *     `artifactCount`; fetch them per option.
+         */
         get: operations["get_proposal"];
         put?: never;
         post?: never;
@@ -738,7 +811,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Accepts an option (the recommended one by default), optionally creating an execution. */
+        /**
+         * Accepts an option (the recommended one by default), optionally creating
+         *     an execution on the chosen adapter.
+         */
         post: operations["accept_proposal"];
         delete?: never;
         options?: never;
@@ -758,6 +834,49 @@ export interface paths {
         put?: never;
         /** One negotiation turn. May re-rank the options and change the recommendation. */
         post: operations["negotiate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/proposals/{id}/options/{optionId}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The generated files of one option, complete and ready to commit. Kept
+         *     off the proposal body because they can be large.
+         */
+        get: operations["list_option_artifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/proposals/{id}/pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accepts an option and opens a pull request with its generated files:
+         *     an execution on the `github` adapter (`repo.checkout` →
+         *     `repo.open_pull_request`). The returned proposal carries the
+         *     `executionId`; the execution's `outputs.pull_request_url` appears once
+         *     the step succeeds.
+         */
+        post: operations["open_pull_request"];
         delete?: never;
         options?: never;
         head?: never;
@@ -815,6 +934,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/scans/{id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streams a scan's progress live. Each `data:` line is the whole `Scan`
+         *     (stages included) after a change; a final event named `end` is sent once
+         *     the scan succeeded or failed, and one named `error` if the upstream watch
+         *     fails midway.
+         */
+        get: operations["watch_scan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scanner limits and ranking defaults, composed from both services. */
+        get: operations["get_settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Changes either part (or both). Omitted fields keep their current value.
+         *     A part that is not in the body is read back unchanged.
+         */
+        patch: operations["update_settings"];
+        trace?: never;
+    };
     "/api/v1/system/status": {
         parameters: {
             query?: never;
@@ -838,11 +1000,19 @@ export interface components {
     schemas: {
         /** @description Body of `POST /proposals/{id}/accept`. */
         AcceptProposalRequest: {
+            adapter?: components["schemas"]["Adapter"] | null;
             /** @description Hand the plan to the execution service straight away. */
             createExecution?: boolean | null;
             /** @description Option to accept. Empty accepts the recommended option. */
             optionId?: string | null;
         };
+        /**
+         * @description Runtime that runs a whole execution (CONTRACT.md §5.4). The proto carries
+         *     it as a free string; the API narrows it to the adapters that exist so a
+         *     typo is a 400 here instead of an `INVALID_ARGUMENT` three hops later.
+         * @enum {string}
+         */
+        Adapter: "simulated" | "docker" | "github";
         /** @description Body of `POST /projects/{id}/impact`. One of `nodeId` or `path` is required. */
         AnalyzeImpactRequest: {
             /**
@@ -913,6 +1083,22 @@ export interface components {
          * @enum {string}
          */
         ApprovalStatus: "unspecified" | "pending" | "approved" | "rejected" | "expired";
+        /**
+         * @description A generated file an option would add to the repository (CONTRACT.md §14).
+         *     Content is complete and ready to commit.
+         */
+        Artifact: {
+            /** @description Full file content. */
+            content: string;
+            /** @description `dockerfile`, `yaml`, `hcl`, `bicep`, `json`, `markdown`, `nginx` or `text`. */
+            language: string;
+            /** @description Repository-relative path, e.g. `.github/workflows/deploy.yml`. */
+            path: string;
+            /** @description One sentence: why this file exists. */
+            purpose: string;
+            /** @description True when the repository already has a file at this path. */
+            replacesExisting: boolean;
+        };
         /** @description Body of `POST /executions/{id}/cancel`. */
         CancelExecutionRequest: {
             /** @description Why it was cancelled. */
@@ -931,6 +1117,18 @@ export interface components {
             key: string;
             /** @description Message that introduced it. */
             sourceMessageId: string;
+        };
+        /** @description One line of an option's cost model. The lines sum to `estimatedMonthlyCostUsd`. */
+        CostLine: {
+            /** @description What is billed, e.g. `compute`, `database`, `registry`, `networking`, `ci_minutes`. */
+            item: string;
+            /**
+             * Format: double
+             * @description Monthly cost in USD.
+             */
+            monthlyUsd: number;
+            /** @description How the estimate was made. */
+            note: string;
         };
         /** @description Body of `POST /decisions`. */
         CreateDecisionRequest: {
@@ -951,6 +1149,11 @@ export interface components {
         };
         /** @description Body of `POST /executions`. */
         CreateExecutionRequest: {
+            adapter?: components["schemas"]["Adapter"] | null;
+            /** @description Files a `repo.open_pull_request` step commits, keyed by repository path. */
+            artifacts?: {
+                [key: string]: string;
+            } | null;
             /** @description Pattern the plan came from, if any. */
             patternId?: string | null;
             /** @description Project to run against. */
@@ -1271,6 +1474,10 @@ export interface components {
              * @description Human-friendly sequence number.
              */
             number: number;
+            /** @description Things the run produced: `pull_request_url`, `image`, `container_url`, `workdir`. */
+            outputs: {
+                [key: string]: string;
+            };
             /** @description Pattern it came from, if any. */
             patternId?: string | null;
             /** @description Project it belongs to. */
@@ -1368,12 +1575,13 @@ export interface components {
          * @description Area a fact belongs to.
          * @enum {string}
          */
-        FactCategory: "unspecified" | "repository" | "language" | "framework" | "datastore" | "container" | "ci_cd" | "iac" | "cloud" | "testing" | "dependency" | "security" | "documentation" | "deployment" | "migration";
+        FactCategory: "unspecified" | "repository" | "language" | "framework" | "datastore" | "container" | "ci_cd" | "iac" | "cloud" | "testing" | "dependency" | "security" | "documentation" | "deployment" | "migration" | "runtime" | "configuration";
         /**
-         * @description Detected facts are read from the repository; inferred facts are conclusions drawn from them.
+         * @description Detected facts are read from the repository; inferred facts are conclusions
+         *     drawn from them; configured facts were declared in `.sdi.yml` (CONTRACT.md §12).
          * @enum {string}
          */
-        FactKind: "unspecified" | "detected" | "inferred";
+        FactKind: "unspecified" | "detected" | "inferred" | "configured";
         /** @description Why an execution is paused. */
         Failure: {
             /** @description Step keys that cannot run until this is resolved. */
@@ -1412,6 +1620,12 @@ export interface components {
         };
         /** @description Body of `POST /proposals`. */
         GenerateProposalRequest: {
+            /**
+             * Format: double
+             * @description Monthly budget in USD; becomes the `budget_monthly_usd` constraint (CONTRACT.md §6).
+             *     Unset or 0 means no budget beyond what `.sdi.yml` declares.
+             */
+            budgetMonthlyUsd?: number | null;
             /** @description What to propose. */
             kind: components["schemas"]["ProposalKind"];
             /** @description Project to propose for. */
@@ -1590,6 +1804,37 @@ export interface components {
             /** @description Relations walked from the origin to reach this node. */
             via: string[];
         };
+        /** @description Ranking defaults and the reasoner, changed from the settings page. */
+        IntelligenceSettings: {
+            /** @description True when `ANTHROPIC_API_KEY` is configured. Read-only. */
+            apiKeyConfigured: boolean;
+            /**
+             * Format: double
+             * @description Options above this monthly cost lose ranking unless a budget says otherwise.
+             */
+            costCeilingUsd: number;
+            defaultWeights?: components["schemas"]["ScoreWeights"] | null;
+            /** @description Model used by the `claude` reasoner. */
+            model: string;
+            /** @description `heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise. */
+            reasoner: string;
+        };
+        /**
+         * @description The `intelligence` part of `PATCH /settings`: every field is optional and
+         *     unset fields keep their current value. `apiKeyConfigured` is read-only.
+         */
+        IntelligenceSettingsPatch: {
+            /**
+             * Format: double
+             * @description Options above this monthly cost lose ranking unless a budget says otherwise.
+             */
+            costCeilingUsd?: number | null;
+            defaultWeights?: components["schemas"]["ScoreWeights"] | null;
+            /** @description Model used by the `claude` reasoner. */
+            model?: string | null;
+            /** @description `heuristic` or `claude`. */
+            reasoner?: string | null;
+        };
         /** @description Counters of the intelligence store. */
         IntelligenceStats: {
             /**
@@ -1657,6 +1902,59 @@ export interface components {
          * @enum {string}
          */
         KnowledgeScope: "unspecified" | "private" | "team" | "department" | "organization" | "public_template";
+        /** @description Scanner limits, changed from the settings page. */
+        KnowledgeSettings: {
+            /** @description GitHub API ETag caching. */
+            cacheGithub: boolean;
+            /**
+             * Format: int32
+             * @description Pipeline runs synced from the provider per refresh.
+             */
+            pipelineRunsLimit: number;
+            /**
+             * Format: int32
+             * @description Files fetched concurrently.
+             */
+            scanConcurrency: number;
+            /**
+             * Format: int32
+             * @description Maximum size of one analysed file in bytes.
+             */
+            scanMaxFileBytes: number;
+            /**
+             * Format: int32
+             * @description Maximum files analysed per scan.
+             */
+            scanMaxFiles: number;
+        };
+        /**
+         * @description The `knowledge` part of `PATCH /settings`: every field is optional and
+         *     unset fields keep their current value.
+         */
+        KnowledgeSettingsPatch: {
+            /** @description GitHub API ETag caching. */
+            cacheGithub?: boolean | null;
+            /**
+             * Format: int32
+             * @description Pipeline runs synced from the provider per refresh.
+             */
+            pipelineRunsLimit?: number | null;
+            /**
+             * Format: int32
+             * @description Files fetched concurrently.
+             */
+            scanConcurrency?: number | null;
+            /**
+             * Format: int32
+             * @description Maximum size of one analysed file in bytes.
+             */
+            scanMaxFileBytes?: number | null;
+            /**
+             * Format: int32
+             * @description Maximum files analysed per scan.
+             */
+            scanMaxFiles?: number | null;
+        };
         /** @description Counters of the knowledge store. */
         KnowledgeStats: {
             /**
@@ -1694,6 +1992,43 @@ export interface components {
              * @description Connected projects.
              */
             projects: number;
+        };
+        /** @description One of the eight delivery maturity axes (CONTRACT.md §13). */
+        MaturityAxis: {
+            /** @description Findings that lowered the score, e.g. `No Dockerfile`. */
+            findings: string[];
+            /** @description `containerization`, `ci`, `tests`, `iac`, `dependencies`, `docs`, `secrets` or `runtime`. */
+            key: string;
+            /** @description Human label. */
+            label: string;
+            /** @description Pattern ids that would raise this axis, best first. */
+            recommendedPatterns: string[];
+            /**
+             * Format: int32
+             * @description 0 – 100.
+             */
+            score: number;
+            /** @description One-line summary of the axis. */
+            summary: string;
+        };
+        /** @description Delivery maturity of a project, computed from facts only. */
+        MaturityScore: {
+            /** @description The eight axes in display order. */
+            axes: components["schemas"]["MaturityAxis"][];
+            /**
+             * Format: date-time
+             * @description When it was computed.
+             */
+            computedAt: string;
+            /**
+             * Format: int32
+             * @description Weighted mean of the axes, 0 – 100.
+             */
+            overall: number;
+            /** @description Project id. */
+            projectId: string;
+            /** @description `legacy` (< 35), `transitional` (35–69) or `modern` (≥ 70). */
+            stage: string;
         };
         /** @description One turn of a negotiation. */
         Message: {
@@ -1737,6 +2072,11 @@ export interface components {
          * @enum {string}
          */
         NodeKind: "unspecified" | "repository" | "service" | "library" | "datastore" | "infrastructure" | "pipeline" | "environment" | "deployment" | "container_image" | "iac_module" | "test_suite" | "document" | "external_api" | "owner" | "migration";
+        /** @description Body of `POST /proposals/{id}/pull-request`. */
+        OpenPullRequestRequest: {
+            /** @description Option whose artifacts to commit. Empty uses the recommended option. */
+            optionId?: string | null;
+        };
         /** @description A reusable, outcome-tracked way of doing something. */
         Pattern: {
             /** @description `deployment`, `ci_cd`, `testing`, `infrastructure`, `security`, `documentation` or `dependency`. */
@@ -1750,6 +2090,8 @@ export interface components {
             complexity: number;
             /** @description Drawbacks. */
             cons: string[];
+            /** @description The catalog's cost model: the baseline a proposal rescales per project. */
+            costLines: components["schemas"]["CostLine"][];
             /**
              * Format: date-time
              * @description When the pattern was created.
@@ -1809,6 +2151,8 @@ export interface components {
             successRate: number;
             /** @description Short summary. */
             summary: string;
+            /** @description Maturity axes a modernization pattern raises (CONTRACT.md §13 keys); empty otherwise. */
+            targetsAxes: string[];
             /** @description Technologies involved. */
             technologies: string[];
             /** @description Project names that use this pattern. */
@@ -1970,6 +2314,32 @@ export interface components {
             /** @description How success is verified after the action, in plain words. */
             verification: string;
         };
+        /**
+         * @description A change notification from one of the services, as streamed by
+         *     `GET /events/stream`. The web app invalidates its query caches by
+         *     `entity` (CONTRACT.md §8, "Live events").
+         */
+        PlatformEvent: {
+            /** @description `created`, `updated`, `deleted` or `progress`. */
+            action: string;
+            /**
+             * Format: date-time
+             * @description When it happened.
+             */
+            at: string;
+            /** @description Extra data. */
+            data: {
+                [key: string]: string;
+            };
+            /** @description `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval` or `pattern`. */
+            entity: string;
+            /** @description Id of the entity that changed. */
+            entityId: string;
+            /** @description Project the entity belongs to; null for entities not tied to one. */
+            projectId?: string | null;
+            /** @description Entity status after the change, in the entity's own vocabulary (e.g. `scanning`). */
+            status: string;
+        };
         /** @description The decision applied to one action type. */
         Policy: {
             /** @description Stable key, e.g. `deploy.production`. */
@@ -2006,6 +2376,8 @@ export interface components {
             defaultBranch: string;
             /** @description Repository description. */
             description: string;
+            /** @description True when the repository carries a `.sdi.yml`. */
+            hasConfig: boolean;
             /** @description Project id. */
             id: string;
             /** @description True for private repositories. */
@@ -2017,6 +2389,11 @@ export interface components {
              * @description When the latest scan finished.
              */
             lastScannedAt?: string | null;
+            /**
+             * Format: int32
+             * @description Delivery maturity 0–100 (CONTRACT.md §13). 0 until the first scan succeeds.
+             */
+            maturityScore: number;
             /** @description Observe or execute mode. */
             mode: components["schemas"]["ProjectMode"];
             /** @description Display name (the repository name). */
@@ -2038,6 +2415,41 @@ export interface components {
             status: components["schemas"]["ProjectStatus"];
             /** @description One-line understanding. Empty until the first scan succeeds. */
             tldr: string;
+        };
+        /**
+         * @description What the repository declared in `.sdi.yml` (CONTRACT.md §12). Values that
+         *     the file does not set are null, so the UI can tell "not configured" from
+         *     a configured empty value.
+         */
+        ProjectConfig: {
+            /**
+             * Format: double
+             * @description Monthly budget in USD; becomes the budget constraint on every proposal.
+             */
+            budgetMonthlyUsd?: number | null;
+            /** @description `vm`, `azure`, `aws`, `gcp`, `kubernetes`, `fly`, `render` or `none`. */
+            deployTarget?: string | null;
+            /** @description Declared environments, e.g. `staging`, `production`. */
+            environments: string[];
+            /** @description Parse problems, in plain words. The config is ignored when non-empty. */
+            errors: string[];
+            /** @description Health path polled by `container.run`. */
+            healthPath?: string | null;
+            /** @description Repository path of the file, when present. */
+            path?: string | null;
+            /**
+             * Format: int32
+             * @description Port the service listens on.
+             */
+            port?: number | null;
+            /** @description True when the repository carries the file. */
+            present: boolean;
+            /** @description Cloud region. */
+            region?: string | null;
+            /** @description Globs excluded from the scan. */
+            scanExclude: string[];
+            /** @description Test command used by the docker adapter's `tests.run_local`. */
+            testCommand?: string | null;
         };
         /**
          * @description Observe is read-only analysis (the default); execute allows policy-gated actions.
@@ -2095,14 +2507,26 @@ export interface components {
             weights?: components["schemas"]["ScoreWeights"] | null;
         };
         /**
-         * @description What a proposal is about.
+         * @description What a proposal is about. `modernization` moves a legacy or transitional
+         *     project up the maturity axes (CONTRACT.md §6).
          * @enum {string}
          */
-        ProposalKind: "unspecified" | "deployment" | "infrastructure" | "ci_cd" | "testing" | "security" | "documentation" | "dependency";
-        /** @description One ranked option of a proposal. */
+        ProposalKind: "unspecified" | "deployment" | "infrastructure" | "ci_cd" | "testing" | "security" | "documentation" | "dependency" | "modernization";
+        /**
+         * @description One ranked option of a proposal. The generated files are not inlined
+         *     (they can be large); `artifactCount` says how many
+         *     `GET /proposals/{id}/options/{optionId}/artifacts` returns.
+         */
         ProposalOption: {
+            /**
+             * Format: int32
+             * @description Number of generated files; fetch them from the artifacts route.
+             */
+            artifactCount: number;
             /** @description Drawbacks. */
             cons: string[];
+            /** @description Cost model behind `estimatedMonthlyCostUsd`. */
+            costBreakdown: components["schemas"]["CostLine"][];
             /**
              * Format: double
              * @description Estimated monthly cost in USD.
@@ -2147,6 +2571,8 @@ export interface components {
              * @description When it was answered.
              */
             answeredAt?: string | null;
+            /** @description `user` or `config` (answered by `.sdi.yml`). Null while open. */
+            answeredBy?: string | null;
             /** @description Question id. */
             id: string;
             /** @description Stable machine key, e.g. `deployment_target`. */
@@ -2384,6 +2810,13 @@ export interface components {
             /** @description Mode to switch to. */
             mode: components["schemas"]["ProjectMode"];
         };
+        /** @description Response of `GET /settings` and `PATCH /settings`. */
+        Settings: {
+            /** @description Ranking defaults and the reasoner (intelligence service). */
+            intelligence: components["schemas"]["IntelligenceSettings"];
+            /** @description Scanner limits (knowledge service). */
+            knowledge: components["schemas"]["KnowledgeSettings"];
+        };
         /** @description A project that looks like the requested one. */
         SimilarProject: {
             project?: components["schemas"]["Project"] | null;
@@ -2530,6 +2963,7 @@ export interface components {
              * @description When it was generated.
              */
             generatedAt: string;
+            maturity?: components["schemas"]["MaturityScore"] | null;
             /** @description Project id. */
             projectId: string;
             /** @description Ordered hops a request takes through the system. */
@@ -2556,6 +2990,14 @@ export interface components {
         UpdatePolicyRequest: {
             /** @description New decision. */
             decision: components["schemas"]["PolicyDecision"];
+        };
+        /**
+         * @description Body of `PATCH /settings`. Either part may be omitted; within a part,
+         *     omitted fields keep their current value.
+         */
+        UpdateSettingsRequest: {
+            intelligence?: components["schemas"]["IntelligenceSettingsPatch"] | null;
+            knowledge?: components["schemas"]["KnowledgeSettingsPatch"] | null;
         };
     };
     responses: never;
@@ -3107,6 +3549,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    watch_platform_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events, one PlatformEvent per message; never ends */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["PlatformEvent"];
                 };
             };
         };
@@ -4900,6 +5362,82 @@ export interface operations {
             };
         };
     };
+    get_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectConfig"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_dependencies: {
         parameters: {
             query?: never;
@@ -5395,6 +5933,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImpactAnalysis"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_maturity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaturityScore"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */
@@ -6544,6 +7158,164 @@ export interface operations {
             };
         };
     };
+    list_option_artifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Proposal id */
+                id: string;
+                /** @description Option id */
+                optionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Artifact"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    open_pull_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Proposal id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenPullRequestRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Proposal"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     reject_proposal: {
         parameters: {
             query?: never;
@@ -6722,6 +7494,233 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Scan"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    watch_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scan id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events, one Scan per message */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Scan"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Settings"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSettingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Settings"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */

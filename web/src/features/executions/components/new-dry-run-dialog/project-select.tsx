@@ -11,16 +11,18 @@ interface ProjectSelectProps {
   disabled?: boolean
   invalid?: boolean
   id?: string
+  /** Id of the hint or error that describes the control. */
+  describedBy?: string
 }
 
-export function ProjectSelect({ value, onChange, disabled, invalid, id }: ProjectSelectProps) {
+export function ProjectSelect({ value, onChange, disabled, invalid, id, describedBy }: ProjectSelectProps) {
   const { data: projects, isPending, isError } = useQuery(executionQueries.projectOptions())
 
   const placeholder = isPending ? 'Loading projects' : isError ? 'Projects unavailable' : 'Choose a project'
 
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled || isPending || isError}>
-      <SelectTrigger id={id} className="w-full" aria-invalid={invalid || undefined}>
+      <SelectTrigger id={id} className="w-full" aria-invalid={invalid || undefined} aria-describedby={describedBy}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

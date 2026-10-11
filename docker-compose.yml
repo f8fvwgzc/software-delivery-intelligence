@@ -3,6 +3,9 @@
 # from the host environment or a git-ignored .env (compose interpolates it).
 #
 #   make up            build + start, waits for every healthcheck
+#   make up-local-exec same, plus the `local-exec` profile: the execution
+#                      service gets the host's Docker socket (see the
+#                      docker-socket service for what that means)
 #   open http://localhost
 name: sdi
 
@@ -137,6 +140,30 @@ services:
       <<: *rust-env
       EXECUTION_LISTEN: 0.0.0.0:50053
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
+      # The `github` adapter writes with the same token knowledge reads
+      # with; opening pull requests needs `repo` write (docs/adapters.md).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Checkouts and build contexts of the `docker` adapter live on a named
+      # volume because the root filesystem is read-only. rust.Dockerfile
+      # creates the path owned by uid 10001 so the volume inherits it.
+      SDI_RUN_DIR: /var/lib/sdi/run
+      # Unset by default: the Docker CLI then uses /var/run/docker.sock,
+      # which only exists under the local-exec profile. Set on the host to
+      # point the adapter at a remote daemon instead (passed through as-is).
+      DOCKER_HOST:
+      # The CLI keeps its config and buildx state under DOCKER_CONFIG; HOME
+      # is not writable in this container, /tmp is.
+      DOCKER_CONFIG: /tmp/docker
+    volumes:
+      - rundata:/var/lib/sdi/run
+      # /var/run is a symlink to /run in the image, so the daemon socket the
+      # local-exec relay writes into this volume appears at the default
+      # path. Without the profile the volume is simply empty.
+      - docker-sock:/run
+    extra_hosts:
+      # Containers the docker adapter starts publish their port on the host;
+      # this name is how the adapter reaches them from inside the stack.
+      - "host.docker.internal:host-gateway"
     networks:
       - backend
     depends_on:
@@ -145,6 +172,53 @@ services:
       knowledge:
         condition: service_healthy
     deploy: *small
+
+  # local-exec profile only: hands the host's Docker socket to the execution
+  # service. socat relays /var/run/docker.sock into the docker-sock volume,
+  # which execution mounts at /run, so inside execution the daemon sits at
+  # the default path and DOCKER_HOST stays unset. Compose cannot attach a
+  # bind mount to a service only while a profile is active, which is why the
+  # relay is its own container rather than a volume line on `execution`.
+  #
+  # SECURITY. The socket is root on this host: whoever holds it can run
+  # `docker run --privileged -v /:/host`. With the profile on, the execution
+  # service, and anything that can make it run a plan, can start containers
+  # on this machine; cap_drop and read_only on the execution container limit
+  # what its process may do locally, not what it may ask the daemon for.
+  # Use the profile on a developer machine only. For anything shared, put a
+  # filtering proxy (tecnativa/docker-socket-proxy) or rootless Docker
+  # behind DOCKER_HOST instead of this relay.
+  docker-socket:
+    image: alpine/socat:1.8.0.3
+    profiles: [local-exec]
+    restart: unless-stopped
+    command:
+      - UNIX-LISTEN:/sock/docker.sock,fork,unlink-early,mode=666
+      - UNIX-CONNECT:/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker-sock:/sock
+    # Both ends are unix sockets; the relay needs no network at all.
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "test", "-S", "/sock/docker.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 32M
+        reservations:
+          memory: 8M
+    logging: *logging
 
   # Two replicas of one image behind nginx's least_conn pool. gateway-1 owns
   # the build; gateway-2 reuses the tag and never pulls.
@@ -231,3 +305,9 @@ networks:
 
 volumes:
   pgdata:
+  # SDI_RUN_DIR of the execution service: checkouts and build contexts of
+  # the docker adapter. Survives restarts so a paused run can resume.
+  rundata:
+  # Carries the relayed Docker socket from docker-socket to execution. Empty
+  # whenever the local-exec profile is off.
+  docker-sock:

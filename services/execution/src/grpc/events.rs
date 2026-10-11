@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use sdi_common::grpc::db_status;
-use sdi_proto::execution::v1::{
-    ExecutionEvent, ExecutionStatus, ListEventsRequest, ListEventsResponse, WatchExecutionRequest,
+use sdi_proto::{
+    common::v1::PlatformEvent,
+    execution::v1::{
+        ExecutionEvent, ExecutionStatus, ListEventsRequest, ListEventsResponse,
+        WatchExecutionRequest,
+    },
 };
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -59,8 +63,15 @@ pub async fn watch(
         let Some(mut live) = live.take() else {
             return;
         };
+        // An execution can wait for approval for hours; shutdown must not.
+        let leaving = sdi_common::shutdown::cancelled();
+        tokio::pin!(leaving);
         loop {
-            match live.recv().await {
+            let received = tokio::select! {
+                () = &mut leaving => return,
+                received = live.recv() => received,
+            };
+            match received {
                 Ok(event) => {
                     let seq = i64::try_from(event.seq).unwrap_or(i64::MAX);
                     if seq <= last {
@@ -95,6 +106,39 @@ pub async fn watch(
     });
 
     Ok(ReceiverStream::new(rx))
+}
+
+/// The platform feed (CONTRACT.md §8 live events): execution and approval
+/// changes from now on, never ending. A slow consumer that falls behind the
+/// broadcast buffer loses the oldest notifications, which is harmless: the
+/// web app only uses them to refetch, so the next one catches it up.
+pub fn watch_platform(rt: &Arc<Runtime>) -> ReceiverStream<Result<PlatformEvent, Status>> {
+    let mut live = rt.platform.subscribe();
+    let (tx, rx) = mpsc::channel(WATCH_BUFFER);
+    tokio::spawn(async move {
+        // The feed never ends on its own; the service's shutdown ends it so
+        // graceful shutdown is not pinned by an open browser tab.
+        let leaving = sdi_common::shutdown::cancelled();
+        tokio::pin!(leaving);
+        loop {
+            let received = tokio::select! {
+                () = &mut leaving => return,
+                received = live.recv() => received,
+            };
+            match received {
+                Ok(event) => {
+                    if tx.send(Ok(event)).await.is_err() {
+                        return;
+                    }
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::debug!(skipped, "platform event watcher lagged");
+                }
+                Err(RecvError::Closed) => return,
+            }
+        }
+    });
+    ReceiverStream::new(rx)
 }
 
 /// Sends every stored event after `last`. Breaks when the receiver is gone

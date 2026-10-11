@@ -63,6 +63,13 @@ pub async fn decide(rt: &Arc<Runtime>, req: DecideApprovalRequest) -> Result<App
         ));
     }
     tx.commit().await.map_err(db_status)?;
+    rt.platform.approval(
+        &id.to_string(),
+        &current.execution_id.to_string(),
+        &current.project_id,
+        "updated",
+        if req.approve { "approved" } else { "rejected" },
+    );
 
     let execution = db::executions::get(&rt.pool, current.execution_id)
         .await

@@ -2,17 +2,25 @@
 //! observer need; every call is a GET and failures are typed so the gRPC
 //! layer can answer with the right status.
 
+pub mod cache;
 pub mod types;
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use reqwest::{
     Response, StatusCode,
-    header::{ACCEPT, HeaderMap, HeaderValue},
+    header::{ACCEPT, ETAG, HeaderMap, HeaderValue, IF_NONE_MATCH},
 };
 use serde::de::DeserializeOwned;
 
+use cache::EtagCache;
 pub use types::*;
 
 const API: &str = "https://api.github.com";
@@ -20,6 +28,9 @@ const USER_AGENT: &str = "sdi-knowledge";
 const MAX_ATTEMPTS: u32 = 3;
 /// Longest secondary-rate-limit pause we honour inline; beyond it the caller gets the error.
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
+/// JSON calls are small; the archive download gets its own, longer budget.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const TARBALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
@@ -43,11 +54,19 @@ pub enum GithubError {
 
 pub type Result<T> = std::result::Result<T, GithubError>;
 
+/// Shared between clones so the scanner, the delivery refresh and the
+/// account box all hit one cache and one switch.
+struct Shared {
+    cache_enabled: AtomicBool,
+    cache: Mutex<EtagCache>,
+}
+
 #[derive(Clone)]
 pub struct GithubClient {
     http: reqwest::Client,
     token: Option<String>,
     base: String,
+    shared: Arc<Shared>,
 }
 
 impl GithubClient {
@@ -61,15 +80,22 @@ impl GithubClient {
             "X-GitHub-Api-Version",
             HeaderValue::from_static("2022-11-28"),
         );
+        // Redirects are followed (the tarball endpoint answers 302 to
+        // codeload); reqwest drops the Authorization header when the host
+        // changes, which is what GitHub expects.
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .default_headers(headers)
-            .timeout(Duration::from_secs(30))
+            .timeout(REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {
             http,
             token,
             base: API.to_owned(),
+            shared: Arc::new(Shared {
+                cache_enabled: AtomicBool::new(true),
+                cache: Mutex::new(EtagCache::default()),
+            }),
         })
     }
 
@@ -77,13 +103,51 @@ impl GithubClient {
         self.token.is_some()
     }
 
-    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Response> {
+    /// Mirrors `settings.cache_github`; turning it off also forgets what was cached.
+    pub fn set_cache_enabled(&self, enabled: bool) {
+        self.shared.cache_enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            self.cache().clear();
+        }
+    }
+
+    pub fn cache_enabled(&self) -> bool {
+        self.shared.cache_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Entries currently cached; for diagnostics.
+    pub fn cached_entries(&self) -> usize {
+        self.cache().len()
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache> {
+        // A poisoned cache only means a panic mid-insert; the data is still a cache.
+        self.shared
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// One GET with the retry loop for rate limits. `etag` turns the call into
+    /// a conditional request; `304` is returned as a success for the caller to
+    /// resolve against the cache.
+    async fn request(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        etag: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Response> {
         let token = self.token.as_ref().ok_or(GithubError::NoToken)?;
         let url = format!("{}{}{}", self.base, encode_path(path), query_string(query));
         for attempt in 1..=MAX_ATTEMPTS {
-            let response = self.http.get(&url).bearer_auth(token).send().await?;
+            let mut builder = self.http.get(&url).bearer_auth(token).timeout(timeout);
+            if let Some(etag) = etag {
+                builder = builder.header(IF_NONE_MATCH, etag);
+            }
+            let response = builder.send().await?;
             let status = response.status();
-            if status.is_success() {
+            if status.is_success() || status == StatusCode::NOT_MODIFIED {
                 return Ok(response);
             }
             match status {
@@ -119,6 +183,45 @@ impl GithubClient {
         Err(GithubError::RateLimited { retry_after: 60 })
     }
 
+    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Response> {
+        self.request(path, query, None, REQUEST_TIMEOUT).await
+    }
+
+    /// Body bytes, served from the ETag cache when GitHub says nothing
+    /// changed. Only list endpoints go through here; everything else is
+    /// fetched once per scan and would only fill the cache.
+    async fn get_bytes(&self, path: &str, query: &[(&str, String)]) -> Result<Vec<u8>> {
+        let use_cache = self.cache_enabled();
+        let key = format!("{}{}", encode_path(path), query_string(query));
+        let etag = if use_cache {
+            self.cache().etag(&key)
+        } else {
+            None
+        };
+        let response = self
+            .request(path, query, etag.as_deref(), REQUEST_TIMEOUT)
+            .await?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            if let Some(entry) = self.cache().get(&key) {
+                tracing::debug!(path, "GitHub 304, served from cache");
+                return Ok(entry.body.clone());
+            }
+            // Only possible when the cache was cleared mid-request; fetch fresh.
+            let response = self.request(path, query, None, REQUEST_TIMEOUT).await?;
+            return Ok(response.bytes().await?.to_vec());
+        }
+        let new_etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = response.bytes().await?.to_vec();
+        if use_cache && let Some(new_etag) = new_etag {
+            self.cache().insert(&key, &new_etag, body.clone());
+        }
+        Ok(body)
+    }
+
     async fn get_json<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -128,7 +231,17 @@ impl GithubClient {
         decode(response).await
     }
 
-    /// Follows `page=` until a short page; `per_page` is already 100.
+    async fn get_json_cached<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        let bytes = self.get_bytes(path, query).await?;
+        serde_json::from_slice(&bytes).map_err(|e| GithubError::Decode(e.to_string()))
+    }
+
+    /// Follows `page=` until a short page; `per_page` is already 100. Pages
+    /// are cached by ETag: a list that did not change costs no quota.
     async fn get_paginated<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -139,7 +252,7 @@ impl GithubClient {
             let mut q = query.to_vec();
             q.push(("per_page", "100".to_owned()));
             q.push(("page", page.to_string()));
-            let batch: Vec<T> = self.get_json(path, &q).await?;
+            let batch: Vec<T> = self.get_json_cached(path, &q).await?;
             let last = batch.len() < 100;
             items.extend(batch);
             if last {
@@ -236,6 +349,39 @@ impl GithubClient {
         }
     }
 
+    /// The repository archive at `reference` as gzipped tar bytes, or `None`
+    /// when it is larger than `max_bytes` (the caller falls back to per-file
+    /// downloads). GitHub redirects to codeload, which streams the archive
+    /// without a Content-Length, so the size is enforced while reading.
+    pub async fn tarball(
+        &self,
+        owner: &str,
+        name: &str,
+        reference: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let path = format!("/repos/{owner}/{name}/tarball/{reference}");
+        let mut response = self.request(&path, &[], None, TARBALL_TIMEOUT).await?;
+        if response
+            .content_length()
+            .is_some_and(|len| len > max_bytes as u64)
+        {
+            return Ok(None);
+        }
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .map_or(4 << 20, |len| len as usize),
+        );
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > max_bytes {
+                return Ok(None);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
+    }
+
     pub async fn workflow_runs(
         &self,
         owner: &str,
@@ -243,7 +389,7 @@ impl GithubClient {
         per_page: u32,
     ) -> Result<Vec<WorkflowRun>> {
         let page: WorkflowRuns = self
-            .get_json(
+            .get_json_cached(
                 &format!("/repos/{owner}/{name}/actions/runs"),
                 &[("per_page", per_page.to_string())],
             )
@@ -267,7 +413,7 @@ impl GithubClient {
         name: &str,
         per_page: u32,
     ) -> Result<Vec<Deployment>> {
-        self.get_json(
+        self.get_json_cached(
             &format!("/repos/{owner}/{name}/deployments"),
             &[("per_page", per_page.to_string())],
         )
@@ -403,5 +549,18 @@ mod tests {
             "?affiliation=owner%2Ccollaborator&page=2"
         );
         assert_eq!(query_string(&[]), "");
+    }
+
+    #[test]
+    fn cache_switch_clears_entries() {
+        let client = GithubClient::new(None).unwrap();
+        assert!(client.cache_enabled());
+        client.cache().insert("/x", "\"e\"", b"{}".to_vec());
+        assert_eq!(client.cached_entries(), 1);
+        client.set_cache_enabled(false);
+        assert!(!client.cache_enabled());
+        assert_eq!(client.cached_entries(), 0);
+        client.set_cache_enabled(true);
+        assert!(client.cache_enabled());
     }
 }

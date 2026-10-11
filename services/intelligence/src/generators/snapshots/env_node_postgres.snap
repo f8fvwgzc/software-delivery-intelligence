@@ -1,0 +1,9 @@
+# Environment for view-engine. Copy to .env; .env is git-ignored.
+
+# Runtime
+PORT=3000
+LOG_LEVEL=info
+
+# Datastores (docker-compose.yml provides local instances)
+DATABASE_URL=postgres://app:change-me@localhost:5432/view_engine
+POSTGRES_PASSWORD=change-me

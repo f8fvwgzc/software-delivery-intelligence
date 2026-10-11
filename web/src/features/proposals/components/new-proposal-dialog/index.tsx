@@ -13,7 +13,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -24,10 +25,12 @@ import { ProjectSelect } from './project-select'
 interface NewProposalDialogProps {
   /** When set, the project is fixed and the picker is hidden. */
   projectId?: string
+  /** Kind preselected when the dialog opens, e.g. from `?kind=` on the project page. */
+  initialKind?: ProposalKind
 }
 
-/** "New proposal": pick a project and a kind, optionally describe the ask. */
-export function NewProposalDialog({ projectId }: NewProposalDialogProps) {
+/** "New proposal": pick a project and a kind, optionally a budget and a description of the ask. */
+export function NewProposalDialog({ projectId, initialKind }: NewProposalDialogProps) {
   const [open, setOpen] = useState(false)
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -38,8 +41,10 @@ export function NewProposalDialog({ projectId }: NewProposalDialogProps) {
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
-        {/* Keyed on open so the form resets each time without an effect. */}
-        {open ? <NewProposalForm key="form" projectId={projectId} onDone={() => setOpen(false)} /> : null}
+        {/* Mounted per open so the form resets each time without an effect. */}
+        {open ? (
+          <NewProposalForm projectId={projectId} initialKind={initialKind} onDone={() => setOpen(false)} />
+        ) : null}
       </DialogContent>
     </Dialog>
   )
@@ -47,23 +52,35 @@ export function NewProposalDialog({ projectId }: NewProposalDialogProps) {
 
 interface NewProposalFormProps {
   projectId?: string
+  initialKind?: ProposalKind
   onDone: () => void
 }
 
-function NewProposalForm({ projectId: fixedProjectId, onDone }: NewProposalFormProps) {
+/** Parses the budget input: empty is "no budget", anything else must be a non-negative amount. */
+function parseBudget(raw: string): { value: number | null; error?: string } {
+  const trimmed = raw.trim()
+  if (trimmed === '') return { value: null }
+  const value = Number(trimmed)
+  if (!Number.isFinite(value) || value < 0) return { value: null, error: 'Enter a monthly amount in USD, or leave it empty.' }
+  return { value: value === 0 ? null : value }
+}
+
+function NewProposalForm({ projectId: fixedProjectId, initialKind, onDone }: NewProposalFormProps) {
   const navigate = useNavigate()
   const generate = useGenerateProposal()
   const [projectId, setProjectId] = useState(fixedProjectId ?? '')
-  const [kind, setKind] = useState<ProposalKind>('deployment')
+  const [kind, setKind] = useState<ProposalKind>(initialKind ?? 'deployment')
+  const [budget, setBudget] = useState('')
   const [prompt, setPrompt] = useState('')
 
-  const canSubmit = projectId !== '' && !generate.isPending
+  const parsedBudget = parseBudget(budget)
+  const canSubmit = projectId !== '' && !parsedBudget.error && !generate.isPending
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!canSubmit) return
     generate.mutate(
-      { projectId, kind, prompt: prompt.trim() || null },
+      { projectId, kind, prompt: prompt.trim() || null, budgetMonthlyUsd: parsedBudget.value },
       {
         onSuccess: (proposal) => {
           onDone()
@@ -88,30 +105,61 @@ function NewProposalForm({ projectId: fixedProjectId, onDone }: NewProposalFormP
             <ProjectSelect id="proposal-project" value={projectId} onChange={setProjectId} />
           </Field>
         ) : null}
-        <Field>
-          <FieldLabel htmlFor="proposal-kind">Kind</FieldLabel>
-          <Select value={kind} onValueChange={(value) => setKind(value as ProposalKind)}>
-            <SelectTrigger id="proposal-kind" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {PROPOSAL_KINDS.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {PROPOSAL_KIND_LABEL[option]}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem]">
+          <Field>
+            <FieldLabel htmlFor="proposal-kind">Kind</FieldLabel>
+            <Select value={kind} onValueChange={(value) => setKind(value as ProposalKind)}>
+              <SelectTrigger id="proposal-kind" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {PROPOSAL_KINDS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {PROPOSAL_KIND_LABEL[option]}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field data-invalid={parsedBudget.error ? true : undefined}>
+            <FieldLabel htmlFor="proposal-budget">Budget (optional)</FieldLabel>
+            <InputGroup>
+              <InputGroupAddon>
+                <InputGroupText>$</InputGroupText>
+              </InputGroupAddon>
+              <InputGroupInput
+                id="proposal-budget"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step={1}
+                value={budget}
+                onChange={(event) => setBudget(event.target.value)}
+                placeholder="None"
+                className="tabular-nums"
+                aria-invalid={parsedBudget.error ? true : undefined}
+                aria-describedby={parsedBudget.error ? 'proposal-budget-error' : 'proposal-budget-hint'}
+              />
+              <InputGroupAddon align="inline-end">
+                <InputGroupText className="text-xs">/mo</InputGroupText>
+              </InputGroupAddon>
+            </InputGroup>
+            {parsedBudget.error ? (
+              <FieldError id="proposal-budget-error">{parsedBudget.error}</FieldError>
+            ) : (
+              <FieldDescription id="proposal-budget-hint">Options above it are kept but marked.</FieldDescription>
+            )}
+          </Field>
+        </div>
         <Field>
           <FieldLabel htmlFor="proposal-prompt">What do you need? (optional)</FieldLabel>
           <Textarea
             id="proposal-prompt"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder="e.g. keep it under $50 a month, private networking only"
+            placeholder="e.g. private networking only, keep the current region"
             rows={3}
           />
           <FieldDescription>Constraints stated here are applied before the first ranking.</FieldDescription>

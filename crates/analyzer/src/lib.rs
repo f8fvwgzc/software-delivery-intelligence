@@ -2,12 +2,17 @@
 //!
 //! No network, no database, no clock. The knowledge service owns all I/O and
 //! calls in here, which keeps every detector unit-testable with plain strings.
+//! The only time-dependent judgement, runtime end of life, takes `today` as
+//! a parameter ([`analyze_at`]).
 
 mod capabilities;
+mod config;
 mod detectors;
+pub mod eol;
 mod files;
 mod graph;
 mod manifests;
+pub mod maturity;
 pub mod model;
 mod patterns;
 mod profile;
@@ -16,7 +21,9 @@ mod understanding;
 mod util;
 mod yaml;
 
-pub use files::wanted_files;
+pub use config::{CONFIG_PATH, is_usable as config_is_usable, parse_config};
+pub use eol::{DEFAULT_TODAY, Day};
+pub use files::{wanted_files, wanted_files_with};
 pub use model::*;
 
 /// Largest file the scanner should download, in bytes.
@@ -25,21 +32,30 @@ pub const MAX_FILE_BYTES: u64 = 200_000;
 /// Upper bound on how many files one scan downloads.
 pub const MAX_FILES: usize = 150;
 
-/// Turns a snapshot into the project knowledge model.
+/// [`analyze_at`] with [`DEFAULT_TODAY`], for callers that have no date.
+pub fn analyze(snapshot: &RepoSnapshot) -> Analysis {
+    analyze_at(snapshot, DEFAULT_TODAY)
+}
+
+/// Turns a snapshot into the project knowledge model as of `today`.
 ///
 /// Detectors append facts, nodes, edges and chunks; the passes afterwards
-/// dedupe them, derive capabilities and patterns, decide what must be asked
-/// and write the understanding. Nothing here can fail: a malformed file is
-/// evidence of nothing, not an error.
-pub fn analyze(snapshot: &RepoSnapshot) -> Analysis {
-    let mut ctx = detectors::Ctx::new(snapshot);
+/// dedupe them, derive capabilities and patterns, decide what must be asked,
+/// score maturity and write the understanding. `today` only matters for the
+/// end-of-life check and may be any tuple: nothing here can fail, because a
+/// malformed file (or date) is evidence of nothing, not an error.
+pub fn analyze_at(snapshot: &RepoSnapshot, today: Day) -> Analysis {
+    let mut ctx = detectors::Ctx::new(snapshot, today);
     detectors::run_all(&mut ctx);
 
     ctx.out.facts = dedupe_facts(std::mem::take(&mut ctx.out.facts));
     ctx.out.technologies = technologies(&ctx.out.facts);
     ctx.out.capabilities = capabilities::derive(&ctx.out.facts);
     ctx.out.learned_patterns = patterns::derive(&ctx, &ctx.out.capabilities);
-    ctx.out.questions = questions::derive(&ctx);
+    let mut questions = questions::derive(&ctx);
+    config::answer_questions(&ctx.out.config, &mut questions);
+    ctx.out.questions = questions;
+    ctx.out.maturity = maturity::score(&ctx.out.facts);
     ctx.out.understanding = understanding::derive(&ctx);
     ctx.out.profile_text = profile::derive(&ctx, &ctx.out.capabilities, &ctx.out.understanding);
 

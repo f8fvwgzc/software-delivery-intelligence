@@ -3,21 +3,23 @@
 
 use sdi_common::time;
 use sdi_proto::{
-    common::v1::PlanStep,
+    common::v1::{CostLine, PlanStep},
     intelligence::v1::{
-        Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Document,
-        DocumentKind, Evidence, EvidenceKind as ProtoEvidenceKind, Message, MessageRole, Proposal,
-        ProposalKind, ProposalOption, ProposalStatus, ScoreBreakdown, ScoreWeights,
+        Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Document,
+        DocumentKind, Evidence, EvidenceKind as ProtoEvidenceKind, IntelligenceSettings, Message,
+        MessageRole, Proposal, ProposalKind, ProposalOption, ProposalStatus, ScoreBreakdown,
+        ScoreWeights,
     },
 };
 
 use crate::{
     db::{
         decisions::DecisionRow, documents::DocumentRow, messages::MessageRow,
-        proposals::ProposalRow,
+        proposals::ProposalRow, settings::SettingsRow,
     },
     domain::model::{
-        Breakdown, ConstraintData, EvidenceItem, EvidenceKind, PlanStepData, RankedOption, Weights,
+        ArtifactData, Breakdown, ConstraintData, CostLineData, EvidenceItem, EvidenceKind,
+        PlanStepData, RankedOption, Weights,
     },
 };
 
@@ -141,6 +143,50 @@ pub fn weights(weights: &Weights) -> ScoreWeights {
     }
 }
 
+pub fn weights_from_proto(weights: &ScoreWeights) -> Weights {
+    Weights {
+        semantic_similarity: weights.semantic_similarity,
+        policy: weights.policy,
+        recency: weights.recency,
+        success: weights.success,
+        architecture_fit: weights.architecture_fit,
+        cost: weights.cost,
+        security: weights.security,
+    }
+}
+
+pub fn artifact(a: &ArtifactData) -> Artifact {
+    Artifact {
+        path: a.path.clone(),
+        content: a.content.clone(),
+        language: a.language.clone(),
+        purpose: a.purpose.clone(),
+        replaces_existing: a.replaces_existing,
+    }
+}
+
+pub fn cost_line(line: &CostLineData) -> CostLine {
+    CostLine {
+        item: line.item.clone(),
+        monthly_usd: line.monthly_usd,
+        note: line.note.clone(),
+    }
+}
+
+pub fn settings(
+    row: &SettingsRow,
+    api_key_configured: bool,
+    effective_model: String,
+) -> IntelligenceSettings {
+    IntelligenceSettings {
+        default_weights: Some(weights(&row.default_weights.0)),
+        reasoner: row.reasoner.clone(),
+        model: effective_model,
+        api_key_configured,
+        cost_ceiling_usd: row.cost_ceiling_usd,
+    }
+}
+
 pub fn option(option: &RankedOption) -> ProposalOption {
     ProposalOption {
         id: option.id.clone(),
@@ -155,6 +201,8 @@ pub fn option(option: &RankedOption) -> ProposalOption {
         estimated_monthly_cost_usd: option.estimated_monthly_cost_usd,
         unmet_requirements: option.unmet_requirements.clone(),
         plan: option.plan.iter().map(plan_step).collect(),
+        artifacts: option.artifacts.iter().map(artifact).collect(),
+        cost_breakdown: option.cost_breakdown.iter().map(cost_line).collect(),
     }
 }
 

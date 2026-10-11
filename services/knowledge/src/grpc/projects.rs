@@ -47,10 +47,16 @@ pub(super) async fn connect_project(
             }
             other => db_status(other),
         })?;
-    scanner::start(&state.pool, &state.github, project.clone())
+    state.events.project(project.id, "created", &project.status);
+    // The scan flips the project to `scanning`; answer with that state so the
+    // caller never shows a stale `pending`.
+    scanner::start(&state.pool, &state.github, &state.events, project.clone())
         .await
         .map_err(db_status)?;
-    Ok(convert::project(project))
+    state
+        .project(&project.id.to_string())
+        .await
+        .map(convert::project)
 }
 
 pub(super) async fn list_projects(
@@ -81,6 +87,7 @@ pub(super) async fn delete_project(
     {
         return Err(Status::not_found("project not found"));
     }
+    state.events.project(id, "deleted", "");
     Ok(DeleteProjectResponse {})
 }
 
@@ -94,11 +101,12 @@ pub(super) async fn set_project_mode(
         Ok(ProjectMode::Execute) => ProjectMode::Execute,
         _ => return Err(Status::invalid_argument("mode must be observe or execute")),
     };
-    db::projects::set_mode(&state.pool, id, &project_mode_to_db(mode))
+    let project = db::projects::set_mode(&state.pool, id, &project_mode_to_db(mode))
         .await
-        .map(convert::project)
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => Status::not_found("project not found"),
             other => db_status(other),
-        })
+        })?;
+    state.events.project(id, "updated", &project.status);
+    Ok(convert::project(project))
 }

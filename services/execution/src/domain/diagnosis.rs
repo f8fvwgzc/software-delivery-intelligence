@@ -64,6 +64,10 @@ pub struct FailureRecord {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Adapter attempts a step gets before retrying stops being offered
+/// (CONTRACT.md §7 safety: never loop forever on the same failure).
+pub const MAX_ATTEMPTS: u32 = 5;
+
 /// The failed step as the diagnosis sees it.
 pub struct FailedStep<'a> {
     pub title: &'a str,
@@ -71,6 +75,11 @@ pub struct FailedStep<'a> {
     pub params: &'a BTreeMap<String, String>,
     /// What the adapter (or the service) said went wrong, for UNKNOWN.
     pub message: &'a str,
+    /// Adapter attempts so far; at `MAX_ATTEMPTS` only give_up/cancel remain.
+    pub attempts: u32,
+    /// PERMISSION_DENIED raised by the tool itself (GitHub answering 403)
+    /// rather than by the pre-flight grant check, which never runs a thing.
+    pub refused_by_tool: bool,
 }
 
 fn option(
@@ -131,6 +140,24 @@ pub fn diagnose(
         "The execution ends as CANCELLED.",
         false,
     );
+    let give_up = |recommended: bool| {
+        option(
+            "give_up",
+            "Give up",
+            "Record the run as failed so the pattern's success rate reflects it.",
+            "The execution ends as FAILED and the outcome is recorded against the pattern.",
+            recommended,
+        )
+    };
+    if step.attempts >= MAX_ATTEMPTS {
+        return (
+            format!(
+                "'{}' failed {} times with {code}; retrying is no longer offered. See the raw output of the last attempt.",
+                step.title, step.attempts
+            ),
+            vec![give_up(true), cancel],
+        );
+    }
     let skip = option(
         "skip_step",
         "Skip this step",
@@ -148,18 +175,31 @@ pub fn diagnose(
         )
     };
 
+    let refused_by_tool = step.refused_by_tool;
     let (diagnosis, mut options) = match code {
         PERMISSION_DENIED => (
-            format!(
-                "The executing identity lacks {} needed by '{}'. Nothing ran; the check happens before the action.",
-                missing_permissions.join(", "),
-                step.title
-            ),
+            if refused_by_tool {
+                format!(
+                    "The tool behind '{}' refused the connected credentials ({}). The configured token lacks the scope for this write; see the raw output for what it needs.",
+                    step.title,
+                    missing_permissions.join(", ")
+                )
+            } else {
+                format!(
+                    "The executing identity lacks {} needed by '{}'. Nothing ran; the check happens before the action.",
+                    missing_permissions.join(", "),
+                    step.title
+                )
+            },
             vec![
                 option(
                     "request_access",
                     "Request access",
-                    "Grant the missing permissions to the identity for 30 minutes and retry.",
+                    if refused_by_tool {
+                        "Re-issue GITHUB_TOKEN with write access to the repository (the `repo` scope, or Contents + Pull requests read and write on a fine-grained token), restart the service, then retry."
+                    } else {
+                        "Grant the missing permissions to the identity for 30 minutes and retry."
+                    },
                     &format!(
                         "Grants {} for 30 minutes, then retries the step.",
                         missing_permissions.join(", ")
@@ -343,6 +383,7 @@ pub fn diagnose(
     if can_skip {
         options.push(skip);
     }
+    options.push(give_up(false));
     options.push(cancel);
     if !options.iter().any(|o| o.recommended) {
         // POLICY_BLOCKED: the only safe default is to stop.
@@ -369,6 +410,8 @@ pub enum Resolution {
     /// Skip the step together with the steps it blocked.
     SkipBranch,
     Cancel,
+    /// End the run as FAILED and record the outcome against the pattern.
+    GiveUp,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -413,6 +456,7 @@ pub fn resolve(
 
     Ok(match option_id {
         "cancel" => Resolution::Cancel,
+        "give_up" => Resolution::GiveUp,
         "skip_step" => Resolution::Skip,
         "skip_branch" => Resolution::SkipBranch,
         "request_access" => Resolution::RequestAccess,
@@ -469,6 +513,8 @@ mod tests {
             action_type: "cloud.create_dev_resource",
             params,
             message: "",
+            attempts: 1,
+            refused_by_tool: false,
         }
     }
 
@@ -500,11 +546,78 @@ mod tests {
                 "{code}"
             );
             assert!(options.iter().any(|o| o.id == "cancel"), "{code}");
+            assert!(options.iter().any(|o| o.id == "give_up"), "{code}");
             assert!(
                 !options.iter().any(|o| o.id == "skip_step"),
                 "{code} offers skip with dependents"
             );
         }
+    }
+
+    #[test]
+    fn the_retry_cap_leaves_only_give_up_and_cancel() {
+        let params = BTreeMap::new();
+        let exhausted = FailedStep {
+            attempts: MAX_ATTEMPTS,
+            ..step(&params)
+        };
+        for code in CODES {
+            let (diagnosis, options) = diagnose(code, &exhausted, &[], &[]);
+            assert!(
+                diagnosis.contains("no longer offered"),
+                "{code}: {diagnosis}"
+            );
+            let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+            assert_eq!(ids, vec!["give_up", "cancel"], "{code}");
+            assert!(options[0].recommended);
+            let failure = record(code, options, &[]);
+            assert_eq!(
+                resolve("give_up", "", &failure, &params),
+                Ok(Resolution::GiveUp)
+            );
+            assert!(resolve("retry", "", &failure, &params).is_err());
+        }
+        let (_, options) = diagnose(
+            TIMEOUT,
+            &FailedStep {
+                attempts: MAX_ATTEMPTS - 1,
+                ..step(&params)
+            },
+            &[],
+            &[],
+        );
+        assert!(options.iter().any(|o| o.id == "retry"));
+    }
+
+    #[test]
+    fn a_tool_refusing_the_token_explains_the_scope() {
+        let params = BTreeMap::new();
+        let refused = FailedStep {
+            title: "Open pull request",
+            action_type: "repo.open_pull_request",
+            attempts: 1,
+            refused_by_tool: true,
+            ..step(&params)
+        };
+        let (diagnosis, options) = diagnose(
+            PERMISSION_DENIED,
+            &refused,
+            &[],
+            &["repository:write".into()],
+        );
+        assert!(diagnosis.contains("refused the connected credentials"));
+        assert!(options[0].description.contains("GITHUB_TOKEN"));
+        let preflight = FailedStep {
+            refused_by_tool: false,
+            ..refused
+        };
+        let (diagnosis, _) = diagnose(
+            PERMISSION_DENIED,
+            &preflight,
+            &[],
+            &["repository:write".into()],
+        );
+        assert!(diagnosis.contains("Nothing ran"));
     }
 
     #[test]

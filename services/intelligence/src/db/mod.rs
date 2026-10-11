@@ -5,6 +5,7 @@ pub mod decisions;
 pub mod documents;
 pub mod messages;
 pub mod proposals;
+pub mod settings;
 
 use sqlx::{FromRow, PgPool};
 

@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 
-import { Markdown } from '@/components/shared/data'
+import { Markdown } from '@/components/shared/data/markdown'
 import { Separator } from '@/components/ui/separator'
 
 import { documentQuery } from '../../api/queries'

@@ -12,6 +12,8 @@ export const projectKeys = {
   details: () => [...projectKeys.all, 'detail'] as const,
   detail: (projectId: string) => [...projectKeys.details(), projectId] as const,
   scans: (projectId: string) => [...projectKeys.detail(projectId), 'scans'] as const,
+  maturity: (projectId: string) => [...projectKeys.detail(projectId), 'maturity'] as const,
+  config: (projectId: string) => [...projectKeys.detail(projectId), 'config'] as const,
   /** Scans are addressed by their own id; they do not live under a project key. */
   scan: (scanId: string) => [...projectKeys.all, 'scan', scanId] as const,
 }

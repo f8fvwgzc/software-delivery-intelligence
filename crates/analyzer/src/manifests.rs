@@ -65,10 +65,23 @@ pub(crate) fn parse(path: &str, content: &str, tree_names: &[&str]) -> Option<Ma
         "Gemfile" => parse_gemfile(content),
         "composer.json" => parse_composer(content),
         "mix.exs" => parse_mix(content),
+        "packages.config" => parse_packages_config(content),
+        "cpanfile" => parse_cpanfile(content),
+        n if n.ends_with(".csproj") || n.ends_with(".vbproj") || n.ends_with(".fsproj") => {
+            parse_msbuild(content)
+        }
         n if n.starts_with("requirements") && n.ends_with(".txt") => parse_requirements(n, content),
         _ => return None,
     };
     m.path = path.to_string();
+    if m.name.is_empty() && m.ecosystem == "nuget" {
+        // A project file is named after its assembly unless it says otherwise.
+        m.name = name
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap_or(name)
+            .to_string();
+    }
     Some(m)
 }
 
@@ -470,6 +483,105 @@ fn parse_composer(content: &str) -> Manifest {
     m
 }
 
+/// `.csproj` in either shape: SDK-style (`PackageReference`) or the old
+/// MSBuild schema (`packages.config` + `<Reference Include="System.Web">`).
+/// Framework references are kept as `build` deps because they are what
+/// tells Web Forms from ASP.NET Core.
+fn parse_msbuild(content: &str) -> Manifest {
+    let mut m = Manifest {
+        ecosystem: "nuget".into(),
+        package_manager: "nuget".into(),
+        ..Default::default()
+    };
+    let tag = |t: &str| -> Option<String> {
+        Regex::new(&format!(r"<{t}>\s*([^<]+?)\s*</{t}>"))
+            .expect("static regex")
+            .captures(content)
+            .map(|c| c[1].to_string())
+    };
+    m.name = tag("AssemblyName")
+        .or_else(|| tag("RootNamespace"))
+        .unwrap_or_default();
+    let pkg =
+        Regex::new(r#"<PackageReference\s+[^>]*?Include="([^"]+)"(?:[^>]*?Version="([^"]+)")?"#)
+            .expect("static regex");
+    for cap in pkg.captures_iter(content) {
+        m.deps.push(dep(
+            &cap[1],
+            cap.get(2).map(|v| v.as_str()).unwrap_or(""),
+            "runtime",
+        ));
+    }
+    let reference = Regex::new(r#"<Reference\s+Include="([^",]+)"#).expect("static regex");
+    for cap in reference.captures_iter(content) {
+        m.deps.push(dep(&cap[1], "", "build"));
+    }
+    let sdk_web = content.contains("Microsoft.NET.Sdk.Web");
+    let web_signals = sdk_web
+        || m.has_dep("System.Web")
+        || m.deps
+            .iter()
+            .any(|d| d.name.starts_with("Microsoft.AspNet"));
+    let output = tag("OutputType").unwrap_or_default().to_ascii_lowercase();
+    m.library = output == "library" && !web_signals;
+    if content.contains("<Project Sdk=") {
+        m.scripts.insert("build".into(), "dotnet build".into());
+    }
+    m
+}
+
+/// Legacy NuGet `packages.config`: `<package id="X" version="Y" />`.
+fn parse_packages_config(content: &str) -> Manifest {
+    let mut m = Manifest {
+        ecosystem: "nuget".into(),
+        package_manager: "nuget".into(),
+        ..Default::default()
+    };
+    let re = Regex::new(r#"<package\s+[^>]*?id="([^"]+)"(?:[^>]*?version="([^"]+)")?"#)
+        .expect("static regex");
+    for cap in re.captures_iter(content) {
+        m.deps.push(dep(
+            &cap[1],
+            cap.get(2).map(|v| v.as_str()).unwrap_or(""),
+            "runtime",
+        ));
+    }
+    m
+}
+
+/// Perl `cpanfile`: `requires 'Mojolicious', '9.0';`, `on 'test' => sub { requires 'Test::More'; }`.
+fn parse_cpanfile(content: &str) -> Manifest {
+    let mut m = Manifest {
+        ecosystem: "cpan".into(),
+        package_manager: "cpan".into(),
+        ..Default::default()
+    };
+    let re = Regex::new(r#"(?m)^\s*(requires|recommends|test_requires)\s+['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?"#)
+        .expect("static regex");
+    let mut in_test = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with("on ") && (t.contains("'test'") || t.contains("'develop'")) {
+            in_test = true;
+        } else if t == "};" {
+            in_test = false;
+        }
+        if let Some(cap) = re.captures(line) {
+            let scope = if in_test || &cap[1] == "test_requires" {
+                "dev"
+            } else {
+                "runtime"
+            };
+            m.deps.push(dep(
+                &cap[2],
+                cap.get(3).map(|v| v.as_str()).unwrap_or(""),
+                scope,
+            ));
+        }
+    }
+    m
+}
+
 fn parse_mix(content: &str) -> Manifest {
     let mut m = Manifest {
         ecosystem: "mix".into(),
@@ -561,6 +673,56 @@ dev = ["pytest"]
         .unwrap();
         assert_eq!(r.deps.len(), 2);
         assert_eq!(r.deps[0].scope, "dev");
+    }
+
+    #[test]
+    fn csproj_packages_config_cpanfile() {
+        let modern = parse(
+            "src/Api/Api.csproj",
+            r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.0" /><PackageReference Include="xunit" Version="2.6.0" /></ItemGroup></Project>"#,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(modern.name, "Api");
+        assert_eq!(modern.ecosystem, "nuget");
+        assert_eq!(
+            modern
+                .dep("Npgsql.EntityFrameworkCore.PostgreSQL")
+                .unwrap()
+                .version,
+            "8.0.0"
+        );
+        assert!(!modern.library);
+
+        let legacy = parse(
+            "WebApp/WebApp.csproj",
+            r#"<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><PropertyGroup><OutputType>Library</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup><ItemGroup><Reference Include="System.Web" /><Reference Include="System.Web.Mvc, Version=5.2.7.0, Culture=neutral" /></ItemGroup></Project>"#,
+            &[],
+        )
+        .unwrap();
+        assert!(legacy.has_dep("System.Web"));
+        assert!(legacy.has_dep("System.Web.Mvc"));
+        assert!(
+            !legacy.library,
+            "a web project is a service even as a Library"
+        );
+
+        let pc = parse(
+            "WebApp/packages.config",
+            r#"<?xml version="1.0"?><packages><package id="Microsoft.AspNet.Mvc" version="5.2.7" targetFramework="net48" /></packages>"#,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(pc.dep("Microsoft.AspNet.Mvc").unwrap().version, "5.2.7");
+
+        let cpan = parse(
+            "cpanfile",
+            "requires 'Mojolicious', '9.0';\non 'test' => sub {\n  requires 'Test::More';\n};\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(cpan.dep("Mojolicious").unwrap().version, "9.0");
+        assert_eq!(cpan.dep("Test::More").unwrap().scope, "dev");
     }
 
     #[test]

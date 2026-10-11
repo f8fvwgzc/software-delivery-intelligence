@@ -10,11 +10,13 @@ use sdi_proto::{
     execution::v1::{DeliveryStats, Execution},
     intelligence::v1::{Decision, DecisionStatus, DocumentKind},
     knowledge::v1::{
-        Fact, FactCategory, GraphNode, NodeKind, PipelineRun, ProjectContext, RunStatus,
+        Fact, FactCategory, GraphNode, MaturityScore, NodeKind, PipelineRun, ProjectContext,
+        RunStatus,
     },
 };
 
-use super::{model::RankedOption, policy};
+use super::model::RankedOption;
+use crate::generators::{self, GenInput};
 
 pub const NOT_DETECTED: &str = "Not detected";
 const MAX_GRAPH_NODES: usize = 60;
@@ -24,6 +26,8 @@ pub struct DocumentInput<'a> {
     pub decisions: &'a [Decision],
     /// Accepted option if there is one, else the current recommendation.
     pub plan_option: Option<&'a RankedOption>,
+    /// Negotiated generator parameters of that proposal (region, port, runtime).
+    pub params: &'a BTreeMap<String, String>,
     pub pipeline_runs: &'a [PipelineRun],
     pub delivery: Option<&'a DeliveryStats>,
     pub execution: Option<&'a Execution>,
@@ -139,6 +143,23 @@ impl Doc {
         self.lines.push(String::new());
     }
 
+    /// Adopts a generator's Markdown body (its own H1 replaced by `title`)
+    /// so the document and the committed file never disagree.
+    fn from_generated(title: &str, markdown: &str, fact_ids: &[String]) -> Self {
+        let mut doc = Self::new(title);
+        // Drop the generator's H1 and the blank line under it: `new` wrote ours.
+        doc.lines.extend(
+            markdown
+                .lines()
+                .skip(1)
+                .skip_while(|l| l.trim().is_empty())
+                .map(str::to_owned),
+        );
+        doc.lines.push(String::new());
+        doc.facts.extend(fact_ids.iter().cloned());
+        doc
+    }
+
     fn finish(self, title: String) -> Generated {
         Generated {
             title,
@@ -146,6 +167,66 @@ impl Doc {
             facts_used: self.facts.len() as u32,
         }
     }
+}
+
+/// Generator input for the documents that reuse the docs generator.
+fn gen_input(input: &DocumentInput<'_>, option: Option<&RankedOption>) -> GenInput {
+    let cloud = option
+        .and_then(|o| o.tags.iter().find_map(|t| t.strip_prefix("cloud:")))
+        .unwrap_or("");
+    let mut generated = generators::input::build(input.context, input.params, cloud);
+    if let Some(option) = option {
+        generated.plan = option.plan.clone();
+        generated.option_title = option.title.clone();
+        generated.option_summary = option.summary.clone();
+    }
+    generated
+}
+
+fn maturity_of(ctx: &ProjectContext) -> Option<&MaturityScore> {
+    ctx.maturity
+        .as_ref()
+        .or_else(|| ctx.understanding.as_ref().and_then(|u| u.maturity.as_ref()))
+}
+
+/// CONTRACT.md §13: score, stage and the axes with their recommended patterns.
+fn maturity_section(doc: &mut Doc, ctx: &ProjectContext) {
+    doc.h2("Delivery maturity");
+    let Some(maturity) = maturity_of(ctx) else {
+        doc.not_detected();
+        return;
+    };
+    doc.p(format!(
+        "Overall **{}/100**, stage **{}**.",
+        maturity.overall, maturity.stage
+    ));
+    if maturity.axes.is_empty() {
+        return;
+    }
+    let rows: Vec<Vec<String>> = maturity
+        .axes
+        .iter()
+        .map(|axis| {
+            vec![
+                if axis.label.is_empty() {
+                    axis.key.clone()
+                } else {
+                    axis.label.clone()
+                },
+                axis.score.to_string(),
+                if axis.findings.is_empty() {
+                    axis.summary.clone()
+                } else {
+                    axis.findings.join("; ")
+                },
+                axis.recommended_patterns.join(", "),
+            ]
+        })
+        .collect();
+    doc.table(
+        &["Axis", "Score", "Findings", "Recommended patterns"],
+        &rows,
+    );
 }
 
 fn project_name(ctx: &ProjectContext) -> String {
@@ -437,22 +518,33 @@ fn architecture(input: &DocumentInput<'_>, name: &str) -> Doc {
 }
 
 fn deployment_guide(input: &DocumentInput<'_>, name: &str) -> Doc {
-    let mut doc = Doc::new(&format!("{name} deployment guide"));
+    let title = format!("{name} deployment guide");
     let Some(option) = input.plan_option else {
+        let mut doc = Doc::new(&title);
         doc.h2("Plan");
         doc.p(format!("{NOT_DETECTED}: no deployment proposal has been generated or accepted for this project."));
         return doc;
     };
-    doc.h2("Pattern");
-    doc.p(format!("**{}** - {}", option.title, option.summary));
+    // The body is the same `docs/deployment.md` the option would commit.
+    let generated = gen_input(input, Some(option));
+    let markdown = generators::docs::deployment_markdown(&generated);
+    let mut doc = Doc::from_generated(&title, &markdown, &generated.fact_ids);
+
+    doc.h2("Estimate");
     doc.bullet(format!(
         "Estimated cost: ${:.0}/month",
         option.estimated_monthly_cost_usd
     ));
+    for line in &option.cost_breakdown {
+        doc.bullet(format!(
+            "  {}: ${:.0} ({})",
+            line.item, line.monthly_usd, line.note
+        ));
+    }
     doc.bullet(format!("Overall score: {:.2}", option.score.overall));
     doc.end_list();
 
-    doc.h2("Prerequisites");
+    doc.h2("Gaps");
     if option.unmet_requirements.is_empty() {
         doc.p("Every pattern requirement is satisfied by the current repository.");
     } else {
@@ -461,181 +553,62 @@ fn deployment_guide(input: &DocumentInput<'_>, name: &str) -> Doc {
         }
         doc.end_list();
     }
-
-    doc.h2("Steps");
-    let rows: Vec<Vec<String>> = option
-        .plan
-        .iter()
-        .enumerate()
-        .map(|(i, step)| {
-            let row = policy::lookup(&step.action_type);
-            vec![
-                (i + 1).to_string(),
-                step.title.clone(),
-                step.action_type.clone(),
-                row.risk.to_owned(),
-                row.gate.label().to_owned(),
-                step.depends_on.join(", "),
-                step.verification.clone(),
-            ]
-        })
-        .collect();
-    if rows.is_empty() {
-        doc.not_detected();
-    } else {
-        doc.table(
-            &[
-                "#",
-                "Step",
-                "Action",
-                "Risk",
-                "Gate",
-                "Depends on",
-                "Verification",
-            ],
-            &rows,
-        );
-    }
-
-    doc.h2("Policy gates");
-    let gated: Vec<&super::model::PlanStepData> = option
-        .plan
-        .iter()
-        .filter(|s| policy::lookup(&s.action_type).gate.needs_human())
-        .collect();
-    let blocked: Vec<&super::model::PlanStepData> = option
-        .plan
-        .iter()
-        .filter(|s| policy::lookup(&s.action_type).gate == policy::Gate::Blocked)
-        .collect();
-    if gated.is_empty() && blocked.is_empty() {
-        doc.p("Every step runs automatically under the default policy.");
-    } else {
-        for step in gated {
-            let row = policy::lookup(&step.action_type);
+    if !option.artifacts.is_empty() {
+        doc.h2("Generated files");
+        for file in &option.artifacts {
             doc.bullet(format!(
-                "`{}` ({} - {}) stops for human approval: {} gate, {} risk",
-                step.key,
-                step.action_type,
-                row.label,
-                row.gate.label(),
-                row.risk
-            ));
-        }
-        for step in blocked {
-            doc.bullet(format!(
-                "`{}` ({}) is blocked by policy and will never run",
-                step.key, step.action_type
+                "`{}`{} - {}",
+                file.path,
+                if file.replaces_existing {
+                    " (replaces the existing file)"
+                } else {
+                    ""
+                },
+                file.purpose
             ));
         }
         doc.end_list();
-    }
-
-    doc.h2("Permissions");
-    let mut permissions: Vec<String> = option
-        .plan
-        .iter()
-        .flat_map(|s| s.required_permissions.clone())
-        .collect();
-    permissions.sort();
-    permissions.dedup();
-    if permissions.is_empty() {
-        doc.not_detected();
-    } else {
-        doc.p(format!(
-            "The executing identity needs: {}. Anything beyond `repository:read`, `container:build` and `environment:write` must be granted with a TTL first.",
-            permissions.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
-        ));
     }
     doc
 }
 
 fn runbook(input: &DocumentInput<'_>, name: &str) -> Doc {
-    let ctx = input.context;
-    let mut doc = Doc::new(&format!("{name} runbook"));
+    let title = format!("{name} runbook");
+    // Same body as the `docs/runbook.md` the option would commit.
+    let generated = gen_input(input, input.plan_option);
+    let markdown = generators::docs::runbook_markdown(&generated);
+    let mut doc = Doc::from_generated(&title, &markdown, &generated.fact_ids);
 
-    doc.h2("Health");
-    let services: Vec<&GraphNode> = ctx
-        .graph
-        .as_ref()
-        .map(|g| {
-            g.nodes
-                .iter()
-                .filter(|n| n.kind() == NodeKind::Service)
-                .collect()
-        })
-        .unwrap_or_default();
-    if services.is_empty() {
-        doc.not_detected();
-    } else {
-        for service in services {
-            doc.bullet(format!(
-                "{}: confirm the process answers its health endpoint and the container is running",
-                mermaid_label(service)
-            ));
-        }
-        doc.end_list();
-    }
-
-    doc.h2("Logs");
-    let has = |cap: &str| ctx.capabilities.iter().any(|c| c == cap);
-    if has("dockerfile") || has("docker_compose") {
-        doc.bullet("`docker logs --tail 200 <container>` (Dockerfile detected)");
-        if has("docker_compose") {
-            doc.bullet("`docker compose logs -f` (Compose detected)");
-        }
-        doc.end_list();
-    } else {
-        doc.not_detected();
-    }
-
-    doc.h2("Rollback");
-    match input.execution {
-        Some(execution) => {
-            doc.p(format!(
-                "Execution #{} ({}) - revision {}, last checkpoint: {}.",
-                execution.number,
-                execution
-                    .status()
-                    .as_str_name()
-                    .trim_start_matches("EXECUTION_STATUS_")
-                    .to_lowercase(),
-                execution.revision,
-                if execution.last_checkpoint.is_empty() {
-                    "none"
-                } else {
-                    &execution.last_checkpoint
-                }
-            ));
-            let checkpointed: Vec<_> = execution.steps.iter().filter(|s| s.checkpointed).collect();
-            if checkpointed.is_empty() {
-                doc.p("No step has been checkpointed yet; nothing to roll back.");
+    if let Some(execution) = input.execution {
+        doc.h2("Last execution");
+        doc.p(format!(
+            "Execution #{} ({}) - revision {}, last checkpoint: {}.",
+            execution.number,
+            execution
+                .status()
+                .as_str_name()
+                .trim_start_matches("EXECUTION_STATUS_")
+                .to_lowercase(),
+            execution.revision,
+            if execution.last_checkpoint.is_empty() {
+                "none"
             } else {
-                for step in checkpointed.iter().rev() {
-                    doc.bullet(format!(
-                        "Undo `{}` ({}): {}",
-                        step.key, step.action_type, step.title
-                    ));
-                }
-                doc.end_list();
+                &execution.last_checkpoint
             }
-        }
-        None => {
-            match input.plan_option {
-                Some(option) => {
-                    doc.p("No execution has run yet. Rollback order once it does (reverse of the plan):");
-                    for step in option.plan.iter().rev() {
-                        doc.bullet(format!("Undo `{}` ({})", step.key, step.action_type));
-                    }
-                    doc.end_list();
-                }
-                None => doc.not_detected(),
+        ));
+        let checkpointed: Vec<_> = execution.steps.iter().filter(|s| s.checkpointed).collect();
+        if checkpointed.is_empty() {
+            doc.p("No step has been checkpointed yet; nothing to roll back.");
+        } else {
+            for step in checkpointed.iter().rev() {
+                doc.bullet(format!(
+                    "Undo `{}` ({}): {}",
+                    step.key, step.action_type, step.title
+                ));
             }
+            doc.end_list();
         }
     }
-
-    doc.h2("Escalation");
-    doc.p("Every failure pauses the execution, blocks dependents and waits for a human to pick a remediation (CONTRACT.md §7).");
     doc
 }
 
@@ -830,6 +803,8 @@ fn executive_report(input: &DocumentInput<'_>, name: &str) -> Doc {
         doc.table(&["Metric", "Total", "Success rate"], &rows);
     }
 
+    maturity_section(&mut doc, ctx);
+
     doc.h2("Risks");
     let open_questions = ctx.questions.iter().filter(|q| q.answer.is_empty()).count();
     let failed_runs = input
@@ -927,6 +902,8 @@ fn engineering_report(input: &DocumentInput<'_>, name: &str) -> Doc {
         );
     }
 
+    maturity_section(&mut doc, ctx);
+
     doc.h2("Dependabot");
     match &ctx.dependabot {
         Some(d) if d.configured => doc.p(format!(
@@ -1000,7 +977,8 @@ mod tests {
     use sdi_proto::{
         intelligence::v1::DecisionScope,
         knowledge::v1::{
-            Graph, GraphEdge, GraphNode, NodeKind, Understanding, UnderstandingSection,
+            Graph, GraphEdge, GraphNode, MaturityAxis, NodeKind, Understanding,
+            UnderstandingSection,
         },
     };
 
@@ -1021,6 +999,31 @@ mod tests {
             request_flow: vec!["Browser".into(), "API".into(), "PostgreSQL".into()],
             commit_sha: "abc123".into(),
             generated_at: None,
+            maturity: None,
+        });
+        ctx.maturity = Some(MaturityScore {
+            project_id: "proj-1".into(),
+            overall: 42,
+            stage: "transitional".into(),
+            axes: vec![
+                MaturityAxis {
+                    key: "ci".into(),
+                    label: "CI".into(),
+                    score: 70,
+                    summary: "CI runs tests".into(),
+                    findings: vec![],
+                    recommended_patterns: vec![],
+                },
+                MaturityAxis {
+                    key: "iac".into(),
+                    label: "IaC".into(),
+                    score: 0,
+                    summary: String::new(),
+                    findings: vec!["Infrastructure is not declared".into()],
+                    recommended_patterns: vec!["terraform-remote-state".into()],
+                },
+            ],
+            computed_at: None,
         });
         ctx.graph = Some(Graph {
             nodes: vec![
@@ -1083,9 +1086,14 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            tags: vec![],
+            tags: vec!["cloud:azure".into()],
+            artifacts: vec![],
+            cost_breakdown: vec![],
         }
     }
+
+    static NO_PARAMS: std::sync::LazyLock<BTreeMap<String, String>> =
+        std::sync::LazyLock::new(BTreeMap::new);
 
     fn input<'a>(
         ctx: &'a ProjectContext,
@@ -1096,6 +1104,7 @@ mod tests {
             context: ctx,
             decisions,
             plan_option: option,
+            params: &NO_PARAMS,
             pipeline_runs: &[],
             delivery: None,
             execution: None,
@@ -1156,8 +1165,48 @@ mod tests {
                 .contains("`container:build`, `deploy:production`")
         );
 
+        assert!(doc.markdown.starts_with("# view-engine deployment guide\n\n## Pattern\n\n**Azure Container Apps** - Serverless containers"));
+        assert!(doc.markdown.contains("- Cloud: azure in `westeurope`"));
+        assert!(
+            doc.markdown
+                .contains("## Estimate\n\n- Estimated cost: $60/month")
+        );
+        let generated = gen_input(&input(&ctx, &[], Some(&option)), Some(&option));
+        assert_eq!(
+            doc.markdown.lines().skip(2).take(20).collect::<Vec<_>>(),
+            generators::docs::deployment_markdown(&generated)
+                .lines()
+                .skip(2)
+                .take(20)
+                .collect::<Vec<_>>(),
+            "the guide body is the generated docs/deployment.md"
+        );
+
         let empty = generate(DocumentKind::DeploymentGuide, &input(&ctx, &[], None)).unwrap();
         assert!(empty.markdown.contains("Not detected"));
+    }
+
+    #[test]
+    fn reports_carry_the_maturity_score_and_stage() {
+        let ctx = fake_context();
+        let exec = generate(DocumentKind::ExecutiveReport, &input(&ctx, &[], None)).unwrap();
+        assert!(
+            exec.markdown
+                .contains("## Delivery maturity\n\nOverall **42/100**, stage **transitional**.")
+        );
+        assert!(
+            exec.markdown
+                .contains("| IaC | 0 | Infrastructure is not declared | terraform-remote-state |")
+        );
+        let eng = generate(DocumentKind::EngineeringReport, &input(&ctx, &[], None)).unwrap();
+        assert!(eng.markdown.contains("stage **transitional**"));
+        let mut without = fake_context();
+        without.maturity = None;
+        let eng = generate(DocumentKind::EngineeringReport, &input(&without, &[], None)).unwrap();
+        assert!(
+            eng.markdown
+                .contains("## Delivery maturity\n\nNot detected")
+        );
     }
 
     #[test]

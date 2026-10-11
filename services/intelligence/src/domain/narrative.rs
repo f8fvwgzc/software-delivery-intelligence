@@ -89,6 +89,14 @@ pub fn describe_effect(effect: &Effect, before: &Weights, after: &Weights) -> St
             format!("You asked what happens if {subject}.")
         }
         Effect::Question(Question::Compare) => "You asked for a comparison.".to_owned(),
+        Effect::Budget(value) => format!(
+            "Set the monthly budget to ${}; options above it lose 0.25 and are marked budget:{}.",
+            super::model::fmt_usd(*value),
+            super::model::fmt_usd(*value)
+        ),
+        Effect::Param { name, value } => {
+            format!("Set {name} to {value}; generated files were regenerated with it.")
+        }
     }
 }
 
@@ -311,6 +319,8 @@ mod tests {
             unmet_requirements: vec![],
             plan: vec![],
             tags: negotiation::technology_tags(id),
+            artifacts: vec![],
+            cost_breakdown: vec![],
         }
     }
 

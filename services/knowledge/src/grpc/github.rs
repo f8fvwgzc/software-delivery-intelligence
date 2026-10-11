@@ -19,27 +19,39 @@ pub(super) async fn get_github_account(
         });
     }
     // A bad token is an answer, not a failure: the UI shows it next to the account box.
-    match state.github.user().await {
-        Ok((user, scopes)) => Ok(GithubAccount {
-            token_configured: true,
-            login: user.login,
-            name: user.name.unwrap_or_default(),
-            avatar_url: user.avatar_url,
-            html_url: user.html_url,
-            public_repos: user.public_repos,
-            private_repos: user
-                .total_private_repos
+    let (user, scopes) = match state.github.user().await {
+        Ok(user) => user,
+        Err(error) => {
+            return Ok(GithubAccount {
+                token_configured: true,
+                error: error.to_string(),
+                ..Default::default()
+            });
+        }
+    };
+    // `/user` only reports private repositories for classic tokens with the
+    // `user` scope; counting the list the token can actually see is right
+    // for fine-grained tokens too, and the list is ETag-cached.
+    let private_repos = match state.github.repos().await {
+        Ok(repos) => repos.iter().filter(|r| r.private).count() as u32,
+        Err(error) => {
+            tracing::warn!(%error, "could not list repositories for the private count");
+            user.total_private_repos
                 .or(user.owned_private_repos)
-                .unwrap_or(0),
-            scopes,
-            error: String::new(),
-        }),
-        Err(error) => Ok(GithubAccount {
-            token_configured: true,
-            error: error.to_string(),
-            ..Default::default()
-        }),
-    }
+                .unwrap_or(0)
+        }
+    };
+    Ok(GithubAccount {
+        token_configured: true,
+        login: user.login,
+        name: user.name.unwrap_or_default(),
+        avatar_url: user.avatar_url,
+        html_url: user.html_url,
+        public_repos: user.public_repos,
+        private_repos,
+        scopes,
+        error: String::new(),
+    })
 }
 
 pub(super) async fn list_github_repos(

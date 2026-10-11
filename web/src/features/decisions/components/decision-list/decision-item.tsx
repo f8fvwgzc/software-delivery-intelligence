@@ -41,8 +41,8 @@ export function DecisionItem({ decision, projectName }: DecisionItemProps) {
 
       {decision.reasons.length > 0 ? (
         <ul className="flex list-disc flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
-          {decision.reasons.map((reason) => (
-            <li key={reason}>{reason}</li>
+          {decision.reasons.map((reason, index) => (
+            <li key={`${index}-${reason}`}>{reason}</li>
           ))}
         </ul>
       ) : null}

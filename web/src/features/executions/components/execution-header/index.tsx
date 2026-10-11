@@ -2,7 +2,8 @@ import { XIcon } from 'lucide-react'
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { RelativeTime, StatusBadge } from '@/components/shared/data'
+import { RelativeTime } from '@/components/shared/data/relative-time'
+import { StatusBadge } from '@/components/shared/data/status-badge'
 import { PageHeader } from '@/components/shared/page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -38,7 +39,7 @@ export function ExecutionHeader({ execution }: ExecutionHeaderProps) {
       description={
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <Link to={routes.project(execution.projectId)} className="text-foreground hover:underline">
-            {execution.projectName}
+            {execution.projectName || 'Project'}
           </Link>
           <span className="tabular-nums">revision {execution.revision}</span>
           <Badge variant="outline" className="h-5 font-normal text-muted-foreground">

@@ -10,6 +10,21 @@ use crate::{convert, db, domain::stats, scanner::delivery as sync};
 /// Rows considered for statistics; the response itself is cut to `limit`.
 const STATS_WINDOW: i64 = 500;
 
+/// How many runs a refresh pulls: the same setting the scan uses, so the
+/// list and the scan agree. Unreadable settings fall back to the seed value.
+async fn runs_limit(state: &KnowledgeState) -> u32 {
+    match db::settings::get(&state.pool).await {
+        Ok(settings) => {
+            state.github.set_cache_enabled(settings.cache_github);
+            settings.pipeline_runs_limit.max(1) as u32
+        }
+        Err(error) => {
+            tracing::warn!(%error, "settings unreadable, refreshing with defaults");
+            db::settings::SettingsRow::default().pipeline_runs_limit as u32
+        }
+    }
+}
+
 pub(super) async fn list_pipelines(
     state: &KnowledgeState,
     req: ListPipelinesRequest,
@@ -29,9 +44,14 @@ pub(super) async fn list_pipeline_runs(
 ) -> Result<ListPipelineRunsResponse, Status> {
     let mut project = state.project(&req.project_id).await?;
     if req.refresh {
-        sync::sync_runs(&state.pool, &state.github, &project)
-            .await
-            .map_err(anyhow_status)?;
+        sync::sync_runs(
+            &state.pool,
+            &state.github,
+            &project,
+            runs_limit(state).await,
+        )
+        .await
+        .map_err(anyhow_status)?;
         project = state.project(&req.project_id).await?;
     }
     let rows = db::delivery::list_runs(&state.pool, project.id, STATS_WINDOW)
@@ -56,9 +76,14 @@ pub(super) async fn list_deployments(
 ) -> Result<ListDeploymentsResponse, Status> {
     let project = state.project(&req.project_id).await?;
     if req.refresh {
-        sync::sync_deployments(&state.pool, &state.github, &project)
-            .await
-            .map_err(anyhow_status)?;
+        sync::sync_deployments(
+            &state.pool,
+            &state.github,
+            &project,
+            runs_limit(state).await,
+        )
+        .await
+        .map_err(anyhow_status)?;
     }
     let rows = db::delivery::list_deployments(&state.pool, project.id, STATS_WINDOW)
         .await

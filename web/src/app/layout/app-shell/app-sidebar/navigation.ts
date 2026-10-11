@@ -9,6 +9,7 @@ import {
   PlugIcon,
   ScaleIcon,
   SearchIcon,
+  SettingsIcon,
   ShieldCheckIcon,
   type LucideIcon,
 } from 'lucide-react'
@@ -58,6 +59,7 @@ export const navigation: NavGroup[] = [
     items: [
       { label: 'Policies', to: routes.policies(), icon: ScaleIcon },
       { label: 'System', to: routes.system(), icon: ShieldCheckIcon },
+      { label: 'Settings', to: routes.settings(), icon: SettingsIcon },
     ],
   },
 ]

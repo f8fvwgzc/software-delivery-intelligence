@@ -18,13 +18,20 @@ struct View {
     nginx: bool,
     ci: Vec<String>,
     deploys_from_ci: bool,
+    /// CI publishes an image, package or release but nothing deploys it.
+    releases_from_ci: bool,
     iac: Vec<String>,
     clouds: Vec<String>,
     tests: Vec<String>,
     envs: Vec<String>,
+    /// Plain HTML/CSS/JS: no framework, no build.
     static_site: bool,
+    /// A framework build (Vite) whose output is static files.
+    static_build: bool,
     library_only: bool,
     monorepo: bool,
+    /// Plain-words legacy signals, e.g. "WAR packaging", "Java 8 past end of life".
+    legacy: Vec<String>,
 }
 
 fn view(ctx: &Ctx<'_>) -> View {
@@ -55,22 +62,58 @@ fn view(ctx: &Ctx<'_>) -> View {
             datastores.push(d);
         }
     }
+    let frontend: Vec<String> = frameworks
+        .iter()
+        .filter(|k| matches!(role(k).as_str(), "frontend" | "fullstack"))
+        .cloned()
+        .collect();
+    let backend: Vec<String> = frameworks
+        .iter()
+        .filter(|k| matches!(role(k).as_str(), "backend" | "fullstack"))
+        .cloned()
+        .collect();
+    let has_static_fact = ctx.has_fact("repository:static_site");
+    let deploy_facts: Vec<&FactDraft> = facts
+        .iter()
+        .filter(|f| f.key.starts_with("deploy:pipeline:"))
+        .collect();
+    let deploys_from_ci = deploy_facts.iter().any(|f| f.value != "release");
+    let releases_from_ci = !deploys_from_ci && !deploy_facts.is_empty();
+    let mut legacy: Vec<String> = Vec::new();
+    for f in facts {
+        let phrase = match f.key.as_str() {
+            "packaging:war" => "WAR packaging".to_string(),
+            "config:web_xml" => "web.xml configuration".to_string(),
+            "config:web_config" => "web.config configuration".to_string(),
+            "dotnet:framework" => format!(".NET Framework ({})", f.value),
+            "dotnet:packages_config" => "packages.config".to_string(),
+            "python:2" => "Python 2 code".to_string(),
+            "php:plain" => "plain PHP without Composer".to_string(),
+            "pages:classic_asp" => "classic ASP pages".to_string(),
+            "pages:jsp" => "JSP pages".to_string(),
+            "pages:aspx" => "Web Forms pages".to_string(),
+            "deploy:ftp_script" => "an FTP deploy script".to_string(),
+            k if k.starts_with("runtime:eol:") => {
+                format!(
+                    "{} past end of life",
+                    f.label.trim_end_matches(" (end of life)")
+                )
+            }
+            k if k.starts_with("dependency:eol:") => format!("{} pinned", f.value),
+            _ => continue,
+        };
+        legacy.push(phrase);
+    }
     View {
         name: ctx.repo_name().to_string(),
         languages: strong("lang:")
             .into_iter()
             .filter(|l| !matches!(l.as_str(), "shell"))
             .collect(),
-        frontend: frameworks
-            .iter()
-            .filter(|k| matches!(role(k).as_str(), "frontend" | "fullstack"))
-            .cloned()
-            .collect(),
-        backend: frameworks
-            .iter()
-            .filter(|k| matches!(role(k).as_str(), "backend" | "fullstack"))
-            .cloned()
-            .collect(),
+        static_site: has_static_fact && frontend.is_empty() && backend.is_empty(),
+        static_build: has_static_fact && !frontend.is_empty() && backend.is_empty(),
+        frontend,
+        backend,
         tooling: frameworks
             .iter()
             .filter(|k| role(k) == "build tool")
@@ -92,7 +135,8 @@ fn view(ctx: &Ctx<'_>) -> View {
             .filter(|c| ctx.has_fact(&format!("ci:{c}")))
             .map(String::from)
             .collect(),
-        deploys_from_ci: ctx.has_fact_prefix("deploy:pipeline:"),
+        deploys_from_ci,
+        releases_from_ci,
         iac: ["terraform", "bicep", "pulumi", "cloudformation"]
             .into_iter()
             .filter(|i| ctx.has_fact(&format!("iac:{i}")))
@@ -116,9 +160,9 @@ fn view(ctx: &Ctx<'_>) -> View {
             .filter(|t| !matches!(t.as_str(), "ci" | "files" | "script"))
             .collect(),
         envs: ctx.environments.iter().cloned().collect(),
-        static_site: ctx.has_fact("repository:static_site"),
         library_only: !ctx.apps.is_empty() && ctx.apps.iter().all(|a| a.library),
         monorepo: ctx.has_fact("repository:monorepo"),
+        legacy,
     }
 }
 
@@ -159,8 +203,11 @@ fn framework_language(framework: &str, languages: &[String]) -> Option<String> {
             }
         }
         "rails" | "sinatra" => "ruby",
-        "laravel" | "symfony" => "php",
+        "laravel" | "symfony" | "wordpress" | "codeigniter" => "php",
         "phoenix" => "elixir",
+        "java_ee" | "struts" => "java",
+        "aspnet" | "aspnet_webforms" | "aspnet_mvc" => "csharp",
+        "mojolicious" | "dancer" | "catalyst" => "perl",
         "express" | "nestjs" | "fastify" | "koa" | "hono" | "nextjs" | "nuxt" | "sveltekit"
         | "astro" | "remix" => {
             if languages.iter().any(|l| l == "javascript")
@@ -225,6 +272,8 @@ fn tldr(v: &View) -> String {
             "{} by {}",
             if v.deploys_from_ci {
                 "built and deployed"
+            } else if v.releases_from_ci {
+                "built and released"
             } else {
                 "built and tested"
             },
@@ -298,12 +347,20 @@ fn architecture(v: &View) -> String {
     } else if v.compose {
         parts.push("Docker Compose runs the supporting services locally.".into());
     }
+    if v.static_build {
+        parts.push(
+            "The build output is static files, so it can be served from any static host or CDN."
+                .into(),
+        );
+    }
     if !v.ci.is_empty() {
         parts.push(format!(
             "{} {}.",
             join(&names(&v.ci)),
             if v.deploys_from_ci {
                 "builds, tests and deploys every change"
+            } else if v.releases_from_ci {
+                "builds, tests and releases every change"
             } else {
                 "builds and tests every change"
             }
@@ -324,6 +381,9 @@ fn architecture(v: &View) -> String {
     }
     if v.monorepo {
         parts.push("Several packages share this monorepo.".into());
+    }
+    if !v.legacy.is_empty() {
+        parts.push(format!("Legacy signals: {}.", join(&v.legacy)));
     }
     if parts.is_empty() {
         parts.push("Too little was detected to describe the architecture; the open questions ask for the missing pieces.".into());
@@ -531,14 +591,29 @@ pub(crate) fn derive(ctx: &Ctx<'_>) -> UnderstandingDraft {
         section(
             "deployment",
             "Deployment",
-            if v.clouds.is_empty() && !v.deploys_from_ci && ctx.deploy_targets.is_empty() {
-                "No deployment target detected.".into()
-            } else {
-                let mut t: Vec<String> = ctx.deploy_targets.iter().map(|t| display(t)).collect();
-                if !v.envs.is_empty() {
-                    t.push(format!("environments: {}", v.envs.join(", ")));
+            {
+                let configured = ctx
+                    .fact("config:deploy.target")
+                    .map(|f| format!("configured target {} (.sdi.yml)", display(&f.value)));
+                if v.clouds.is_empty() && !v.deploys_from_ci && ctx.deploy_targets.is_empty() {
+                    match configured {
+                        Some(c) => format!("No deployment target detected; {c}."),
+                        None if v.releases_from_ci => {
+                            "CI releases artifacts but no deployment target is detected.".into()
+                        }
+                        None => "No deployment target detected.".into(),
+                    }
+                } else {
+                    let mut t: Vec<String> =
+                        ctx.deploy_targets.iter().map(|t| display(t)).collect();
+                    if let Some(c) = configured {
+                        t.push(c);
+                    }
+                    if !v.envs.is_empty() {
+                        t.push(format!("environments: {}", v.envs.join(", ")));
+                    }
+                    join(&t)
                 }
-                join(&t)
             },
             deploy_items,
         ),

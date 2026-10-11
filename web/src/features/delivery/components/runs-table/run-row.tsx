@@ -1,6 +1,6 @@
 import { ChevronRightIcon, ExternalLinkIcon } from 'lucide-react'
 
-import { RelativeTime } from '@/components/shared/data'
+import { RelativeTime, StatusDot } from '@/components/shared/data'
 import { Button } from '@/components/ui/button'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
@@ -8,7 +8,6 @@ import { cn } from '@/lib/utils'
 import { firstLine, formatDuration, shortSha } from '../../lib/format'
 import { RUN_STATUS } from '../../lib/labels'
 import type { PipelineRun } from '../../lib/types'
-import { StatusDot } from '../status-dot'
 import { FailureDetails } from './failure-details'
 import { handleRowKeyDown } from './row-keyboard'
 

@@ -4,13 +4,9 @@
 
 mod claude;
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 
 pub use claude::ClaudeReasoner;
-
-use crate::config::Settings;
 
 #[async_trait]
 pub trait Reasoner: Send + Sync {
@@ -30,18 +26,5 @@ impl Reasoner for HeuristicReasoner {
 
     async fn write_reply(&self, draft: &str, _context: &serde_json::Value) -> String {
         draft.to_owned()
-    }
-}
-
-pub fn from_settings(settings: &Settings) -> Arc<dyn Reasoner> {
-    match &settings.anthropic_api_key {
-        Some(key) => {
-            tracing::info!(model = %settings.anthropic_model, "claude reasoner enabled");
-            Arc::new(ClaudeReasoner::new(
-                key.clone(),
-                settings.anthropic_model.clone(),
-            ))
-        }
-        None => Arc::new(HeuristicReasoner),
     }
 }

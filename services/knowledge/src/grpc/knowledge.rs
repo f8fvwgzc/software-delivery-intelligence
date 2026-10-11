@@ -70,10 +70,14 @@ pub(super) async fn answer_question(
             "answer must be one of the offered options",
         ));
     }
-    db::questions::answer(&state.pool, id, answer)
+    let answered = db::questions::answer(&state.pool, id, answer)
         .await
-        .map(convert::question)
-        .map_err(db_status)
+        .map_err(db_status)?;
+    // `open_questions` on the project changed; list views refresh on this.
+    if let Ok(project) = state.project(&answered.project_id.to_string()).await {
+        state.events.project(project.id, "updated", &project.status);
+    }
+    Ok(convert::question(answered))
 }
 
 pub(super) async fn get_understanding(
@@ -81,11 +85,28 @@ pub(super) async fn get_understanding(
     req: GetUnderstandingRequest,
 ) -> Result<Understanding, Status> {
     let project = state.project(&req.project_id).await?;
+    let maturity = db::maturity::get(&state.pool, project.id)
+        .await
+        .map_err(db_status)?
+        .map(convert::maturity);
     db::understanding::get(&state.pool, project.id)
         .await
         .map_err(db_status)?
-        .map(convert::understanding)
+        .map(|row| convert::understanding(row, maturity))
         .ok_or_else(|| Status::not_found("understanding not generated yet; run a scan"))
+}
+
+/// The report the last successful scan stored; nothing is computed on read.
+pub(super) async fn get_maturity(
+    state: &KnowledgeState,
+    req: GetMaturityRequest,
+) -> Result<MaturityScore, Status> {
+    let project = state.project(&req.project_id).await?;
+    db::maturity::get(&state.pool, project.id)
+        .await
+        .map_err(db_status)?
+        .map(convert::maturity)
+        .ok_or_else(|| Status::not_found("maturity not computed yet; run a scan"))
 }
 
 pub(super) async fn get_graph(

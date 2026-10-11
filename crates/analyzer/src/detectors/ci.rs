@@ -1,6 +1,8 @@
 //! CI/CD pipelines. Workflows are parsed into jobs and steps; the `uses:`
 //! actions and `run:` commands reveal what a pipeline builds, tests and
-//! deploys, and where.
+//! deploys, and where. Publishing an image, a package or a GitHub release
+//! is a *release*, recorded with target `release`, so a repository that
+//! ships artifacts but never deploys them is described truthfully.
 
 use crate::detectors::iac::{add_environment, record_cloud};
 use crate::detectors::{Ctx, attrs};
@@ -16,9 +18,16 @@ struct Intent {
     builds_image: bool,
     tests: bool,
     deploys: bool,
+    /// Publishes an artifact (image, package, GitHub release) without deploying it.
+    releases: bool,
     /// `azure` | `aws` | `gcp` | `kubernetes` | `github_pages` | `fly` | `vercel` | `netlify` | `heroku` | `registry`
     targets: Vec<String>,
     evidence: Vec<String>,
+}
+
+/// Targets that are a place something runs, as opposed to a registry.
+fn is_runtime_target(t: &str) -> bool {
+    !matches!(t, "registry" | "iac")
 }
 
 fn classify_uses(uses: &str, intent: &mut Intent) {
@@ -65,7 +74,20 @@ fn classify_uses(uses: &str, intent: &mut Intent) {
         intent.evidence.push(format!("uses: {uses}"));
         if !u.contains("push: false") {
             intent.targets.push("registry".into());
+            intent.releases = true;
         }
+    } else if u.starts_with("softprops/action-gh-release")
+        || u.starts_with("actions/create-release")
+        || u.starts_with("ncipollo/release-action")
+        || u.starts_with("googleapis/release-please-action")
+        || u.starts_with("changesets/action")
+        || u.starts_with("pypa/gh-action-pypi-publish")
+        || u.starts_with("goreleaser/goreleaser-action")
+        || u.starts_with("cycjimmy/semantic-release-action")
+        || u.starts_with("marvinpinto/action-automatic-releases")
+    {
+        intent.releases = true;
+        intent.evidence.push(format!("uses: {uses}"));
     } else if u.starts_with("peaceiris/actions-gh-pages")
         || u.starts_with("actions/deploy-pages")
         || u.starts_with("jamesives/github-pages-deploy-action")
@@ -136,6 +158,29 @@ fn classify_run(run: &str, intent: &mut Intent) {
     }
     if r.contains("docker push") {
         intent.targets.push("registry".into());
+        intent.releases = true;
+    }
+    let release_cmds = [
+        "npm publish",
+        "pnpm publish",
+        "yarn publish",
+        "cargo publish",
+        "twine upload",
+        "poetry publish",
+        "uv publish",
+        "gh release create",
+        "goreleaser release",
+        "mvn deploy",
+        "gradle publish",
+        "./gradlew publish",
+        "dotnet nuget push",
+        "gem push",
+        "semantic-release",
+        "npx changeset publish",
+    ];
+    if release_cmds.iter().any(|c| r.contains(c)) {
+        intent.releases = true;
+        intent.evidence.push(format!("run: {first}"));
     }
     let deploy_cmds: &[(&str, &str)] = &[
         ("kubectl apply", "kubernetes"),
@@ -271,11 +316,16 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
             None => None,
         };
         let lower_job = format!("{job_key} {job_name}").to_ascii_lowercase();
-        if lower_job.contains("deploy")
-            || lower_job.contains("release")
-            || lower_job.contains("publish")
-        {
-            intent.deploys = intent.deploys || !intent.targets.is_empty() || env_name.is_some();
+        let named_release = lower_job.contains("release") || lower_job.contains("publish");
+        if named_release && !intent.targets.iter().any(|t| is_runtime_target(t)) {
+            // "publish" without a cloud step ships an artifact, it does not deploy.
+            intent.releases = intent.releases || intent.builds || env_name.is_some();
+        }
+        if lower_job.contains("deploy") || named_release {
+            intent.deploys = intent.deploys
+                || !intent.targets.is_empty()
+                || env_name.is_some()
+                || intent.releases;
         }
         if intent.deploys || env_name.is_some() {
             let env = env_name
@@ -342,6 +392,7 @@ fn merge(into: &mut Intent, from: &Intent) {
     into.builds_image |= from.builds_image;
     into.tests |= from.tests;
     into.deploys |= from.deploys;
+    into.releases |= from.releases;
     for t in &from.targets {
         if !into.targets.contains(t) {
             into.targets.push(t.clone());
@@ -391,6 +442,19 @@ fn wire_intent(
                 ctx.edge(pipeline_key, s, "BUILDS", RelationCategory::Execution);
             }
         }
+        ctx.detected(
+            FactCategory::CiCd,
+            &format!("ci:build:{path}"),
+            "CI builds the project",
+            &short_path(path, 1),
+            path,
+            intent
+                .evidence
+                .iter()
+                .find(|e| e.contains("build") || e.contains("docker/build-push-action"))
+                .map(String::as_str)
+                .unwrap_or("build step"),
+        );
     }
     if intent.tests {
         for s in &services {
@@ -427,19 +491,31 @@ fn wire_intent(
             }
         }
     }
-    if !intent.deploys {
+    if !intent.deploys && !intent.releases {
         return;
     }
+    // A runtime target wins; a registry push or release action without one
+    // is a release, and `unknown` is reserved for a deploy we could not read.
     let target = intent
         .targets
         .iter()
-        .find(|t| *t != "registry" && *t != "iac")
+        .find(|t| is_runtime_target(t))
         .cloned()
-        .unwrap_or_else(|| "unknown".into());
+        .unwrap_or_else(|| {
+            if intent.releases || intent.targets.iter().any(|t| t == "registry") {
+                "release".into()
+            } else {
+                "unknown".into()
+            }
+        });
     ctx.detected(
         FactCategory::Deployment,
         &format!("deploy:pipeline:{path}"),
-        "Deploys from CI",
+        if target == "release" {
+            "Releases from CI"
+        } else {
+            "Deploys from CI"
+        },
         &target,
         path,
         intent

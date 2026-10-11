@@ -5,16 +5,21 @@ use sdi_proto::intelligence::v1 as proto;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use super::{common::PlanStep, opt_string, opt_timestamp, proto_enum, timestamp};
+use super::{
+    common::{Adapter, PlanStep},
+    opt_string, opt_timestamp, proto_enum, timestamp,
+};
 
 // ---------------------------------------------------------------------------
 // Proposals
 // ---------------------------------------------------------------------------
 
 proto_enum! {
-    /// What a proposal is about.
+    /// What a proposal is about. `modernization` moves a legacy or transitional
+    /// project up the maturity axes (CONTRACT.md §6).
     ProposalKind => proto::ProposalKind {
-        Deployment, Infrastructure, CiCd, Testing, Security, Documentation, Dependency
+        Deployment, Infrastructure, CiCd, Testing, Security, Documentation, Dependency,
+        Modernization
     }
 }
 
@@ -68,7 +73,7 @@ impl From<proto::ScoreBreakdown> for ScoreBreakdown {
 }
 
 /// Relative weight of each signal. Negotiation changes these.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreWeights {
     /// Weight of semantic similarity.
@@ -89,6 +94,20 @@ pub struct ScoreWeights {
 
 impl From<proto::ScoreWeights> for ScoreWeights {
     fn from(weights: proto::ScoreWeights) -> Self {
+        Self {
+            semantic_similarity: weights.semantic_similarity,
+            policy: weights.policy,
+            recency: weights.recency,
+            success: weights.success,
+            architecture_fit: weights.architecture_fit,
+            cost: weights.cost,
+            security: weights.security,
+        }
+    }
+}
+
+impl From<ScoreWeights> for proto::ScoreWeights {
+    fn from(weights: ScoreWeights) -> Self {
         Self {
             semantic_similarity: weights.semantic_similarity,
             policy: weights.policy,
@@ -126,7 +145,60 @@ impl From<proto::Evidence> for Evidence {
     }
 }
 
-/// One ranked option of a proposal.
+/// A generated file an option would add to the repository (CONTRACT.md §14).
+/// Content is complete and ready to commit.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    /// Repository-relative path, e.g. `.github/workflows/deploy.yml`.
+    pub path: String,
+    /// Full file content.
+    pub content: String,
+    /// `dockerfile`, `yaml`, `hcl`, `bicep`, `json`, `markdown`, `nginx` or `text`.
+    pub language: String,
+    /// One sentence: why this file exists.
+    pub purpose: String,
+    /// True when the repository already has a file at this path.
+    pub replaces_existing: bool,
+}
+
+impl From<proto::Artifact> for Artifact {
+    fn from(artifact: proto::Artifact) -> Self {
+        Self {
+            path: artifact.path,
+            content: artifact.content,
+            language: artifact.language,
+            purpose: artifact.purpose,
+            replaces_existing: artifact.replaces_existing,
+        }
+    }
+}
+
+/// One line of an option's cost model. The lines sum to `estimatedMonthlyCostUsd`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CostLine {
+    /// What is billed, e.g. `compute`, `database`, `registry`, `networking`, `ci_minutes`.
+    pub item: String,
+    /// Monthly cost in USD.
+    pub monthly_usd: f64,
+    /// How the estimate was made.
+    pub note: String,
+}
+
+impl From<sdi_proto::common::v1::CostLine> for CostLine {
+    fn from(line: sdi_proto::common::v1::CostLine) -> Self {
+        Self {
+            item: line.item,
+            monthly_usd: line.monthly_usd,
+            note: line.note,
+        }
+    }
+}
+
+/// One ranked option of a proposal. The generated files are not inlined
+/// (they can be large); `artifactCount` says how many
+/// `GET /proposals/{id}/options/{optionId}/artifacts` returns.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposalOption {
@@ -154,6 +226,10 @@ pub struct ProposalOption {
     pub unmet_requirements: Vec<String>,
     /// Plan that would be executed.
     pub plan: Vec<PlanStep>,
+    /// Number of generated files; fetch them from the artifacts route.
+    pub artifact_count: u32,
+    /// Cost model behind `estimatedMonthlyCostUsd`.
+    pub cost_breakdown: Vec<CostLine>,
 }
 
 impl From<proto::ProposalOption> for ProposalOption {
@@ -171,6 +247,8 @@ impl From<proto::ProposalOption> for ProposalOption {
             estimated_monthly_cost_usd: option.estimated_monthly_cost_usd,
             unmet_requirements: option.unmet_requirements,
             plan: option.plan.into_iter().map(Into::into).collect(),
+            artifact_count: u32::try_from(option.artifacts.len()).unwrap_or(u32::MAX),
+            cost_breakdown: option.cost_breakdown.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -280,6 +358,9 @@ pub struct GenerateProposalRequest {
     pub kind: ProposalKind,
     /// Free-text request, if any.
     pub prompt: Option<String>,
+    /// Monthly budget in USD; becomes the `budget_monthly_usd` constraint (CONTRACT.md §6).
+    /// Unset or 0 means no budget beyond what `.sdi.yml` declares.
+    pub budget_monthly_usd: Option<f64>,
 }
 
 /// Body of `POST /proposals/{id}/accept`.
@@ -290,6 +371,84 @@ pub struct AcceptProposalRequest {
     pub option_id: Option<String>,
     /// Hand the plan to the execution service straight away.
     pub create_execution: Option<bool>,
+    /// Runtime for that execution (CONTRACT.md §5.4). `simulated` by default.
+    pub adapter: Option<Adapter>,
+}
+
+/// Body of `POST /proposals/{id}/pull-request`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPullRequestRequest {
+    /// Option whose artifacts to commit. Empty uses the recommended option.
+    pub option_id: Option<String>,
+}
+
+/// Ranking defaults and the reasoner, changed from the settings page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IntelligenceSettings {
+    /// Signal weights every new proposal starts from.
+    pub default_weights: Option<ScoreWeights>,
+    /// `heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise.
+    pub reasoner: String,
+    /// Model used by the `claude` reasoner.
+    pub model: String,
+    /// True when `ANTHROPIC_API_KEY` is configured. Read-only.
+    pub api_key_configured: bool,
+    /// Options above this monthly cost lose ranking unless a budget says otherwise.
+    pub cost_ceiling_usd: f64,
+}
+
+impl From<proto::IntelligenceSettings> for IntelligenceSettings {
+    fn from(settings: proto::IntelligenceSettings) -> Self {
+        Self {
+            default_weights: settings.default_weights.map(Into::into),
+            reasoner: settings.reasoner,
+            model: settings.model,
+            api_key_configured: settings.api_key_configured,
+            cost_ceiling_usd: settings.cost_ceiling_usd,
+        }
+    }
+}
+
+impl From<IntelligenceSettings> for proto::IntelligenceSettings {
+    fn from(settings: IntelligenceSettings) -> Self {
+        Self {
+            default_weights: settings.default_weights.map(Into::into),
+            reasoner: settings.reasoner,
+            model: settings.model,
+            api_key_configured: settings.api_key_configured,
+            cost_ceiling_usd: settings.cost_ceiling_usd,
+        }
+    }
+}
+
+/// The `intelligence` part of `PATCH /settings`: every field is optional and
+/// unset fields keep their current value. `apiKeyConfigured` is read-only.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IntelligenceSettingsPatch {
+    /// Signal weights every new proposal starts from. Replaced as a whole.
+    pub default_weights: Option<ScoreWeights>,
+    /// `heuristic` or `claude`.
+    pub reasoner: Option<String>,
+    /// Model used by the `claude` reasoner.
+    pub model: Option<String>,
+    /// Options above this monthly cost lose ranking unless a budget says otherwise.
+    pub cost_ceiling_usd: Option<f64>,
+}
+
+impl IntelligenceSettingsPatch {
+    /// The current settings with the patched fields replaced.
+    pub fn apply(self, current: IntelligenceSettings) -> IntelligenceSettings {
+        IntelligenceSettings {
+            default_weights: self.default_weights.or(current.default_weights),
+            reasoner: self.reasoner.unwrap_or(current.reasoner),
+            model: self.model.unwrap_or(current.model),
+            api_key_configured: current.api_key_configured,
+            cost_ceiling_usd: self.cost_ceiling_usd.unwrap_or(current.cost_ceiling_usd),
+        }
+    }
 }
 
 /// Body of `POST /proposals/{id}/reject`.
@@ -575,5 +734,65 @@ impl From<proto::IntelligenceStats> for IntelligenceStats {
             documents: stats.documents,
             messages: stats.messages,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_carry_a_count_instead_of_the_artifacts() {
+        let option = ProposalOption::from(proto::ProposalOption {
+            id: "opt-1".into(),
+            artifacts: vec![
+                proto::Artifact {
+                    path: "Dockerfile".into(),
+                    content: "FROM scratch".into(),
+                    ..Default::default()
+                },
+                proto::Artifact {
+                    path: ".dockerignore".into(),
+                    ..Default::default()
+                },
+            ],
+            cost_breakdown: vec![sdi_proto::common::v1::CostLine {
+                item: "compute".into(),
+                monthly_usd: 5.0,
+                note: String::new(),
+            }],
+            ..Default::default()
+        });
+        assert_eq!(option.artifact_count, 2);
+        assert_eq!(option.cost_breakdown.len(), 1);
+        let json = serde_json::to_value(&option).unwrap();
+        assert!(json.get("artifacts").is_none(), "{json}");
+        assert_eq!(json["artifactCount"], 2);
+        assert_eq!(json["costBreakdown"][0]["monthlyUsd"], 5.0);
+    }
+
+    #[test]
+    fn modernization_is_a_proposal_kind() {
+        let kind: ProposalKind = serde_json::from_str("\"modernization\"").unwrap();
+        assert_eq!(kind, ProposalKind::Modernization);
+        assert_eq!(i32::from(kind), proto::ProposalKind::Modernization as i32);
+    }
+
+    #[test]
+    fn intelligence_settings_patch_never_touches_the_api_key_flag() {
+        let current = IntelligenceSettings {
+            default_weights: None,
+            reasoner: "heuristic".into(),
+            model: "m".into(),
+            api_key_configured: true,
+            cost_ceiling_usd: 500.0,
+        };
+        let patch: IntelligenceSettingsPatch =
+            serde_json::from_str(r#"{"reasoner": "claude", "apiKeyConfigured": false}"#).unwrap();
+        let merged = patch.apply(current);
+        assert_eq!(merged.reasoner, "claude");
+        assert_eq!(merged.model, "m");
+        assert!(merged.api_key_configured);
+        assert_eq!(merged.cost_ceiling_usd, 500.0);
     }
 }

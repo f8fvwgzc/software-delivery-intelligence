@@ -14,7 +14,7 @@ export function SectionItem({ section, defaultOpen = false }: SectionItemProps) 
   return (
     <Collapsible defaultOpen={defaultOpen} className="group/section border-b border-border/60 last:border-0">
       <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-sm py-2.5 text-left outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
-        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-data-[state=open]/section:rotate-90" />
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none group-data-[state=open]/section:rotate-90" />
         <span className="shrink-0 text-sm font-medium">{section.title}</span>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{section.summary}</span>
         <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">{section.items.length}</span>

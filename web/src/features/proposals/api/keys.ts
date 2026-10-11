@@ -6,6 +6,8 @@ export const proposalKeys = {
   details: () => [...proposalKeys.all, 'detail'] as const,
   detail: (id: string) => [...proposalKeys.details(), id] as const,
   messages: (id: string) => [...proposalKeys.detail(id), 'messages'] as const,
+  /** Generated files of one option; a child of `detail` so a re-rank refreshes them too. */
+  artifacts: (id: string, optionId: string) => [...proposalKeys.detail(id), 'artifacts', optionId] as const,
 }
 
 /**

@@ -1,27 +1,50 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
 import { RadarIcon } from 'lucide-react'
 import { useParams } from 'react-router'
 
 import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader, Section } from '@/components/shared/page'
 import { Skeleton } from '@/components/ui/skeleton'
+import { patternsQuery } from '@/features/patterns/api/queries'
 import { projectQueries, type Project } from '@/features/projects/api/queries'
+import type { components } from '@/lib/api/schema'
 
 import { understandingQueries, type Question } from '../api/queries'
+import { ConfigPanel, ConfigPanelSkeleton } from '../components/config-panel'
 import { DeepDive, DeepDiveSkeleton } from '../components/deep-dive'
+import { DeliveryMaturity, DeliveryMaturitySkeleton } from '../components/delivery-maturity'
 import { DetectedFacts, DetectedFactsSkeleton, InferredFactsSkeleton } from '../components/detected-facts'
 import { InferredFacts } from '../components/inferred-facts'
 import { OpenQuestions, OpenQuestionsSkeleton } from '../components/open-questions'
 import { RequestFlow } from '../components/request-flow'
 import { ScanProgress, ScanProgressSkeleton } from '../components/scan-progress'
 import { TldrCallout, TldrCalloutSkeleton } from '../components/tldr-callout'
-import { groupFactsByCategory, sortByConfidence } from '../lib/labels'
+import { groupFactsByCategory, isAnsweredByConfig, sortByConfidence } from '../lib/labels'
+
+type Pattern = components['schemas']['Pattern']
 
 /* Panels: each one owns a query and suspends inside its own boundary. */
 
 function TldrPanel({ projectId }: { projectId: string }) {
   const { data } = useSuspenseQuery(understandingQueries.understanding(projectId))
   return <TldrCallout understanding={data} />
+}
+
+/** Stable `select`: the catalog as id → name, for the "Propose" links. */
+function toPatternNames(patterns: Pattern[]) {
+  return new Map(patterns.map((pattern) => [pattern.id, pattern.name]))
+}
+
+function MaturityPanel({ projectId }: { projectId: string }) {
+  const { data: maturity } = useSuspenseQuery(projectQueries.maturity(projectId))
+  // Names are a nicety: the section renders with ids while the catalog loads.
+  const { data: patternNames } = useQuery({ ...patternsQuery(), select: toPatternNames })
+  return <DeliveryMaturity maturity={maturity} patternNames={patternNames} projectId={projectId} />
+}
+
+function ConfigPanelLoader({ project }: { project: Project }) {
+  const { data: config } = useSuspenseQuery(projectQueries.config(project.id))
+  return <ConfigPanel config={config} project={project} />
 }
 
 function DetectedPanel({ project }: { project: Project }) {
@@ -40,11 +63,12 @@ function InferredPanel({ projectId }: { projectId: string }) {
   return <InferredFacts facts={facts} />
 }
 
+/** Open questions need a form; answered ones (by the user or by `.sdi.yml`) are the record. */
 function splitQuestions(questions: Question[]) {
   const open: Question[] = []
   const answered: Question[] = []
   for (const question of questions) {
-    if (question.answeredAt) {
+    if (question.answeredAt || isAnsweredByConfig(question)) {
       answered.push(question)
     } else {
       open.push(question)
@@ -80,6 +104,27 @@ function ReadyContent({ project }: { project: Project }) {
       <QueryBoundary fallback={<TldrCalloutSkeleton />}>
         <TldrPanel projectId={project.id} />
       </QueryBoundary>
+
+      <div className="grid gap-6 lg:grid-cols-12">
+        <Section
+          title="Delivery maturity"
+          description="Eight axes scored from facts only. Each finding names what would raise it."
+          className="lg:col-span-7"
+        >
+          <QueryBoundary fallback={<DeliveryMaturitySkeleton />}>
+            <MaturityPanel projectId={project.id} />
+          </QueryBoundary>
+        </Section>
+        <Section
+          title=".sdi.yml"
+          description="What the repository declares about how it is delivered."
+          className="lg:col-span-5"
+        >
+          <QueryBoundary fallback={<ConfigPanelSkeleton />}>
+            <ConfigPanelLoader project={project} />
+          </QueryBoundary>
+        </Section>
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-12">
         <Section

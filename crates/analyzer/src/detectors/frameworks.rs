@@ -42,8 +42,12 @@ const FRAMEWORKS: &[(&str, &str, &str, Role)] = &[
     ("pip", "starlette", "starlette", Role::Backend),
     ("go", "github.com/gin-gonic/gin", "gin", Role::Backend),
     ("go", "github.com/labstack/echo/v4", "echo", Role::Backend),
+    ("go", "github.com/labstack/echo", "echo", Role::Backend),
     ("go", "github.com/gofiber/fiber/v2", "fiber", Role::Backend),
+    ("go", "github.com/gofiber/fiber/v3", "fiber", Role::Backend),
     ("go", "github.com/go-chi/chi/v5", "chi", Role::Backend),
+    ("go", "github.com/go-chi/chi", "chi", Role::Backend),
+    ("go", "github.com/gorilla/mux", "gorilla", Role::Backend),
     (
         "maven",
         "org.springframework.boot:spring-boot-starter-web",
@@ -83,6 +87,25 @@ const FRAMEWORKS: &[(&str, &str, &str, Role)] = &[
         "symfony",
         Role::Fullstack,
     ),
+    ("composer", "symfony/symfony", "symfony", Role::Fullstack),
+    (
+        "composer",
+        "codeigniter4/framework",
+        "codeigniter",
+        Role::Fullstack,
+    ),
+    (
+        "composer",
+        "johnpbloch/wordpress",
+        "wordpress",
+        Role::Fullstack,
+    ),
+    ("composer", "roots/wordpress", "wordpress", Role::Fullstack),
+    ("nuget", "Microsoft.AspNetCore.App", "aspnet", Role::Backend),
+    ("nuget", "Microsoft.AspNetCore.Mvc", "aspnet", Role::Backend),
+    ("cpan", "Mojolicious", "mojolicious", Role::Backend),
+    ("cpan", "Dancer2", "dancer", Role::Backend),
+    ("cpan", "Catalyst::Runtime", "catalyst", Role::Backend),
     ("mix", "phoenix", "phoenix", Role::Fullstack),
 ];
 
@@ -95,6 +118,7 @@ const FILE_SIGNALS: &[(&str, &str, Role)] = &[
     ("vite.config.", "vite", Role::Tooling),
     ("angular.json", "angular", Role::Frontend),
     ("manage.py", "django", Role::Backend),
+    ("wp-config.php", "wordpress", Role::Fullstack),
 ];
 
 pub(crate) fn detect(ctx: &mut Ctx<'_>) {
@@ -122,6 +146,7 @@ pub(crate) fn detect(ctx: &mut Ctx<'_>) {
             }
         }
     }
+    static_build(ctx);
     for app in ctx.apps.clone() {
         if app.frontend.is_empty() && app.backend.is_empty() {
             continue;
@@ -138,7 +163,42 @@ pub(crate) fn detect(ctx: &mut Ctx<'_>) {
     }
 }
 
-fn record(ctx: &mut Ctx<'_>, key: &str, role: Role, manifest_path: &str, evidence: &str) {
+/// A Vite build with no server framework produces static files: the project
+/// keeps its framework facts (React stays React) and additionally fits the
+/// static-hosting patterns.
+fn static_build(ctx: &mut Ctx<'_>) {
+    if ctx.has_fact("repository:static_site") || !ctx.has_fact("framework:vite") {
+        return;
+    }
+    if ctx.apps.iter().any(|a| !a.backend.is_empty()) {
+        return;
+    }
+    let source = ctx
+        .fact("framework:vite")
+        .map(|f| f.source_path.clone())
+        .unwrap_or_default();
+    let config = ctx
+        .tree_paths()
+        .find(|p| basename(p).starts_with("vite.config."))
+        .map(String::from)
+        .unwrap_or(source);
+    ctx.detected(
+        FactCategory::Repository,
+        "repository:static_site",
+        "Static site",
+        "Vite build output served as static files",
+        &config,
+        "vite build without a server framework",
+    );
+}
+
+pub(crate) fn record(
+    ctx: &mut Ctx<'_>,
+    key: &str,
+    role: Role,
+    manifest_path: &str,
+    evidence: &str,
+) {
     let fact_key = format!("framework:{key}");
     if !ctx.has_fact(&fact_key) {
         let value = match role {

@@ -1,6 +1,6 @@
 import { ExternalLinkIcon } from 'lucide-react'
 
-import { RelativeTime } from '@/components/shared/data'
+import { RelativeTime, StatusDot } from '@/components/shared/data'
 import { TechChip } from '@/components/shared/data/tech-chip'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -9,7 +9,6 @@ import { shortSha } from '../../lib/format'
 import { DEPLOYMENT_STATUS, sourceLabel } from '../../lib/labels'
 import type { Deployment } from '../../lib/types'
 import { handleRowKeyDown } from '../runs-table/row-keyboard'
-import { StatusDot } from '../status-dot'
 
 interface DeploymentRowProps {
   deployment: Deployment

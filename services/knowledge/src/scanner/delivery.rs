@@ -14,20 +14,21 @@ use crate::{
     github::{GithubClient, Job, WorkflowRun, split_full_name},
 };
 
-const RUNS_PER_SYNC: u32 = 50;
-const DEPLOYMENTS_PER_SYNC: u32 = 50;
 /// Job look-ups cost one call per failed run; cap them so a red history does not burn the quota.
 const MAX_FAILED_RUN_LOOKUPS: usize = 10;
 
+/// `limit` is `settings.pipeline_runs_limit`: how many recent runs one sync
+/// pulls (GitHub caps a page at 100).
 pub async fn sync_runs(
     pool: &PgPool,
     github: &GithubClient,
     project: &ProjectRow,
+    limit: u32,
 ) -> Result<usize> {
     let (owner, name) = split_full_name(&project.repo_full_name)
         .ok_or_else(|| anyhow!("invalid repository name"))?;
     let runs = github
-        .workflow_runs(owner, name, RUNS_PER_SYNC)
+        .workflow_runs(owner, name, limit.clamp(1, 100))
         .await
         .context("workflow runs")?;
 
@@ -83,13 +84,15 @@ pub async fn sync_deployments(
     pool: &PgPool,
     github: &GithubClient,
     project: &ProjectRow,
+    limit: u32,
 ) -> Result<usize> {
     let (owner, name) = split_full_name(&project.repo_full_name)
         .ok_or_else(|| anyhow!("invalid repository name"))?;
     let mut new_deployments = Vec::new();
+    let limit = limit.clamp(1, 100);
 
     let deployments = github
-        .deployments(owner, name, DEPLOYMENTS_PER_SYNC)
+        .deployments(owner, name, limit)
         .await
         .context("deployments")?;
     for deployment in deployments {
@@ -118,7 +121,7 @@ pub async fn sync_deployments(
 
     // Repositories without the Deployments API still deploy through workflows.
     let runs = github
-        .workflow_runs(owner, name, RUNS_PER_SYNC)
+        .workflow_runs(owner, name, limit)
         .await
         .context("workflow runs")?;
     for run in runs

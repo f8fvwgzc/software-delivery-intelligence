@@ -148,6 +148,7 @@ pub fn execution_to_proto(
         },
         last_checkpoint: row.last_checkpoint.unwrap_or_default(),
         revision: row.revision.max(0) as u32,
+        outputs: row.outputs.0.into_iter().collect(),
         created_at: Some(time::to_proto(row.created_at)),
         updated_at: Some(time::to_proto(row.updated_at)),
         started_at: time::opt_to_proto(row.started_at),

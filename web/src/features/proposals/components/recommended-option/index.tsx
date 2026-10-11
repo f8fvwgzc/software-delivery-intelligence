@@ -3,7 +3,9 @@ import { AlertTriangleIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { components } from '@/lib/api/schema'
 
-import { formatMonthlyCost, formatPercent } from '../../lib/format'
+import { isOverBudget, overBudgetBy } from '../../lib/budget'
+import { formatMonthlyCost, formatPercent, formatUsd } from '../../lib/format'
+import { CostBreakdown } from '../cost-breakdown'
 import { EvidenceList } from './evidence-list'
 import { ProsCons } from './pros-cons'
 import { ScoreBreakdownBars } from './score-breakdown'
@@ -14,14 +16,18 @@ interface RecommendedOptionProps {
   option: ProposalOption
   /** True when this option is the one the ranker recommends. */
   recommended: boolean
+  /** Monthly budget the proposal is constrained by, if any. */
+  budgetMonthlyUsd?: number | null
 }
 
 /**
- * The hero block: the option in focus with its score, breakdown, evidence
- * and trade-offs. The one place on the page the brand accent is spent.
+ * The hero block: the option in focus with its score, breakdown, cost model,
+ * evidence and trade-offs. The one place on the page the brand accent is spent.
  */
-export function RecommendedOption({ option, recommended }: RecommendedOptionProps) {
+export function RecommendedOption({ option, recommended, budgetMonthlyUsd = null }: RecommendedOptionProps) {
   const overall = option.score?.overall ?? 0
+  const overBudget = isOverBudget(option, budgetMonthlyUsd)
+  const excess = overBudgetBy(option, budgetMonthlyUsd)
 
   return (
     <article className="flex flex-col gap-5 rounded-lg bg-card p-4 ring-1 ring-border md:p-5">
@@ -41,6 +47,12 @@ export function RecommendedOption({ option, recommended }: RecommendedOptionProp
           </span>
           <span className="text-xs text-muted-foreground">overall score</span>
           <span className="mt-1 text-xs tabular-nums text-muted-foreground">{formatMonthlyCost(option.estimatedMonthlyCostUsd)} estimated</span>
+          {overBudget ? (
+            <span className="inline-flex items-center gap-1 text-xs tabular-nums text-warning">
+              <AlertTriangleIcon className="size-3.5" aria-hidden="true" />
+              {excess > 0 ? `${formatUsd(excess)}/mo over budget` : 'Over budget'}
+            </span>
+          ) : null}
         </div>
       </header>
 
@@ -52,6 +64,14 @@ export function RecommendedOption({ option, recommended }: RecommendedOptionProp
         )}
         <ProsCons pros={option.pros} cons={option.cons} />
       </div>
+
+      <section className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium text-muted-foreground">
+          Cost model{' '}
+          <span className="tabular-nums">({option.costBreakdown.length})</span>
+        </h3>
+        <CostBreakdown lines={option.costBreakdown} estimateMonthlyUsd={option.estimatedMonthlyCostUsd} />
+      </section>
 
       {option.unmetRequirements.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5">

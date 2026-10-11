@@ -1,4 +1,5 @@
 import type { components } from '@/lib/api/schema'
+import { testIds } from '@/test-ids'
 
 type Constraint = components['schemas']['Constraint']
 
@@ -19,7 +20,7 @@ export function ConstraintsList({ constraints, positions }: ConstraintsListProps
         {constraints.map((constraint) => {
           const position = positions.get(constraint.sourceMessageId)
           return (
-            <li key={constraint.key} className="flex flex-col gap-0.5 text-xs">
+            <li key={constraint.key} data-testid={testIds.proposal.constraint} className="flex flex-col gap-0.5 text-xs">
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-2xs text-muted-foreground">{constraint.key}</span>
                 <span className="text-2xs text-muted-foreground">

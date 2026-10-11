@@ -80,11 +80,23 @@ pub(super) async fn negotiate(
             .await
             .map_err(db_status)?;
         proposals::index_decision(svc, &decision).await;
+        proposals::emit_decision(svc, &decision, "created");
         recorded = Some(decision);
     }
 
-    let (_, after) =
-        proposals::rank_for(svc, &row.project_id, kind, &constraints, &weights).await?;
+    let settings = svc.settings().await?;
+    let reasoner = svc.reasoner_for(&settings);
+    // Every revision re-ranks and regenerates artifacts, so a changed
+    // region, port or runtime is reflected in the generated files.
+    let (_, after) = proposals::rank_for(
+        svc,
+        &row.project_id,
+        kind,
+        &constraints,
+        &weights,
+        settings.cost_ceiling_usd,
+    )
+    .await?;
     let draft_decision = recorded.as_ref().map(|d| negotiation::DecisionDraft {
         title: d.title.clone(),
         statement: d.statement.clone(),
@@ -105,7 +117,7 @@ pub(super) async fn negotiate(
     };
     let draft = narrative::compose_reply(&effects, &context);
     let context_json = serde_json::to_value(&context).unwrap_or(serde_json::Value::Null);
-    let text = svc.reasoner.write_reply(&draft.text, &context_json).await;
+    let text = reasoner.write_reply(&draft.text, &context_json).await;
 
     let reply = MessageRow::new(
         row.id,
@@ -128,10 +140,11 @@ pub(super) async fn negotiate(
     row.constraints = Json(constraints);
     row.weights = Json(weights);
     row.revision += 1;
-    row.reasoner = svc.reasoner.name().to_owned();
+    row.reasoner = reasoner.name().to_owned();
     proposals_repo::update_ranking(&svc.pool, &row)
         .await
         .map_err(db_status)?;
+    proposals::emit_proposal(svc, &row, "updated");
 
     index_turn(
         svc,

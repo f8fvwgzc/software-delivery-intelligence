@@ -1,3 +1,4 @@
+import { RISK as SHARED_RISK } from '@/components/shared/data'
 import type { components } from '@/lib/api/schema'
 
 type RiskLevel = components['schemas']['RiskLevel']
@@ -6,12 +7,17 @@ type PolicyDecision = components['schemas']['PolicyDecision']
 /** Group order on the page, safest first. */
 export const RISK_ORDER: RiskLevel[] = ['safe', 'medium', 'high', 'blocked']
 
+/** Tier headings for the policies page; the dot fill is the shared one so it matches every rail. */
 export const RISK: Record<RiskLevel, { label: string; description: string; dot: string }> = {
-  unspecified: { label: 'Unclassified', description: 'Actions without a risk rating.', dot: 'bg-muted-foreground/50' },
-  safe: { label: 'Safe', description: 'Read-only or local. Cannot change anything shared.', dot: 'bg-success' },
-  medium: { label: 'Medium', description: 'Creates disposable resources or runs code in isolation.', dot: 'bg-warning' },
-  high: { label: 'High', description: 'Touches shared or production systems.', dot: 'bg-destructive' },
-  blocked: { label: 'Blocked', description: 'Never runs through the platform.', dot: 'bg-foreground' },
+  unspecified: { label: 'Unclassified', description: 'Actions without a risk rating.', dot: SHARED_RISK.unspecified.dot },
+  safe: { label: 'Safe', description: 'Read-only or local. Cannot change anything shared.', dot: SHARED_RISK.safe.dot },
+  medium: {
+    label: 'Medium',
+    description: 'Creates disposable resources or runs code in isolation.',
+    dot: SHARED_RISK.medium.dot,
+  },
+  high: { label: 'High', description: 'Touches shared or production systems.', dot: SHARED_RISK.high.dot },
+  blocked: { label: 'Blocked', description: 'Never runs through the platform.', dot: SHARED_RISK.blocked.dot },
 }
 
 export const POLICY_DECISION: Record<PolicyDecision, { label: string; description: string }> = {

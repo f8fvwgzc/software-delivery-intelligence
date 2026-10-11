@@ -28,16 +28,6 @@ export const DEPLOYMENT_STATUS: Record<DeploymentStatus, StatusMeta> = {
   inactive: { label: 'Inactive', tone: 'neutral' },
 }
 
-/** 6px dot fill per tone; mirrors the StatusBadge dot so both read the same. */
-export const TONE_DOT_CLASS: Record<StatusTone, string> = {
-  neutral: 'bg-muted-foreground/60',
-  info: 'bg-info',
-  success: 'bg-success',
-  warning: 'bg-warning',
-  destructive: 'bg-destructive',
-  brand: 'bg-brand',
-}
-
 const PROVIDER_LABELS: Record<string, string> = {
   github_actions: 'GitHub Actions',
   gitlab_ci: 'GitLab CI',

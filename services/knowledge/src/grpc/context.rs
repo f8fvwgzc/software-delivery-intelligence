@@ -6,7 +6,8 @@ use super::{KnowledgeState, delivery, knowledge};
 use crate::{convert, db};
 
 /// Everything the proposal engine needs, in one round trip. Parts that a
-/// scan has not produced yet are simply absent.
+/// scan has not produced yet are simply absent; `config` is always present
+/// (with `present=false`) so the generators never special-case it.
 pub(super) async fn get_project_context(
     state: &KnowledgeState,
     req: GetProjectContextRequest,
@@ -25,16 +26,23 @@ pub(super) async fn get_project_context(
         db::profiles::get(pool, id),
     )
     .map_err(db_status)?;
+    let (maturity, config, dependencies) = tokio::try_join!(
+        db::maturity::get(pool, id),
+        db::config::get(pool, id),
+        db::dependencies::list(pool, id),
+    )
+    .map_err(db_status)?;
     let pipeline_stats = delivery::pipeline_stats(pool, id).await?;
     let deployment_stats = delivery::deployment_stats(pool, id).await?;
 
     let (technologies, capabilities, profile_text) = profile
         .map(|p| (p.technologies, p.capabilities, p.profile_text))
         .unwrap_or_default();
+    let maturity = maturity.map(convert::maturity);
 
     Ok(ProjectContext {
         project: Some(convert::project(project)),
-        understanding: understanding.map(convert::understanding),
+        understanding: understanding.map(|u| convert::understanding(u, maturity.clone())),
         facts: facts.into_iter().map(convert::fact).collect(),
         questions: questions.into_iter().map(convert::question).collect(),
         graph: Some(Graph {
@@ -47,6 +55,9 @@ pub(super) async fn get_project_context(
         technologies,
         capabilities,
         profile_text,
+        maturity,
+        config: Some(convert::project_config(config)),
+        dependencies: dependencies.into_iter().map(convert::dependency).collect(),
     })
 }
 

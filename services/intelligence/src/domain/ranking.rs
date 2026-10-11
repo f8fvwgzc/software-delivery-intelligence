@@ -12,20 +12,25 @@ use sdi_proto::{
 };
 
 use super::{
+    cost,
     model::{
-        Breakdown, ConstraintData, EvidenceItem, EvidenceKind, PlanStepData, RankedOption, Weights,
+        self, Breakdown, ConstraintData, EvidenceItem, EvidenceKind, PlanStepData, RankedOption,
+        Weights,
     },
-    policy,
+    modernization, policy,
 };
+use crate::generators;
 
 pub const MAX_OPTIONS: usize = 5;
 const CATALOG_RECENCY: f64 = 0.8;
 const NO_DECISION_POLICY: f64 = 0.6;
 const SUCCESS_PRIOR: f64 = 0.7;
 const SUCCESS_SHRINK_BELOW: u32 = 5;
-const COST_CEILING: f64 = 500.0;
+pub const DEFAULT_COST_CEILING: f64 = 500.0;
 const CONSTRAINT_PENALTY: f64 = 0.1;
 const PREFERENCE_BONUS: f64 = 0.1;
+/// CONTRACT.md §6 Budget: an option over budget stays visible but loses this.
+const BUDGET_PENALTY: f64 = 0.25;
 
 pub struct RankingInput<'a> {
     pub context: &'a ProjectContext,
@@ -35,6 +40,18 @@ pub struct RankingInput<'a> {
     pub constraints: &'a [ConstraintData],
     pub weights: &'a Weights,
     pub now: DateTime<Utc>,
+    /// Decides the modernization fit rule and which kinds carry artifacts.
+    pub kind: ProposalKind,
+    /// Settings `cost_ceiling_usd`: the cost signal reaches 0 at this amount.
+    pub cost_ceiling: f64,
+}
+
+/// Kinds whose options carry generated files (CONTRACT.md §6 Artifacts).
+pub fn carries_artifacts(kind: ProposalKind) -> bool {
+    !matches!(
+        kind,
+        ProposalKind::Documentation | ProposalKind::Unspecified
+    )
 }
 
 /// Pattern category a proposal kind draws its candidates from.
@@ -47,6 +64,7 @@ pub fn category_for(kind: ProposalKind) -> Option<&'static str> {
         ProposalKind::Security => Some("security"),
         ProposalKind::Documentation => Some("documentation"),
         ProposalKind::Dependency => Some("dependency"),
+        ProposalKind::Modernization => Some("modernization"),
         ProposalKind::Unspecified => None,
     }
 }
@@ -227,6 +245,16 @@ pub fn success_signal(pattern: &Pattern) -> f64 {
     (n * rate + (k - n) * SUCCESS_PRIOR) / k
 }
 
+/// A catalog requirement is either a capability key or a `prefix:*`
+/// wildcard (`database:*` in the managed-database pattern): a project never
+/// carries the literal wildcard, so it matches any capability of that family.
+fn requirement_met(requirement: &str, capabilities: &[String]) -> bool {
+    match requirement.strip_suffix('*') {
+        Some(prefix) if !prefix.is_empty() => capabilities.iter().any(|c| c.starts_with(prefix)),
+        _ => capabilities.iter().any(|c| c == requirement),
+    }
+}
+
 /// Share of `requires` the project has, minus 0.1 per gap, floored at 0.
 pub fn architecture_fit(requires: &[String], capabilities: &[String]) -> (f64, Vec<String>) {
     if requires.is_empty() {
@@ -234,7 +262,7 @@ pub fn architecture_fit(requires: &[String], capabilities: &[String]) -> (f64, V
     }
     let unmet: Vec<String> = requires
         .iter()
-        .filter(|r| !capabilities.iter().any(|c| c == *r))
+        .filter(|r| !requirement_met(r, capabilities))
         .cloned()
         .collect();
     let met = (requires.len() - unmet.len()) as f64 / requires.len() as f64;
@@ -242,8 +270,19 @@ pub fn architecture_fit(requires: &[String], capabilities: &[String]) -> (f64, V
     (fit, unmet)
 }
 
+/// The contract formula with the default ceiling (`1 − min(cost, 500)/500`).
+#[cfg(test)]
 pub fn cost_signal(monthly_usd: f64) -> f64 {
-    1.0 - monthly_usd.clamp(0.0, COST_CEILING) / COST_CEILING
+    cost_signal_with_ceiling(monthly_usd, DEFAULT_COST_CEILING)
+}
+
+pub fn cost_signal_with_ceiling(monthly_usd: f64, ceiling: f64) -> f64 {
+    let ceiling = if ceiling > 0.0 {
+        ceiling
+    } else {
+        DEFAULT_COST_CEILING
+    };
+    1.0 - monthly_usd.clamp(0.0, ceiling) / ceiling
 }
 
 pub fn security_signal(pattern: &Pattern) -> f64 {
@@ -393,11 +432,74 @@ pub fn rank(input: &RankingInput<'_>) -> Vec<RankedOption> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.pattern_id.cmp(&b.pattern_id))
     });
+    keep_cheapest_viable(&mut options, model::budget_of(input.constraints));
     options.truncate(MAX_OPTIONS);
     for (index, option) in options.iter_mut().enumerate() {
         option.rank = index as u32 + 1;
     }
+    if carries_artifacts(input.kind) {
+        let params = model::params_of(input.constraints);
+        for option in &mut options {
+            if let Some(pattern) = input.patterns.iter().find(|p| p.id == option.pattern_id) {
+                option.artifacts = artifacts_for(pattern, input.context, &params, option);
+            }
+        }
+    }
     options
+}
+
+/// With a budget, the cheapest option that fits it (or the cheapest overall
+/// when none does) is guaranteed a slot in the top five, even when its
+/// signals rank it lower: the user must always see what they can afford.
+fn keep_cheapest_viable(options: &mut Vec<RankedOption>, budget: Option<f64>) {
+    let Some(budget) = budget else {
+        return;
+    };
+    if options.len() <= MAX_OPTIONS {
+        return;
+    }
+    let cheapest = |candidates: &[RankedOption], filter: &dyn Fn(&RankedOption) -> bool| {
+        candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| filter(o))
+            .min_by(|(_, a), (_, b)| {
+                a.estimated_monthly_cost_usd
+                    .partial_cmp(&b.estimated_monthly_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.pattern_id.cmp(&b.pattern_id))
+            })
+            .map(|(i, _)| i)
+    };
+    let within = |o: &RankedOption| o.estimated_monthly_cost_usd <= budget + 1e-9;
+    let index = cheapest(options, &within).or_else(|| cheapest(options, &|_| true));
+    if let Some(index) = index
+        && index >= MAX_OPTIONS
+    {
+        let option = options.remove(index);
+        options.insert(MAX_OPTIONS - 1, option);
+    }
+}
+
+/// Generated files for one option, from the project context and the
+/// negotiated parameters; the option's plan feeds the docs generator.
+fn artifacts_for(
+    pattern: &Pattern,
+    ctx: &ProjectContext,
+    params: &std::collections::BTreeMap<String, String>,
+    option: &RankedOption,
+) -> Vec<super::model::ArtifactData> {
+    let mut input = generators::input::build(ctx, params, &pattern.cloud);
+    input.plan = option.plan.clone();
+    input.option_title = option.title.clone();
+    input.option_summary = option.summary.clone();
+    generators::for_pattern(
+        &pattern.id,
+        &pattern.category,
+        &pattern.cloud,
+        &pattern.runtime,
+        &input,
+    )
 }
 
 fn excluded(pattern: &Pattern, constraints: &[ConstraintData]) -> bool {
@@ -411,14 +513,27 @@ fn score_pattern(pattern: &Pattern, input: &RankingInput<'_>, profile: &[f32]) -
     let ctx = input.context;
     let project = ctx.project.as_ref();
     let (policy_score, matches) = policy_signal(pattern, input.decisions);
-    let (fit, mut unmet) = architecture_fit(&pattern.requires, &ctx.capabilities);
+    let (requires_fit, mut unmet) = architecture_fit(&pattern.requires, &ctx.capabilities);
+    // Modernization options are scored by the weakest maturity axis they
+    // raise; their `requires` still feed `unmet_requirements`.
+    let (fit, weakest_axis) = if input.kind == ProposalKind::Modernization {
+        modernization::fit(pattern, ctx.maturity.as_ref())
+    } else {
+        (requires_fit, None)
+    };
+    let cost_breakdown = cost::breakdown(pattern, ctx);
+    let monthly_cost = if cost_breakdown.is_empty() {
+        pattern.estimated_monthly_cost_usd
+    } else {
+        cost::total(&cost_breakdown)
+    };
     let mut score = Breakdown {
         semantic_similarity: semantic_signal(profile, pattern),
         policy: policy_score,
         recency: recency_signal(pattern, input.now),
         success: success_signal(pattern),
         architecture_fit: fit,
-        cost: cost_signal(pattern.estimated_monthly_cost_usd),
+        cost: cost_signal_with_ceiling(monthly_cost, input.cost_ceiling),
         security: security_signal(pattern),
         overall: 0.0,
     };
@@ -463,6 +578,15 @@ fn score_pattern(pattern: &Pattern, input: &RankingInput<'_>, profile: &[f32]) -
                 format!("project capability satisfies `{requirement}`"),
             )),
         }
+    }
+
+    if let Some((axis, axis_score)) = weakest_axis {
+        evidence.push(EvidenceItem::new(
+            EvidenceKind::Fact,
+            format!("maturity:{axis}"),
+            format!("Maturity axis {axis}"),
+            format!("scores {axis_score}/100; this pattern raises it"),
+        ));
     }
 
     for m in &matches {
@@ -605,6 +729,23 @@ fn score_pattern(pattern: &Pattern, input: &RankingInput<'_>, profile: &[f32]) -
         }
     }
 
+    if let Some(budget) = model::budget_of(input.constraints)
+        && monthly_cost > budget + 1e-9
+    {
+        unmet.push(format!("budget:{}", model::fmt_usd(budget)));
+        score.overall = (score.overall - BUDGET_PENALTY).max(0.0);
+        evidence.push(EvidenceItem::new(
+            EvidenceKind::Policy,
+            "budget",
+            "Budget",
+            format!(
+                "estimated ${} exceeds the ${} monthly budget",
+                model::fmt_usd(monthly_cost),
+                model::fmt_usd(budget)
+            ),
+        ));
+    }
+
     RankedOption {
         id: option_id(&pattern.id),
         title: pattern.name.clone(),
@@ -615,10 +756,12 @@ fn score_pattern(pattern: &Pattern, input: &RankingInput<'_>, profile: &[f32]) -
         pros: pattern.pros.clone(),
         cons: pattern.cons.clone(),
         evidence,
-        estimated_monthly_cost_usd: pattern.estimated_monthly_cost_usd,
+        estimated_monthly_cost_usd: monthly_cost,
         unmet_requirements: unmet,
         plan: instantiate_plan(pattern, project),
         tags: pattern_tags(pattern),
+        artifacts: Vec::new(),
+        cost_breakdown,
     }
 }
 
@@ -683,6 +826,8 @@ pub mod fixtures {
                 },
             ],
             created_at: None,
+            targets_axes: vec![],
+            cost_lines: vec![],
         }
     }
 
@@ -774,6 +919,9 @@ pub mod fixtures {
             ],
             profile_text: "TypeScript web service with a Dockerfile and GitHub Actions CI"
                 .to_owned(),
+            maturity: None,
+            config: None,
+            dependencies: vec![],
         }
     }
 
@@ -817,6 +965,8 @@ mod tests {
             constraints,
             weights,
             now: Utc::now(),
+            kind: ProposalKind::Deployment,
+            cost_ceiling: DEFAULT_COST_CEILING,
         }
     }
 
@@ -956,6 +1106,10 @@ mod tests {
         ));
         assert_eq!(recency_signal(&p, Utc::now()), 0.3);
 
+        let (wild, none) = architecture_fit(&["database:*".into()], &["database:postgres".into()]);
+        assert_eq!((wild, none.len()), (1.0, 0));
+        let (_, missing) = architecture_fit(&["database:*".into()], &["cache:redis".into()]);
+        assert_eq!(missing, vec!["database:*"]);
         let (fit, unmet) = architecture_fit(&["a".into(), "b".into()], &["a".into()]);
         assert!((fit - 0.4).abs() < 1e-9);
         assert_eq!(unmet, vec!["b"]);
@@ -974,6 +1128,286 @@ mod tests {
     #[test]
     fn kinds_map_to_categories() {
         assert_eq!(category_for(ProposalKind::CiCd), Some("ci_cd"));
+        assert_eq!(
+            category_for(ProposalKind::Modernization),
+            Some("modernization")
+        );
         assert_eq!(category_for(ProposalKind::Unspecified), None);
+        assert!(carries_artifacts(ProposalKind::Modernization));
+        assert!(!carries_artifacts(ProposalKind::Documentation));
+    }
+
+    /// Six catalog-like patterns whose signals are identical except cost,
+    /// so the budget rules are the only thing that moves them.
+    fn priced_catalog() -> Vec<Pattern> {
+        [
+            ("p-5", 5.0),
+            ("p-12", 12.0),
+            ("p-18", 18.0),
+            ("p-40", 40.0),
+            ("p-60", 60.0),
+            ("p-90", 90.0),
+        ]
+        .into_iter()
+        .map(|(id, cost)| {
+            let mut p = pattern(id, "any", "paas", &["dockerfile"], cost);
+            // Identical text keeps the semantic signal equal across them.
+            p.name = "paas option".to_owned();
+            p.summary = "paas deployment".to_owned();
+            p
+        })
+        .collect()
+    }
+
+    #[test]
+    fn budget_table() {
+        let ctx = context();
+        let patterns = priced_catalog();
+        let weights = Weights::default();
+
+        // Without a budget, cost ordering is the only difference: cheaper wins.
+        let free = rank(&input(&ctx, &patterns, &[], &[], &weights));
+        assert_eq!(free[0].pattern_id, "p-5");
+        assert!(free.iter().all(|o| o.unmet_requirements.is_empty()));
+
+        let cases: &[(f64, &str, &[&str])] = &[
+            // budget, must be rank 1, must be marked over budget
+            (15.0, "p-5", &["p-18", "p-40", "p-60", "p-90"]),
+            (20.0, "p-5", &["p-40", "p-60", "p-90"]),
+            (50.0, "p-5", &["p-60", "p-90"]),
+        ];
+        for (budget, top, over) in cases {
+            let constraints = vec![ConstraintData::budget(*budget)];
+            let options = rank(&input(&ctx, &patterns, &[], &constraints, &weights));
+            assert_eq!(options[0].pattern_id, *top, "budget {budget}");
+            for option in &options {
+                let marked = option
+                    .unmet_requirements
+                    .iter()
+                    .any(|u| u == &format!("budget:{}", model::fmt_usd(*budget)));
+                assert_eq!(
+                    marked,
+                    over.contains(&option.pattern_id.as_str()),
+                    "budget {budget}: {}",
+                    option.pattern_id
+                );
+            }
+            // Every option over budget ranks below every option under it.
+            let last_under = options
+                .iter()
+                .rposition(|o| o.estimated_monthly_cost_usd <= *budget)
+                .unwrap();
+            let first_over = options
+                .iter()
+                .position(|o| o.estimated_monthly_cost_usd > *budget)
+                .unwrap_or(options.len());
+            assert!(
+                last_under < first_over,
+                "budget {budget}: {:?}",
+                options.iter().map(|o| &o.pattern_id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn over_budget_option_drops_below_an_under_budget_one_it_beat_before() {
+        let ctx = context();
+        let mut patterns = priced_catalog();
+        // Make the expensive one otherwise far better: perfect security and history.
+        let rich = patterns.iter_mut().find(|p| p.id == "p-60").unwrap();
+        rich.security_score = 1.0;
+        rich.deployments = 20;
+        rich.success_rate = 1.0;
+        let weights = Weights::default();
+        let before = rank(&input(&ctx, &patterns, &[], &[], &weights));
+        let pos = |options: &[RankedOption], id: &str| {
+            options.iter().position(|o| o.pattern_id == id).unwrap()
+        };
+        assert!(pos(&before, "p-60") < pos(&before, "p-18"));
+
+        let constraints = vec![ConstraintData::budget(20.0)];
+        let after = rank(&input(&ctx, &patterns, &[], &constraints, &weights));
+        assert!(pos(&after, "p-18") < pos(&after, "p-60"));
+        let rich = &after[pos(&after, "p-60")];
+        assert!(rich.unmet_requirements.contains(&"budget:20".to_owned()));
+        assert!(
+            rich.evidence
+                .iter()
+                .any(|e| e.label == "Budget" && e.detail.contains("$60"))
+        );
+        let overall_before = before[pos(&before, "p-60")].score.overall;
+        assert!((overall_before - rich.score.overall - BUDGET_PENALTY).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cheapest_viable_option_is_always_in_the_top_five() {
+        let ctx = context();
+        let mut patterns = priced_catalog();
+        // The cheapest option is a poor fit on every other signal.
+        let cheap = patterns.iter_mut().find(|p| p.id == "p-5").unwrap();
+        cheap.security_score = 0.0;
+        cheap.deployments = 20;
+        cheap.success_rate = 0.0;
+        cheap.requires = vec![
+            "dockerfile".into(),
+            "k8s:helm".into(),
+            "iac:terraform".into(),
+        ];
+        let weights = Weights::default();
+        let without = rank(&input(&ctx, &patterns, &[], &[], &weights));
+        assert!(
+            without.iter().all(|o| o.pattern_id != "p-5"),
+            "sanity: it falls out of the top five on signals"
+        );
+
+        let constraints = vec![ConstraintData::budget(10.0)];
+        let with = rank(&input(&ctx, &patterns, &[], &constraints, &weights));
+        assert_eq!(with.len(), MAX_OPTIONS);
+        assert!(
+            with.iter().any(|o| o.pattern_id == "p-5"),
+            "the only affordable option must be visible"
+        );
+        assert_eq!(with.last().unwrap().rank, 5);
+    }
+
+    #[test]
+    fn options_carry_cost_breakdown_and_artifacts() {
+        let mut ctx = context();
+        ctx.facts.push(fact(
+            "f-pg",
+            "datastore:postgres",
+            "PostgreSQL",
+            "compose.yml",
+        ));
+        let patterns = catalog();
+        let weights = Weights::default();
+        let options = rank(&input(&ctx, &patterns, &[], &[], &weights));
+        for option in &options {
+            let sum: f64 = option.cost_breakdown.iter().map(|l| l.monthly_usd).sum();
+            assert!(
+                (sum - option.estimated_monthly_cost_usd).abs() < 1e-6,
+                "{}",
+                option.pattern_id
+            );
+            assert!(
+                !option.artifacts.is_empty(),
+                "{} has no artifacts",
+                option.pattern_id
+            );
+            assert!(
+                option.artifacts.iter().any(|a| a.path == "Dockerfile"),
+                "{}",
+                option.pattern_id
+            );
+            assert!(option.artifacts.iter().all(|a| !a.content.contains("TODO")));
+        }
+        let aws = options
+            .iter()
+            .find(|o| o.pattern_id == "aws-ecs-fargate")
+            .unwrap();
+        assert!(
+            aws.cost_breakdown
+                .iter()
+                .any(|l| l.item == "database:postgres")
+        );
+        assert!(aws.artifacts.iter().any(|a| a.path == "infra/aws/main.tf"));
+        assert!(
+            aws.artifacts
+                .iter()
+                .find(|a| a.path == "Dockerfile")
+                .unwrap()
+                .replaces_existing
+        );
+
+        // A negotiated region and port flow into the generated files.
+        let constraints = vec![
+            ConstraintData::param("region", "eu-central-1"),
+            ConstraintData::param("port", "4000"),
+        ];
+        let regenerated = rank(&input(&ctx, &patterns, &[], &constraints, &weights));
+        let aws = regenerated
+            .iter()
+            .find(|o| o.pattern_id == "aws-ecs-fargate")
+            .unwrap();
+        let tf = aws
+            .artifacts
+            .iter()
+            .find(|a| a.path == "infra/aws/variables.tf")
+            .unwrap();
+        assert!(tf.content.contains("eu-central-1"));
+        assert!(tf.content.contains("default = 4000"));
+
+        // Documentation proposals carry no files.
+        let mut docs_input = input(&ctx, &patterns, &[], &[], &weights);
+        docs_input.kind = ProposalKind::Documentation;
+        assert!(rank(&docs_input).iter().all(|o| o.artifacts.is_empty()));
+    }
+
+    #[test]
+    fn modernization_addresses_the_weakest_axis_first() {
+        use sdi_proto::knowledge::v1::{MaturityAxis, MaturityScore};
+        let mut ctx = context();
+        ctx.maturity = Some(MaturityScore {
+            project_id: "proj-1".into(),
+            overall: 30,
+            stage: "legacy".into(),
+            axes: [
+                ("containerization", 80),
+                ("ci", 55),
+                ("tests", 20),
+                ("runtime", 10),
+                ("secrets", 65),
+            ]
+            .into_iter()
+            .map(|(k, score)| MaturityAxis {
+                key: k.into(),
+                label: k.into(),
+                score,
+                ..Default::default()
+            })
+            .collect(),
+            computed_at: None,
+        });
+        // The axes each pattern targets, as the catalog seeds them.
+        let mut patterns: Vec<Pattern> = [
+            ("containerize-legacy-app", &["containerization"][..]),
+            ("add-ci-baseline", &["ci", "tests"]),
+            ("upgrade-runtime", &["runtime", "dependencies"]),
+            ("config-to-environment", &["secrets", "containerization"]),
+        ]
+        .into_iter()
+        .map(|(id, axes)| {
+            let mut p = pattern(id, "any", "", &[], 0.0);
+            p.category = "modernization".to_owned();
+            p.name = "modernization".to_owned();
+            p.summary = "modernization step".to_owned();
+            p.targets_axes = axes.iter().map(|a| (*a).to_owned()).collect();
+            p
+        })
+        .collect();
+        patterns.iter_mut().for_each(|p| p.plan.clear());
+        let weights = Weights::default();
+        let mut ranking_input = input(&ctx, &patterns, &[], &[], &weights);
+        ranking_input.kind = ProposalKind::Modernization;
+        let options = rank(&ranking_input);
+        let ids: Vec<&str> = options.iter().map(|o| o.pattern_id.as_str()).collect();
+        // runtime (10) < tests (20, via add-ci-baseline) < secrets (65) < containerization (80)
+        assert_eq!(
+            ids,
+            vec![
+                "upgrade-runtime",
+                "add-ci-baseline",
+                "config-to-environment",
+                "containerize-legacy-app"
+            ]
+        );
+        assert!((options[0].score.architecture_fit - 0.9).abs() < 1e-9);
+        assert!(
+            options[0]
+                .evidence
+                .iter()
+                .any(|e| e.label == "Maturity axis runtime")
+        );
+        assert!(options.iter().all(|o| !o.artifacts.is_empty()));
     }
 }

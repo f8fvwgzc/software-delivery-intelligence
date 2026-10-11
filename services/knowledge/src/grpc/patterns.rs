@@ -64,8 +64,9 @@ pub(super) async fn record_pattern_outcome(
     )
     .await
     .map_err(db_status)?;
-    db::patterns::get(&state.pool, pattern_id)
+    let pattern = db::patterns::get(&state.pool, pattern_id)
         .await
-        .map(convert::pattern)
-        .map_err(db_status)
+        .map_err(db_status)?;
+    state.events.pattern(pattern_id, "updated", &pattern.status);
+    Ok(convert::pattern(pattern))
 }

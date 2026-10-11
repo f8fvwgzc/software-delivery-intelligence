@@ -59,3 +59,12 @@ message PlanStep {
   // How success is verified after the action, in plain words.
   string verification = 9;
 }
+
+// One line of a cost model. A pattern ships its lines as the catalog's
+// baseline; a proposal option carries the lines rescaled for its project,
+// and in both places they sum to the monthly estimate.
+message CostLine {
+  string item = 1;
+  double monthly_usd = 2;
+  string note = 3;
+}

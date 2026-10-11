@@ -1,5 +1,5 @@
 import { OctagonXIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
@@ -9,6 +9,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
 import type { components } from '@/lib/api/schema'
 import { cn } from '@/lib/utils'
+import { testIds } from '@/test-ids'
 
 import { useResolveFailure } from '../../api/mutations'
 import { CancelDialog } from '../execution-header/cancel-dialog'
@@ -26,6 +27,17 @@ export function FailedStepPanel({ executionId, executionNumber, failure }: Faile
   const resolve = useResolveFailure(executionId)
   const recommended = failure.options.find((option) => option.recommended) ?? failure.options[0]
   const [choice, setChoice] = useState<string>(recommended?.id ?? INSTRUCTION)
+  // The textarea mounts when its option is chosen. It only takes focus after
+  // an explicit pointer activation: an autoFocus would steal focus from the
+  // radio group the moment an arrow key lands on the option, and the user
+  // could no longer arrow back to the recommended choices.
+  const instructionRef = useRef<HTMLTextAreaElement>(null)
+  const focusInstruction = useRef(false)
+  useEffect(() => {
+    if (choice !== INSTRUCTION || !focusInstruction.current) return
+    focusInstruction.current = false
+    instructionRef.current?.focus()
+  }, [choice])
   const [instruction, setInstruction] = useState('')
   const needsInstruction = choice === INSTRUCTION && instruction.trim().length === 0
 
@@ -35,7 +47,10 @@ export function FailedStepPanel({ executionId, executionNumber, failure }: Faile
   }
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg bg-destructive/[0.03] p-4 ring-1 ring-destructive/20">
+    <div
+      data-testid={testIds.execution.failurePanel}
+      className="flex flex-col gap-4 rounded-lg bg-destructive/[0.03] p-4 ring-1 ring-destructive/20"
+    >
       <div className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <OctagonXIcon className="size-4 text-destructive" />
@@ -81,6 +96,11 @@ export function FailedStepPanel({ executionId, executionNumber, failure }: Faile
               'flex cursor-pointer flex-col gap-2 rounded-md px-3 py-2 ring-1 ring-border transition-colors hover:bg-muted/40',
               choice === INSTRUCTION && 'bg-brand/[0.04] ring-brand/40',
             )}
+            onClick={(event) => {
+              if (event.target === instructionRef.current) return
+              if (choice === INSTRUCTION) instructionRef.current?.focus()
+              else focusInstruction.current = true
+            }}
           >
             <span className="flex items-center gap-2.5">
               <RadioGroupItem value={INSTRUCTION} />
@@ -93,7 +113,7 @@ export function FailedStepPanel({ executionId, executionNumber, failure }: Faile
                 placeholder="Describe what the planner should change, e.g. use a smaller SKU in the same region."
                 rows={3}
                 className="ml-6.5"
-                autoFocus
+                ref={instructionRef}
               />
             )}
           </label>
@@ -138,7 +158,7 @@ function RemediationChoice({ option, selected }: RemediationChoiceProps) {
           )}
         </span>
         <span className="text-xs text-muted-foreground">{option.description}</span>
-        {option.effect && <span className="text-2xs text-muted-foreground/80">Effect: {option.effect}</span>}
+        {option.effect && <span className="text-2xs text-muted-foreground">Effect: {option.effect}</span>}
       </span>
     </label>
   )

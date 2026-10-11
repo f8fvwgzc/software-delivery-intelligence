@@ -8,7 +8,12 @@ interface ExecutionsTableSkeletonProps {
 /** Mirrors the table geometry so the content swap does not shift the layout. */
 export function ExecutionsTableSkeleton({ rows = 6, showProject = true }: ExecutionsTableSkeletonProps) {
   return (
-    <div className="overflow-hidden rounded-lg ring-1 ring-border">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Skeleton className="h-7 w-64 rounded-lg" />
+        <Skeleton className="h-3 w-12" />
+      </div>
+      <div className="overflow-hidden rounded-lg ring-1 ring-border">
       <div className="flex h-10 items-center gap-3 border-b bg-muted/40 px-3">
         <Skeleton className="h-3 w-8" />
         <Skeleton className="h-3 w-40" />
@@ -29,6 +34,7 @@ export function ExecutionsTableSkeleton({ rows = 6, showProject = true }: Execut
           <Skeleton className="ml-auto h-3 w-16" />
         </div>
       ))}
+      </div>
     </div>
   )
 }

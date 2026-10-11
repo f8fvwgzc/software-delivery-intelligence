@@ -4,6 +4,8 @@
 mod app;
 mod dto;
 mod error;
+#[cfg(test)]
+mod fakes;
 mod routes;
 mod sse;
 mod state;

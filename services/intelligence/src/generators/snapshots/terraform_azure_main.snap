@@ -1,0 +1,157 @@
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+  use_oidc = true
+}
+
+resource "azurerm_resource_group" "main" {
+  name     = "rg-${var.name}"
+  location = var.location
+  tags     = var.tags
+}
+
+resource "azurerm_log_analytics_workspace" "main" {
+  name                = "log-${var.name}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+  tags                = var.tags
+}
+
+resource "azurerm_container_registry" "main" {
+  name                = "acrviewengine"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = "Basic"
+  admin_enabled       = false
+  tags                = var.tags
+}
+
+resource "azurerm_user_assigned_identity" "app" {
+  name                = "id-${var.name}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+}
+
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.main.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.app.principal_id
+}
+
+resource "azurerm_container_app_environment" "main" {
+  name                       = "cae-${var.name}"
+  location                   = azurerm_resource_group.main.location
+  resource_group_name        = azurerm_resource_group.main.name
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  tags                       = var.tags
+}
+
+resource "azurerm_container_app" "app" {
+  name                         = var.name
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = azurerm_resource_group.main.name
+  revision_mode                = "Single"
+  tags                         = var.tags
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.app.id]
+  }
+
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.app.id
+  }
+
+  ingress {
+    external_enabled = true
+    target_port      = var.port
+    transport        = "auto"
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  secret {
+    name  = "database-url"
+    value = "postgres://${var.db_admin}:${random_password.db.result}@${azurerm_postgresql_flexible_server.main.fqdn}:5432/view_engine?sslmode=require"
+  }
+
+  template {
+    min_replicas = var.min_replicas
+    max_replicas = var.max_replicas
+
+    container {
+      name   = var.name
+      image  = "${azurerm_container_registry.main.login_server}/${var.name}:${var.image_tag}"
+      cpu    = var.cpu
+      memory = var.memory
+
+      env {
+        name  = "PORT"
+        value = tostring(var.port)
+      }
+
+      env {
+        name        = "DATABASE_URL"
+        secret_name = "database-url"
+      }
+      liveness_probe {
+        transport = "HTTP"
+        path      = "/healthz"
+        port      = var.port
+      }
+
+      readiness_probe {
+        transport = "HTTP"
+        path      = "/healthz"
+        port      = var.port
+      }
+    }
+  }
+}
+
+resource "random_password" "db" {
+  length  = 32
+  special = false
+}
+
+resource "azurerm_postgresql_flexible_server" "main" {
+  name                   = "psql-${var.name}"
+  resource_group_name    = azurerm_resource_group.main.name
+  location               = azurerm_resource_group.main.location
+  version                = "16"
+  administrator_login    = var.db_admin
+  administrator_password = random_password.db.result
+  sku_name               = var.db_sku
+  storage_mb             = 32768
+  backup_retention_days  = 7
+  zone                   = "1"
+  tags                   = var.tags
+}
+
+resource "azurerm_postgresql_flexible_server_database" "app" {
+  name      = "view_engine"
+  server_id = azurerm_postgresql_flexible_server.main.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
+resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
+  name             = "allow-azure-services"
+  server_id        = azurerm_postgresql_flexible_server.main.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+}

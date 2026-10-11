@@ -1,0 +1,25 @@
+# The full suite once a night on main: every CI job including the Playwright
+# run against `make up`, with the real-GitHub specs enabled whenever the
+# SDI_GITHUB_TOKEN secret exists. Pull requests get the same jobs; the point
+# of the schedule is to notice drift that no commit caused (base images,
+# Dependabot-free dependencies, the GitHub API, flaky timing).
+name: Nightly
+
+on:
+  schedule:
+    # 03:00 UTC, after the weekly Dependabot PRs have had a day to land.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  suite:
+    name: Full suite
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit

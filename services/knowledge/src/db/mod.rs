@@ -3,16 +3,19 @@
 //! can run inside the caller's transaction.
 
 pub mod chunks;
+pub mod config;
 pub mod delivery;
 pub mod dependencies;
 pub mod facts;
 pub mod graph;
+pub mod maturity;
 pub mod patterns;
 pub mod pipelines;
 pub mod profiles;
 pub mod projects;
 pub mod questions;
 pub mod scans;
+pub mod settings;
 pub mod stats;
 pub mod understanding;
 

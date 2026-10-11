@@ -1,0 +1,203 @@
+@description('Workload name used for every resource.')
+param name string = 'view-engine'
+
+@description('Azure region.')
+param location string = resourceGroup().location
+
+@description('Image tag to run; the deploy workflow passes the commit SHA.')
+param imageTag string = 'latest'
+
+param port int = 3000
+param minReplicas int = 0
+param maxReplicas int = 2
+
+param dbAdmin string = 'appadmin'
+@secure()
+param dbPassword string
+param dbSku string = 'Standard_B1ms'
+
+var tags = {
+  workload: name
+  managedBy: 'bicep'
+}
+
+resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: 'log-${name}'
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
+  name: 'acrviewengine'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: false
+  }
+}
+
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${name}'
+  location: location
+}
+
+var acrPullRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+
+resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, identity.id, acrPullRole)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPullRole
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: 'cae-${name}'
+  location: location
+  tags: tags
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logs.properties.customerId
+        sharedKey: logs.listKeys().primarySharedKey
+      }
+    }
+  }
+}
+
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview' = {
+  name: 'psql-${name}'
+  location: location
+  tags: tags
+  sku: {
+    name: dbSku
+    tier: 'Burstable'
+  }
+  properties: {
+    version: '16'
+    administratorLogin: dbAdmin
+    administratorLoginPassword: dbPassword
+    storage: {
+      storageSizeGB: 32
+    }
+    backup: {
+      backupRetentionDays: 7
+      geoRedundantBackup: 'Disabled'
+    }
+  }
+}
+
+resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-12-01-preview' = {
+  parent: postgres
+  name: 'view_engine'
+  properties: {
+    charset: 'UTF8'
+    collation: 'en_US.utf8'
+  }
+}
+
+resource allowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-12-01-preview' = {
+  parent: postgres
+  name: 'allow-azure-services'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
+resource app 'Microsoft.App/containerApps@2024-03-01' = {
+  name: name
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${identity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: environment.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: port
+        transport: 'auto'
+      }
+      registries: [
+        {
+          server: registry.properties.loginServer
+          identity: identity.id
+        }
+      ]
+      secrets: [
+        {
+          name: 'database-url'
+          value: 'postgres://${dbAdmin}:${dbPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/view_engine?sslmode=require'
+        }
+      ]
+    }
+    template: {
+      scale: {
+        minReplicas: minReplicas
+        maxReplicas: maxReplicas
+      }
+      containers: [
+        {
+          name: name
+          image: '${registry.properties.loginServer}/${name}:${imageTag}'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'PORT'
+              value: string(port)
+            }
+            {
+              name: 'DATABASE_URL'
+              secretRef: 'database-url'
+            }
+          ]
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/healthz'
+                port: port
+              }
+              periodSeconds: 30
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/healthz'
+                port: port
+              }
+              periodSeconds: 10
+            }
+          ]
+        }
+      ]
+    }
+  }
+  dependsOn: [
+    acrPull
+  ]
+}
+
+output appUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
+output registryLoginServer string = registry.properties.loginServer
+output databaseFqdn string = postgres.properties.fullyQualifiedDomainName

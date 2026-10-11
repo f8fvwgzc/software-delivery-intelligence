@@ -216,8 +216,8 @@ mod tests {
         let (status, json, _) = get_json(app(), "/api/openapi.json").await;
         assert_eq!(status, StatusCode::OK);
         let paths = json["paths"].as_object().expect("paths object");
-        // CONTRACT.md §8 enumerates 48 distinct paths under /api/v1.
-        assert_eq!(paths.len(), 48, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1.
+        assert_eq!(paths.len(), 55, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -225,6 +225,13 @@ mod tests {
             "/api/v1/projects/{id}/mode",
             "/api/v1/executions/{id}/events/stream",
             "/api/v1/policies/{actionType}",
+            "/api/v1/scans/{id}/stream",
+            "/api/v1/projects/{id}/maturity",
+            "/api/v1/projects/{id}/config",
+            "/api/v1/events/stream",
+            "/api/v1/settings",
+            "/api/v1/proposals/{id}/options/{optionId}/artifacts",
+            "/api/v1/proposals/{id}/pull-request",
         ] {
             assert!(paths.contains_key(path), "missing {path}");
         }
@@ -303,128 +310,111 @@ mod tests {
     }
 }
 
-/// A real tonic server in-process so the SSE bridge, the gRPC status mapping
-/// and the health check are exercised against an actual stream, not a
-/// closed port.
-#[cfg(test)]
-mod fake_execution {
-    use std::{net::SocketAddr, pin::Pin};
-
-    use futures::{Stream, StreamExt, stream};
-    use sdi_proto::execution::v1::{
-        self as proto,
-        execution_service_server::{ExecutionService, ExecutionServiceServer},
-    };
-    use tonic::{Request, Response, Status};
-    use tonic_health::ServingStatus;
-
-    pub struct Fake;
-
-    type EventStream = Pin<Box<dyn Stream<Item = Result<proto::ExecutionEvent, Status>> + Send>>;
-
-    fn watch(request: proto::WatchExecutionRequest) -> Result<EventStream, Status> {
-        if request.execution_id == "missing" {
-            return Err(Status::not_found("no such execution"));
-        }
-        let events = (1..=2)
-            .filter(move |seq| *seq > request.after_seq)
-            .map(|seq| {
-                Ok(proto::ExecutionEvent {
-                    seq,
-                    execution_id: "e1".into(),
-                    r#type: proto::EventType::StateChanged as i32,
-                    step_key: String::new(),
-                    message: format!("event {seq}"),
-                    status: proto::ExecutionStatus::Executing as i32,
-                    data: Default::default(),
-                    at: Some(prost_types::Timestamp {
-                        seconds: 1_700_000_000,
-                        nanos: 0,
-                    }),
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(stream::iter(events).boxed())
-    }
-
-    /// `#[async_trait]` cannot see into a nested macro, so the macro emits
-    /// the whole impl: one real streaming method, the rest unimplemented.
-    macro_rules! fake_service {
-        ($($name:ident: $req:ty => $resp:ty),* $(,)?) => {
-            #[tonic::async_trait]
-            impl ExecutionService for Fake {
-                type WatchExecutionStream = EventStream;
-
-                async fn watch_execution(
-                    &self,
-                    request: Request<proto::WatchExecutionRequest>,
-                ) -> Result<Response<Self::WatchExecutionStream>, Status> {
-                    watch(request.into_inner()).map(Response::new)
-                }
-
-                $(async fn $name(&self, _: Request<$req>) -> Result<Response<$resp>, Status> {
-                    Err(Status::unimplemented(stringify!($name)))
-                })*
-            }
-        };
-    }
-
-    fake_service! {
-        create_execution: proto::CreateExecutionRequest => proto::Execution,
-        list_executions: proto::ListExecutionsRequest => proto::ListExecutionsResponse,
-        get_execution: proto::GetExecutionRequest => proto::Execution,
-        start_execution: proto::StartExecutionRequest => proto::Execution,
-        resolve_failure: proto::ResolveFailureRequest => proto::Execution,
-        cancel_execution: proto::CancelExecutionRequest => proto::Execution,
-        list_events: proto::ListEventsRequest => proto::ListEventsResponse,
-        list_approvals: proto::ListApprovalsRequest => proto::ListApprovalsResponse,
-        decide_approval: proto::DecideApprovalRequest => proto::Approval,
-        list_policies: proto::ListPoliciesRequest => proto::ListPoliciesResponse,
-        update_policy: proto::UpdatePolicyRequest => proto::Policy,
-        list_identities: proto::ListIdentitiesRequest => proto::ListIdentitiesResponse,
-        grant_permission: proto::GrantPermissionRequest => proto::Identity,
-        get_delivery_stats: proto::GetDeliveryStatsRequest => proto::DeliveryStats,
-    }
-
-    /// Serves the fake plus `grpc.health.v1.Health` on a random port.
-    pub async fn serve() -> SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (reporter, health) = tonic_health::server::health_reporter();
-        reporter
-            .set_service_status("", ServingStatus::Serving)
-            .await;
-        let incoming = stream::unfold(listener, |listener| async move {
-            let (socket, _) = listener.accept().await.ok()?;
-            Some((Ok::<_, std::io::Error>(socket), listener))
-        });
-        tokio::spawn(async move {
-            tonic::transport::Server::builder()
-                .add_service(health)
-                .add_service(ExecutionServiceServer::new(Fake))
-                .serve_with_incoming(incoming)
-                .await
-                .unwrap();
-        });
-        addr
-    }
-}
-
+/// Against the in-process fakes (`crate::fakes`): the SSE bridges, the
+/// status mapping, the settings composition and the proposal shortcuts are
+/// exercised over real gRPC streams and calls.
 #[cfg(test)]
 mod integration_tests {
+    use std::time::Duration;
+
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode},
     };
-    use serde_json::Value;
+    use futures::StreamExt;
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use super::*;
+    use crate::fakes;
+
+    /// Nothing listens here: every call fails fast with UNAVAILABLE.
+    const DEAD: &str = "http://127.0.0.1:1";
+
+    fn app_with(knowledge: &str, intelligence: &str, execution: &str) -> Router {
+        router(AppState::with_urls(knowledge, intelligence, execution).unwrap())
+    }
 
     async fn app_with_fake_execution() -> Router {
-        let addr = fake_execution::serve().await;
-        let url = format!("http://{addr}");
-        router(AppState::with_urls("http://127.0.0.1:1", "http://127.0.0.1:1", &url).unwrap())
+        let addr = fakes::execution::serve().await;
+        app_with(DEAD, DEAD, &format!("http://{addr}"))
+    }
+
+    async fn app_with_fake_knowledge() -> Router {
+        let addr = fakes::knowledge::serve().await;
+        app_with(&format!("http://{addr}"), DEAD, DEAD)
+    }
+
+    async fn app_with_fake_intelligence() -> Router {
+        let addr = fakes::intelligence::serve().await;
+        app_with(DEAD, &format!("http://{addr}"), DEAD)
+    }
+
+    async fn app_with_every_fake() -> Router {
+        let (knowledge, intelligence, execution) = tokio::join!(
+            fakes::knowledge::serve(),
+            fakes::intelligence::serve(),
+            fakes::execution::serve()
+        );
+        app_with(
+            &format!("http://{knowledge}"),
+            &format!("http://{intelligence}"),
+            &format!("http://{execution}"),
+        )
+    }
+
+    async fn send(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder().method(method).uri(uri);
+        let body = match body {
+            Some(body) => {
+                request = request.header("content-type", "application/json");
+                Body::from(body.to_string())
+            }
+            None => Body::empty(),
+        };
+        let response = app.oneshot(request.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    /// The `data:` payloads of an SSE body, in order.
+    fn data_lines(text: &str) -> Vec<Value> {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line.trim()).unwrap())
+            .collect()
+    }
+
+    /// Reads an SSE body that never ends until `done` is satisfied by what
+    /// has arrived so far, or fails after `limit`.
+    async fn read_until(
+        body: Body,
+        limit: Duration,
+        done: impl Fn(&[Value]) -> bool,
+    ) -> Vec<Value> {
+        let mut stream = body.into_data_stream();
+        let mut text = String::new();
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let seen = data_lines(&text);
+            if done(&seen) {
+                return seen;
+            }
+            let chunk = tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .unwrap_or_else(|_| panic!("timed out; received so far:\n{text}"))
+                .expect("stream ended")
+                .unwrap();
+            text.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
     }
 
     #[tokio::test]
@@ -449,73 +439,456 @@ mod integration_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
 
-        let data_lines: Vec<&str> = text
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .filter(|line| !line.trim().is_empty())
-            .collect();
-        assert_eq!(data_lines.len(), 1, "{text}");
-        let event: Value = serde_json::from_str(data_lines[0].trim()).unwrap();
-        assert_eq!(event["seq"], 2);
-        assert_eq!(event["type"], "state_changed");
-        assert_eq!(event["status"], "executing");
-        assert_eq!(event["at"], "2023-11-14T22:13:20Z");
+        let events = data_lines(&text);
+        assert_eq!(events.len(), 1, "{text}");
+        assert_eq!(events[0]["seq"], 2);
+        assert_eq!(events[0]["type"], "state_changed");
+        assert_eq!(events[0]["status"], "executing");
+        assert_eq!(events[0]["at"], "2023-11-14T22:13:20Z");
         assert!(text.contains("id: 2\n"), "{text}");
         assert!(text.trim_end().ends_with("event: end"), "{text}");
     }
 
     #[tokio::test]
     async fn sse_maps_not_found_before_streaming() {
-        let app = app_with_fake_execution().await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/executions/missing/events/stream")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
+        let (status, json) = send(
+            app_with_fake_execution().await,
+            "GET",
+            "/api/v1/executions/missing/events/stream",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(json["code"], "not_found");
         assert_eq!(json["message"], "no such execution");
     }
 
     #[tokio::test]
-    async fn unimplemented_rpc_is_a_500_without_detail() {
-        let app = app_with_fake_execution().await;
+    async fn scan_stream_has_the_execution_stream_shape() {
+        let app = app_with_fake_knowledge().await;
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/policies")
+                    .uri("/api/v1/scans/s1/stream")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream")
+        );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let scans = data_lines(&text);
+        assert_eq!(scans.len(), 2, "{text}");
+        assert_eq!(scans[0]["status"], "running");
+        assert_eq!(scans[1]["status"], "succeeded");
+        assert_eq!(scans[1]["projectId"], "p1");
+        assert!(text.trim_end().ends_with("event: end"), "{text}");
+
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/scans/missing/stream",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["message"], "no such scan");
+    }
+
+    #[tokio::test]
+    async fn events_stream_merges_the_services_and_survives_a_drop() {
+        // knowledge: two events then its stream ends (a drop);
+        // intelligence: one event, stays open; execution: one event after
+        // 300ms, stays open. The late execution event proves the merged
+        // feed outlived the knowledge drop.
+        let app = app_with_every_fake().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream")
+        );
+        let has = |seen: &[Value], entity: &str| seen.iter().any(|e| e["entity"] == entity);
+        let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
+            has(seen, "scan") && has(seen, "proposal") && has(seen, "execution")
+        })
+        .await;
+        assert!(has(&events, "project"), "{events:?}");
+        let execution = events.iter().find(|e| e["entity"] == "execution").unwrap();
+        assert_eq!(execution["entityId"], "e1");
+        assert_eq!(execution["projectId"], "p1");
+        assert_eq!(execution["at"], "2023-11-14T22:13:20Z");
+    }
+
+    #[tokio::test]
+    async fn events_stream_keeps_flowing_while_a_service_is_down() {
+        // intelligence is a dead port: its watch fails on connect and is
+        // retried with backoff in the background; the others still deliver.
+        let (knowledge, execution) =
+            tokio::join!(fakes::knowledge::serve(), fakes::execution::serve());
+        let app = app_with(
+            &format!("http://{knowledge}"),
+            DEAD,
+            &format!("http://{execution}"),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
+            seen.iter().any(|e| e["entity"] == "execution")
+        })
+        .await;
+        assert!(events.iter().any(|e| e["entity"] == "scan"), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn events_stream_reconnects_a_dropped_upstream() {
+        // The knowledge fake ends its stream after two events; after the
+        // 1s backoff the gateway reopens it and the same two arrive again.
+        let app = app_with_fake_knowledge().await;
+        let started = tokio::time::Instant::now();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
+            seen.iter().filter(|e| e["entity"] == "project").count() >= 2
+        })
+        .await;
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["entity"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["scan", "project", "scan", "project"]
+        );
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "reconnect waited"
+        );
+    }
+
+    #[tokio::test]
+    async fn maturity_and_config_routes_read_the_knowledge_service() {
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/projects/p1/maturity",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["overall"], 42);
+        assert_eq!(json["stage"], "transitional");
+        assert_eq!(json["axes"][0]["key"], "ci");
+        assert_eq!(json["axes"][0]["recommendedPatterns"][0], "add-ci-baseline");
+        assert_eq!(json["computedAt"], "2023-11-14T22:13:20Z");
+
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/projects/missing/maturity",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["code"], "not_found");
+
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/projects/configured/config",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["present"], true);
+        assert_eq!(json["path"], ".sdi.yml");
+        assert_eq!(json["deployTarget"], "azure");
+        assert_eq!(json["budgetMonthlyUsd"], 20.0);
+        assert_eq!(json["port"], 8080);
+        assert_eq!(json["region"], Value::Null);
+
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/projects/plain/config",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["present"], false);
+        assert_eq!(json["path"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn settings_are_composed_from_both_services() {
+        let (status, json) =
+            send(app_with_every_fake().await, "GET", "/api/v1/settings", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
+        assert_eq!(json["knowledge"]["cacheGithub"], true);
+        assert_eq!(json["intelligence"]["reasoner"], "heuristic");
+        assert_eq!(json["intelligence"]["defaultWeights"]["policy"], 0.2);
+        assert_eq!(json["intelligence"]["apiKeyConfigured"], false);
+
+        // One service down: the composition cannot be answered honestly.
+        let (status, json) = send(
+            app_with_fake_knowledge().await,
+            "GET",
+            "/api/v1/settings",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(json["code"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn settings_patch_accepts_either_part_and_merges_fields() {
+        let (status, json) = send(
+            app_with_every_fake().await,
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"knowledge": {"scanMaxFiles": 10}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["knowledge"]["scanMaxFiles"], 10);
+        assert_eq!(json["knowledge"]["scanConcurrency"], 8, "unset field kept");
+        assert_eq!(
+            json["intelligence"]["reasoner"], "heuristic",
+            "untouched part read back"
+        );
+
+        let (status, json) = send(
+            app_with_every_fake().await,
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"intelligence": {"reasoner": "claude", "costCeilingUsd": 50}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["intelligence"]["reasoner"], "claude");
+        assert_eq!(json["intelligence"]["costCeilingUsd"], 50.0);
+        assert_eq!(json["intelligence"]["model"], "claude-sonnet-5-5");
+        assert_eq!(json["intelligence"]["defaultWeights"]["cost"], 0.1);
+        assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
+
+        let (status, json) = send(
+            app_with_every_fake().await,
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
+    }
+
+    #[tokio::test]
+    async fn proposal_hides_artifacts_and_the_artifacts_route_returns_them() {
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/proposals/pr1",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["options"][0]["artifactCount"], 2);
+        assert_eq!(json["options"][1]["artifactCount"], 0);
+        assert!(json["options"][0].get("artifacts").is_none(), "{json}");
+
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/proposals/pr1/options/opt-a/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let artifacts = json.as_array().unwrap();
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts[0]["path"], "Dockerfile");
+        assert_eq!(artifacts[0]["content"], "FROM scratch\n");
+        assert_eq!(artifacts[0]["language"], "dockerfile");
+        assert_eq!(artifacts[1]["replacesExisting"], true);
+
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/proposals/pr1/options/opt-b/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, json!([]));
+
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/proposals/pr1/options/nope/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["code"], "not_found");
+
+        let (status, _) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/proposals/missing/options/opt-a/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn pull_request_route_accepts_on_the_github_adapter() {
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "POST",
+            "/api/v1/proposals/pr1/pull-request",
+            Some(json!({"optionId": "opt-b"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["status"], "accepted");
+        assert_eq!(json["acceptedOptionId"], "opt-b");
+        assert_eq!(json["executionId"], "exec-github");
+
+        // No body at all: the recommended option.
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "POST",
+            "/api/v1/proposals/pr1/pull-request",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["acceptedOptionId"], "opt-a");
+        assert_eq!(json["executionId"], "exec-github");
+    }
+
+    #[tokio::test]
+    async fn accept_forwards_the_optional_adapter() {
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "POST",
+            "/api/v1/proposals/pr1/accept",
+            Some(json!({"createExecution": true, "adapter": "docker"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["executionId"], "exec-docker");
+
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "POST",
+            "/api/v1/proposals/pr1/accept",
+            Some(json!({"createExecution": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["executionId"], "exec-simulated");
+
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "POST",
+            "/api/v1/proposals/pr1/accept",
+            Some(json!({"adapter": "cloud"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["code"], "invalid_body");
+    }
+
+    #[tokio::test]
+    async fn create_execution_forwards_adapter_and_artifacts() {
+        let (status, json) = send(
+            app_with_fake_execution().await,
+            "POST",
+            "/api/v1/executions",
+            Some(json!({
+                "projectId": "p1",
+                "title": "PR",
+                "steps": [],
+                "adapter": "github",
+                "artifacts": {"Dockerfile": "FROM scratch\n"}
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["adapter"], "github");
+        // The fake echoes the artifacts through `outputs`.
+        assert_eq!(json["outputs"]["Dockerfile"], "FROM scratch\n");
+
+        let (status, json) = send(
+            app_with_fake_execution().await,
+            "POST",
+            "/api/v1/executions",
+            Some(json!({"projectId": "p1", "title": "dry run", "steps": []})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["adapter"], "simulated");
+        assert_eq!(json["outputs"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn unimplemented_rpc_is_a_500_without_detail() {
+        let (status, json) = send(
+            app_with_fake_execution().await,
+            "GET",
+            "/api/v1/policies",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(json["code"], "internal");
         assert_eq!(json["message"], "internal error");
     }
 
     #[tokio::test]
     async fn system_status_sees_the_serving_service() {
-        let app = app_with_fake_execution().await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/system/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
+        let (_, json) = send(
+            app_with_fake_execution().await,
+            "GET",
+            "/api/v1/system/status",
+            None,
+        )
+        .await;
         assert_eq!(json["status"], "degraded");
         let services = json["services"].as_array().unwrap();
         assert_eq!(services[0]["status"], "unreachable");

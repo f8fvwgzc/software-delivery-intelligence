@@ -1,6 +1,6 @@
 import type { StatusTone } from '@/components/shared/data'
 import { APPROVAL_STATUS } from '@/features/approvals/lib/labels'
-import { EXECUTION_STATUS, isPausedOnFailure, isTerminal, RISK } from '@/features/executions/lib/labels'
+import { EXECUTION_STATUS, isPausedOnFailure, isTerminal } from '@/features/executions/lib/labels'
 import { isProposalClosed, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS } from '@/features/proposals/lib/labels'
 
 import type { ExecutionStatus, ProposalStatus } from '../api/types'
@@ -10,7 +10,8 @@ import type { ExecutionStatus, ProposalStatus } from '../api/types'
  * overview re-exports them so a paused execution looks the same here as on
  * the execution page, and so its components keep feature-local imports.
  */
-export { APPROVAL_STATUS, EXECUTION_STATUS, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS, RISK, isPausedOnFailure }
+export { APPROVAL_STATUS, EXECUTION_STATUS, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS, isPausedOnFailure }
+export { RISK } from '@/components/shared/data'
 
 /** Failure codes (CONTRACT.md §5.5) in plain words. */
 const FAILURE_CODE: Record<string, string> = {

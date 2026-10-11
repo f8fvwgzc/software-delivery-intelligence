@@ -749,6 +749,12 @@ message Pattern {
   repeated string cons = 23;
   repeated sdi.common.v1.PlanStep plan = 24;
   google.protobuf.Timestamp created_at = 25;
+  // Maturity axes (§13 keys) a modernization pattern raises, best first;
+  // empty for every other pattern. Seeded by the catalog.
+  repeated string targets_axes = 26;
+  // The catalog's cost model for the pattern: the baseline the generator
+  // rescales per project. Empty for learned patterns.
+  repeated sdi.common.v1.CostLine cost_lines = 27;
 }
 
 message ListPatternsRequest {

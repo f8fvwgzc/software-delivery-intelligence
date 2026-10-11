@@ -19,6 +19,10 @@ export function EventLogSkeleton() {
           </div>
         ))}
       </div>
+      <div className="flex h-9 items-center gap-2 border-t px-3">
+        <Skeleton className="h-7 w-24 rounded-md" />
+        <Skeleton className="h-3 w-10" />
+      </div>
     </div>
   )
 }

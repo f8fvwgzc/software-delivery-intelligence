@@ -44,6 +44,8 @@ pub struct PatternRow {
     pub pros: Vec<String>,
     pub cons: Vec<String>,
     pub plan: Json<Vec<PlanStepRow>>,
+    /// Free-form, e.g. `{cost_lines: [{item, monthly_usd, note}], targets_axes: [..]}`.
+    pub attributes: Json<serde_json::Value>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub used_by: Vec<String>,
@@ -73,12 +75,14 @@ pub struct PatternUpsert {
     pub pros: Vec<String>,
     pub cons: Vec<String>,
     pub plan: Vec<PlanStepRow>,
+    /// See [`PatternRow::attributes`].
+    pub attributes: serde_json::Value,
     pub embedding: Vec<f32>,
 }
 
 const SELECT: &str = "SELECT p.id, p.name, p.summary, p.category, p.technologies, p.cloud, p.runtime, p.iac, p.delivery,
        p.requires, p.scope, p.source, p.status, p.estimated_monthly_cost_usd, p.security_score, p.complexity,
-       p.pros, p.cons, p.plan, p.last_used_at, p.created_at,
+       p.pros, p.cons, p.plan, p.attributes, p.last_used_at, p.created_at,
        COALESCE(u.used_by, '{}'::text[]) AS used_by,
        COALESCE(u.deployments, 0) AS deployments,
        COALESCE(u.successes, 0) AS successes,
@@ -96,8 +100,8 @@ LEFT JOIN LATERAL (
 pub async fn upsert(exec: impl PgExecutor<'_>, pattern: &PatternUpsert) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO patterns (id, name, summary, category, technologies, cloud, runtime, iac, delivery, requires, scope, source,
-            status, estimated_monthly_cost_usd, security_score, complexity, pros, cons, plan, embedding, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'active', $13, $14, $15, $16, $17, $18, $19::vector, now(), now())
+            status, estimated_monthly_cost_usd, security_score, complexity, pros, cons, plan, embedding, attributes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'active', $13, $14, $15, $16, $17, $18, $19::vector, $20, now(), now())
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name, summary = EXCLUDED.summary, category = EXCLUDED.category,
            technologies = EXCLUDED.technologies, cloud = EXCLUDED.cloud, runtime = EXCLUDED.runtime,
@@ -106,7 +110,7 @@ pub async fn upsert(exec: impl PgExecutor<'_>, pattern: &PatternUpsert) -> sqlx:
            estimated_monthly_cost_usd = EXCLUDED.estimated_monthly_cost_usd,
            security_score = EXCLUDED.security_score, complexity = EXCLUDED.complexity,
            pros = EXCLUDED.pros, cons = EXCLUDED.cons, plan = EXCLUDED.plan,
-           embedding = EXCLUDED.embedding, updated_at = now()",
+           embedding = EXCLUDED.embedding, attributes = EXCLUDED.attributes, updated_at = now()",
     )
     .bind(&pattern.id)
     .bind(&pattern.name)
@@ -127,6 +131,7 @@ pub async fn upsert(exec: impl PgExecutor<'_>, pattern: &PatternUpsert) -> sqlx:
     .bind(&pattern.cons)
     .bind(Json(&pattern.plan))
     .bind(to_pgvector(&pattern.embedding))
+    .bind(Json(&pattern.attributes))
     .execute(exec)
     .await?;
     Ok(())

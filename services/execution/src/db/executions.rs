@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgExecutor, types::Json};
 use uuid::Uuid;
@@ -21,11 +23,20 @@ pub struct ExecutionRow {
     pub failure: Option<Json<FailureRecord>>,
     pub last_checkpoint: Option<String>,
     pub revision: i32,
+    /// What the run produced so far ("image", "container_url", ...).
+    pub outputs: Json<BTreeMap<String, String>>,
+    /// Files a pull-request step commits, keyed by repository path. Never
+    /// sent back over gRPC (the proposal already carries them).
+    pub artifacts: Json<BTreeMap<String, String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
 }
+
+const COLUMNS: &str = "id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
+     identity_id, fault, failure, last_checkpoint, revision, outputs, artifacts, created_at, updated_at, \
+     started_at, finished_at";
 
 pub struct NewExecution<'a> {
     pub id: Uuid,
@@ -37,15 +48,14 @@ pub struct NewExecution<'a> {
     pub status: &'a str,
     pub adapter: &'a str,
     pub identity_id: Uuid,
+    pub artifacts: &'a BTreeMap<String, String>,
 }
 
 pub async fn insert(tx: &mut Tx, new: NewExecution<'_>) -> sqlx::Result<ExecutionRow> {
-    sqlx::query_as(
-        "INSERT INTO executions (id, project_id, project_name, proposal_id, pattern_id, title, status, adapter, identity_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-         RETURNING id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-         identity_id, fault, failure, last_checkpoint, revision, created_at, updated_at, started_at, finished_at",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO executions (id, project_id, project_name, proposal_id, pattern_id, title, status, adapter, identity_id, artifacts) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {COLUMNS}"
+    )))
     .bind(new.id)
     .bind(new.project_id)
     .bind(new.project_name)
@@ -55,16 +65,15 @@ pub async fn insert(tx: &mut Tx, new: NewExecution<'_>) -> sqlx::Result<Executio
     .bind(new.status)
     .bind(new.adapter)
     .bind(new.identity_id)
+    .bind(Json(new.artifacts))
     .fetch_one(&mut **tx)
     .await
 }
 
 pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<ExecutionRow> {
-    sqlx::query_as(
-        "SELECT id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-         identity_id, fault, failure, last_checkpoint, revision, created_at, updated_at, started_at, finished_at \
-         FROM executions WHERE id = $1",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM executions WHERE id = $1"
+    )))
     .bind(id)
     .fetch_one(exec)
     .await
@@ -73,11 +82,9 @@ pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<Execut
 /// Locks the row for the rest of the transaction so one writer at a time
 /// touches an execution and its event sequence.
 pub async fn lock(tx: &mut Tx, id: Uuid) -> sqlx::Result<ExecutionRow> {
-    sqlx::query_as(
-        "SELECT id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-         identity_id, fault, failure, last_checkpoint, revision, created_at, updated_at, started_at, finished_at \
-         FROM executions WHERE id = $1 FOR UPDATE",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM executions WHERE id = $1 FOR UPDATE"
+    )))
     .bind(id)
     .fetch_one(&mut **tx)
     .await
@@ -88,11 +95,9 @@ pub async fn list<'e>(
     project_id: &str,
     limit: i64,
 ) -> sqlx::Result<Vec<ExecutionRow>> {
-    sqlx::query_as(
-        "SELECT id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-         identity_id, fault, failure, last_checkpoint, revision, created_at, updated_at, started_at, finished_at \
-         FROM executions WHERE ($1 = '' OR project_id = $1) ORDER BY number DESC LIMIT $2",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM executions WHERE ($1 = '' OR project_id = $1) ORDER BY number DESC LIMIT $2"
+    )))
     .bind(project_id)
     .bind(limit)
     .fetch_all(exec)
@@ -104,11 +109,9 @@ pub async fn with_status<'e>(
     statuses: &[&str],
 ) -> sqlx::Result<Vec<ExecutionRow>> {
     let statuses: Vec<String> = statuses.iter().map(|s| (*s).to_owned()).collect();
-    sqlx::query_as(
-        "SELECT id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-         identity_id, fault, failure, last_checkpoint, revision, created_at, updated_at, started_at, finished_at \
-         FROM executions WHERE status = ANY($1) ORDER BY number",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM executions WHERE status = ANY($1) ORDER BY number"
+    )))
     .bind(statuses)
     .fetch_all(exec)
     .await
@@ -156,6 +159,24 @@ pub async fn set_checkpoint(tx: &mut Tx, id: Uuid, key: &str) -> sqlx::Result<()
     sqlx::query("UPDATE executions SET last_checkpoint = $2, updated_at = now() WHERE id = $1")
         .bind(id)
         .bind(key)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+}
+
+/// Adds a step's outputs to the run's. Later steps overwrite earlier keys
+/// (a rebuilt image replaces the old `image`).
+pub async fn merge_outputs(
+    tx: &mut Tx,
+    id: Uuid,
+    outputs: &BTreeMap<String, String>,
+) -> sqlx::Result<()> {
+    if outputs.is_empty() {
+        return Ok(());
+    }
+    sqlx::query("UPDATE executions SET outputs = outputs || $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(Json(outputs))
         .execute(&mut **tx)
         .await
         .map(|_| ())

@@ -75,10 +75,18 @@ pub async fn get(pool: &PgPool, id: Uuid) -> sqlx::Result<ProposalRow> {
     .await
 }
 
-/// Empty `project_id` lists every project.
+/// Columns for list responses: the options come back without their
+/// `artifacts` (generated file bodies can be megabytes per proposal), which
+/// `RankedOption` tolerates through `#[serde(default)]`.
+const LIST_COLUMNS: &str = "id, project_id, kind, status, title, summary, prompt, recommended_option_id, \
+    accepted_option_id, execution_id, \
+    COALESCE((SELECT jsonb_agg(o - 'artifacts' ORDER BY ord) FROM jsonb_array_elements(options) WITH ORDINALITY AS t(o, ord)), '[]'::jsonb) AS options, \
+    constraints, weights, revision, reasoner, created_at, updated_at";
+
+/// Empty `project_id` lists every project. Artifacts are left out.
 pub async fn list(pool: &PgPool, project_id: &str) -> sqlx::Result<Vec<ProposalRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM proposals WHERE ($1 = '' OR project_id = $1) ORDER BY created_at DESC"
+        "SELECT {LIST_COLUMNS} FROM proposals WHERE ($1 = '' OR project_id = $1) ORDER BY created_at DESC"
     )))
     .bind(project_id)
     .fetch_all(pool)
@@ -134,20 +142,22 @@ pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> sqlx::Result<(
 }
 
 /// Older open proposals of the same project and kind give way to a new one.
+/// Returns their ids so the change can be broadcast.
 pub async fn supersede_open(
     pool: &PgPool,
     project_id: &str,
     kind: &str,
     keep: Uuid,
-) -> sqlx::Result<u64> {
-    let result = sqlx::query(
+) -> sqlx::Result<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
         "UPDATE proposals SET status = 'superseded', updated_at = now() \
-         WHERE project_id = $1 AND kind = $2 AND id <> $3 AND status IN ('proposed', 'negotiating')",
+         WHERE project_id = $1 AND kind = $2 AND id <> $3 AND status IN ('proposed', 'negotiating') \
+         RETURNING id",
     )
     .bind(project_id)
     .bind(kind)
     .bind(keep)
-    .execute(pool)
+    .fetch_all(pool)
     .await?;
-    Ok(result.rows_affected())
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }

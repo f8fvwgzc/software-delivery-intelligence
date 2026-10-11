@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use super::{
-    common::{PlanStep, RiskLevel},
+    common::{Adapter, PlanStep, RiskLevel},
     opt_string, opt_timestamp, proto_enum, timestamp,
 };
 
@@ -217,6 +217,8 @@ pub struct Execution {
     pub started_at: Option<DateTime<Utc>>,
     /// When it reached a terminal state.
     pub finished_at: Option<DateTime<Utc>>,
+    /// Things the run produced: `pull_request_url`, `image`, `container_url`, `workdir`.
+    pub outputs: BTreeMap<String, String>,
 }
 
 impl From<proto::Execution> for Execution {
@@ -240,6 +242,7 @@ impl From<proto::Execution> for Execution {
             updated_at: timestamp(execution.updated_at.as_ref()),
             started_at: opt_timestamp(execution.started_at.as_ref()),
             finished_at: opt_timestamp(execution.finished_at.as_ref()),
+            outputs: execution.outputs.into_iter().collect(),
         }
     }
 }
@@ -269,6 +272,10 @@ pub struct CreateExecutionRequest {
     pub title: String,
     /// Plan steps.
     pub steps: Vec<PlanStep>,
+    /// Runtime for the whole run (CONTRACT.md §5.4). `simulated` by default.
+    pub adapter: Option<Adapter>,
+    /// Files a `repo.open_pull_request` step commits, keyed by repository path.
+    pub artifacts: Option<BTreeMap<String, String>>,
 }
 
 /// Dry-run only: make one step fail on purpose.

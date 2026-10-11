@@ -11,9 +11,9 @@ use crate::{
     dto::knowledge::{
         AnalyzeImpactRequest, AnswerQuestionRequest, ConnectProjectRequest, DeliveryHistoryQuery,
         DependenciesResponse, DeploymentsResponse, Fact, GetGraphQuery, Graph, ImpactAnalysis,
-        ListFactsQuery, ListQuestionsQuery, ListScansQuery, ListSimilarQuery, Pipeline,
-        PipelineRunsResponse, Project, Question, Scan, SetProjectModeRequest, SimilarProject,
-        Understanding,
+        ListFactsQuery, ListQuestionsQuery, ListScansQuery, ListSimilarQuery, MaturityScore,
+        Pipeline, PipelineRunsResponse, Project, ProjectConfig, Question, Scan,
+        SetProjectModeRequest, SimilarProject, Understanding,
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
     state::AppState,
@@ -30,6 +30,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_questions))
         .routes(routes!(answer_question))
         .routes(routes!(get_understanding))
+        .routes(routes!(get_maturity))
+        .routes(routes!(get_config))
         .routes(routes!(get_graph))
         .routes(routes!(analyze_impact))
         .routes(routes!(list_dependencies))
@@ -297,6 +299,50 @@ async fn get_understanding(
         .await?
         .into_inner();
     Ok(Json(understanding.into()))
+}
+
+/// Delivery maturity: eight axes 0–100 with findings and the patterns that
+/// would raise each (CONTRACT.md §13).
+#[utoipa::path(
+    get,
+    path = "/projects/{id}/maturity",
+    tag = "projects",
+    params(("id" = String, Path, description = "Project id")),
+    responses((status = 200, body = MaturityScore), ErrorResponses),
+)]
+async fn get_maturity(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult<Json<MaturityScore>> {
+    let maturity = state
+        .knowledge()
+        .get_maturity(proto::GetMaturityRequest { project_id: id })
+        .await?
+        .into_inner();
+    Ok(Json(maturity.into()))
+}
+
+/// What the repository declares in `.sdi.yml` (CONTRACT.md §12). A project
+/// without the file answers `present: false`.
+#[utoipa::path(
+    get,
+    path = "/projects/{id}/config",
+    tag = "projects",
+    params(("id" = String, Path, description = "Project id")),
+    responses((status = 200, body = ProjectConfig), ErrorResponses),
+)]
+async fn get_config(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult<Json<ProjectConfig>> {
+    // The config only travels inside the project context; a service that
+    // leaves it unset means "no file", not an error.
+    let context = state
+        .knowledge()
+        .get_project_context(proto::GetProjectContextRequest { project_id: id })
+        .await?
+        .into_inner();
+    Ok(Json(context.config.map(Into::into).unwrap_or_default()))
 }
 
 /// Knowledge graph of a project.

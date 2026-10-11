@@ -5,7 +5,9 @@ mod config;
 mod convert;
 mod db;
 mod domain;
+mod events;
 mod gateway;
+mod generators;
 mod grpc;
 mod reasoner;
 
@@ -32,7 +34,13 @@ async fn main() -> Result<()> {
     let execution = Arc::new(gateway::GrpcExecution::new(sdi_common::grpc::lazy_channel(
         &settings.execution_url,
     )?));
-    let reasoner = reasoner::from_settings(&settings);
+    if settings.anthropic_api_key.is_some() {
+        tracing::info!(model = %settings.anthropic_model, "claude reasoner available");
+    }
+    let reasoner = grpc::ReasonerConfig {
+        anthropic_api_key: settings.anthropic_api_key.clone(),
+        anthropic_model: settings.anthropic_model.clone(),
+    };
 
     let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, reasoner);
     let (reporter, health) = tonic_health::server::health_reporter();

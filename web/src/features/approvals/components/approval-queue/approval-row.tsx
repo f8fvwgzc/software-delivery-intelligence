@@ -3,13 +3,12 @@ import { Link } from 'react-router'
 import { toast } from 'sonner'
 
 import { routes } from '@/app/router/routes'
-import { RelativeTime } from '@/components/shared/data'
-import { Badge } from '@/components/ui/badge'
+import { ActionTypeChip, RelativeTime, RiskDot } from '@/components/shared/data'
 import { Button } from '@/components/ui/button'
 import type { components } from '@/lib/api/schema'
 
 import { useDecideApproval } from '../../api/mutations'
-import { POLICY_DECISION, RISK } from '../../lib/labels'
+import { POLICY_DECISION } from '../../lib/labels'
 import { RejectDialog } from './reject-dialog'
 
 interface ApprovalRowProps {
@@ -19,7 +18,6 @@ interface ApprovalRowProps {
 /** One pending request: what wants to run, why a human is needed, and the two ways out. */
 export function ApprovalRow({ approval }: ApprovalRowProps) {
   const decide = useDecideApproval()
-  const risk = RISK[approval.risk]
   const pendingApprove = decide.isPending && decide.variables?.approve === true
   const pendingReject = decide.isPending && decide.variables?.approve === false
 
@@ -45,13 +43,8 @@ export function ApprovalRow({ approval }: ApprovalRowProps) {
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-sm font-medium">{approval.stepTitle}</span>
-          <Badge variant="secondary" className="h-5 px-1.5 font-mono text-2xs font-normal">
-            {approval.actionType}
-          </Badge>
-          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span aria-hidden className={`inline-block size-1.5 rounded-full ${risk.dot}`} />
-            {risk.label}
-          </span>
+          <ActionTypeChip>{approval.actionType}</ActionTypeChip>
+          <RiskDot risk={approval.risk} withLabel />
           <span className="text-xs text-muted-foreground">· {POLICY_DECISION[approval.policyDecision]}</span>
         </div>
         <p className="text-sm text-muted-foreground">{approval.reason}</p>

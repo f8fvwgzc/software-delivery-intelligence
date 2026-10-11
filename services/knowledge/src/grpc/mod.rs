@@ -9,27 +9,45 @@ mod patterns;
 mod projects;
 mod retrieval;
 mod scans;
+mod settings;
 
+use std::pin::Pin;
+
+use futures::Stream;
 use sdi_common::grpc::db_status;
-use sdi_proto::knowledge::v1::{knowledge_service_server::KnowledgeService, *};
+use sdi_proto::{
+    common::v1::{PlatformEvent, WatchEventsRequest},
+    knowledge::v1::{knowledge_service_server::KnowledgeService, *},
+};
 use sqlx::PgPool;
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::{
     db::{self, projects::ProjectRow},
+    events::EventBus,
     github::{GithubClient, GithubError},
 };
+
+/// Server-streaming responses are boxed: the concrete stream types differ
+/// per RPC and tonic only needs `Send + 'static`.
+pub type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
 #[derive(Clone)]
 pub struct KnowledgeState {
     pub pool: PgPool,
     pub github: GithubClient,
+    pub events: EventBus,
 }
 
 impl KnowledgeState {
-    pub fn new(pool: PgPool, github: GithubClient) -> Self {
-        Self { pool, github }
+    pub fn new(pool: PgPool, github: GithubClient, events: EventBus) -> Self {
+        Self {
+            pool,
+            github,
+            events,
+        }
     }
 
     async fn project(&self, id: &str) -> Result<ProjectRow, Status> {
@@ -103,6 +121,9 @@ fn anyhow_status(error: anyhow::Error) -> Status {
 
 #[tonic::async_trait]
 impl KnowledgeService for KnowledgeState {
+    type WatchScanStream = ResponseStream<Scan>;
+    type WatchEventsStream = ResponseStream<PlatformEvent>;
+
     async fn get_github_account(
         &self,
         request: Request<GetGithubAccountRequest>,
@@ -182,6 +203,17 @@ impl KnowledgeService for KnowledgeState {
             .await
             .map(Response::new)
     }
+    async fn watch_scan(
+        &self,
+        request: Request<WatchScanRequest>,
+    ) -> Result<Response<Self::WatchScanStream>, Status> {
+        let stream = scans::watch_scan(self, request.into_inner()).await?;
+        // A scan watch ends with the scan, which a shutdown must not wait for.
+        Ok(Response::new(Box::pin(futures::StreamExt::take_until(
+            stream,
+            sdi_common::shutdown::cancelled(),
+        ))))
+    }
 
     async fn list_facts(
         &self,
@@ -212,6 +244,14 @@ impl KnowledgeService for KnowledgeState {
         request: Request<GetUnderstandingRequest>,
     ) -> Result<Response<Understanding>, Status> {
         knowledge::get_understanding(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn get_maturity(
+        &self,
+        request: Request<GetMaturityRequest>,
+    ) -> Result<Response<MaturityScore>, Status> {
+        knowledge::get_maturity(self, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -329,5 +369,41 @@ impl KnowledgeService for KnowledgeState {
         context::get_knowledge_stats(self, request.into_inner())
             .await
             .map(Response::new)
+    }
+
+    async fn get_settings(
+        &self,
+        request: Request<GetSettingsRequest>,
+    ) -> Result<Response<KnowledgeSettings>, Status> {
+        settings::get_settings(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn update_settings(
+        &self,
+        request: Request<UpdateSettingsRequest>,
+    ) -> Result<Response<KnowledgeSettings>, Status> {
+        settings::update_settings(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    /// Forwards the process-wide bus. Never ends on its own: the stream
+    /// closes only when the client goes away. A receiver that lags skips the
+    /// missed events (the client re-reads what it shows) and logs once.
+    async fn watch_events(
+        &self,
+        _request: Request<WatchEventsRequest>,
+    ) -> Result<Response<Self::WatchEventsStream>, Status> {
+        let stream = BroadcastStream::new(self.events.subscribe()).filter_map(|item| match item {
+            Ok(event) => Some(Ok(event)),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(missed)) => {
+                tracing::warn!(missed, "WatchEvents subscriber lagged, skipping events");
+                None
+            }
+        });
+        // The feed never ends on its own; shutdown must be able to end it.
+        let stream = futures::StreamExt::take_until(stream, sdi_common::shutdown::cancelled());
+        Ok(Response::new(Box::pin(stream)))
     }
 }

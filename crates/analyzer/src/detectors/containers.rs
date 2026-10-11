@@ -37,6 +37,7 @@ fn dockerfile(ctx: &mut Ctx<'_>, path: &str, content: &str) {
     let mut stages = 0usize;
     let mut ports = Vec::new();
     let mut has_user = false;
+    let mut healthcheck: Option<String> = None;
     for line in content.lines().map(str::trim) {
         let upper = line.to_ascii_uppercase();
         if let Some(rest) = upper.strip_prefix("FROM ") {
@@ -53,6 +54,8 @@ fn dockerfile(ctx: &mut Ctx<'_>, path: &str, content: &str) {
             ports.extend(rest.split_whitespace().map(String::from));
         } else if upper.starts_with("USER ") {
             has_user = true;
+        } else if upper.starts_with("HEALTHCHECK ") && !upper.starts_with("HEALTHCHECK NONE") {
+            healthcheck.get_or_insert_with(|| line.to_string());
         }
     }
     let base = bases.last().cloned().unwrap_or_default();
@@ -85,6 +88,16 @@ fn dockerfile(ctx: &mut Ctx<'_>, path: &str, content: &str) {
             &format!("{} stages", bases.len()),
             path,
             &bases.join(" → "),
+        );
+    }
+    if let Some(hc) = &healthcheck {
+        ctx.detected(
+            FactCategory::Container,
+            &format!("container:healthcheck:{path}"),
+            "Container healthcheck",
+            "HEALTHCHECK instruction",
+            path,
+            hc,
         );
     }
     if !has_user {
@@ -152,6 +165,22 @@ fn compose(ctx: &mut Ctx<'_>, path: &str, content: &str) {
         );
     }
     ctx.environments.insert("local".into());
+    let with_health: Vec<&String> = services
+        .iter()
+        .filter(|(_, svc)| yaml::get(svc, "healthcheck").is_some())
+        .map(|(n, _)| n)
+        .collect();
+    if !with_health.is_empty() {
+        let names: Vec<&str> = with_health.iter().map(|s| s.as_str()).collect();
+        ctx.detected(
+            FactCategory::Container,
+            &format!("container:healthcheck:{path}"),
+            "Container healthcheck",
+            &format!("compose services: {}", names.join(", ")),
+            path,
+            line_with(content, "healthcheck:").unwrap_or("healthcheck:"),
+        );
+    }
     for (name, svc) in services {
         if let Some(image) = yaml::get_str(svc, "image") {
             ctx.images.push(ImageRef {

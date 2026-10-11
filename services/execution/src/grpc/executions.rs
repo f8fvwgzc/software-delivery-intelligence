@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use sdi_common::grpc::db_status;
 use sdi_proto::execution::v1::{
@@ -41,19 +41,48 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         .map(|(key, depends_on)| dag::Node { key, depends_on })
         .collect();
     dag::validate(&nodes).map_err(|e| Status::invalid_argument(e.to_string()))?;
+    // The runtime decides which steps may run at all (CONTRACT.md §5.4): a
+    // plan that needs a tool the runtime cannot provide is refused here,
+    // naming the step, rather than failing mid-flight.
+    let runtime = adapters::runtime_name(&req.adapter)?;
     for step in &req.steps {
-        if step.action_type.trim().is_empty() {
+        let action_type = step.action_type.trim();
+        if action_type.is_empty() {
             return Err(Status::invalid_argument(format!(
                 "step {}: action_type is required",
+                step.key.trim()
+            )));
+        }
+        if !adapters::runnable(runtime, action_type) {
+            return Err(Status::invalid_argument(format!(
+                "step {}: {action_type} cannot run on the {runtime} adapter",
                 step.key.trim()
             )));
         }
     }
 
     let rules = db::policies::rules(&rt.pool).await.map_err(db_status)?;
-    let identity = db::identities::by_name(&rt.pool, adapters::SIMULATED)
-        .await
-        .map_err(|_| Status::internal("the simulated identity is missing"))?;
+    let identity_name = adapters::identity_for(runtime);
+    let identity = match db::identities::by_name(&rt.pool, identity_name).await {
+        Ok(identity) => identity,
+        Err(sqlx::Error::RowNotFound) if runtime == adapters::GITHUB => {
+            return Err(Status::failed_precondition(
+                "the github adapter needs GITHUB_TOKEN configured on the execution service",
+            ));
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            return Err(Status::internal(format!(
+                "the {identity_name} identity is missing"
+            )));
+        }
+        Err(error) => return Err(db_status(error)),
+    };
+    let artifacts: BTreeMap<String, String> = req
+        .artifacts
+        .iter()
+        .filter(|(path, _)| !path.trim().is_empty())
+        .map(|(path, content)| (path.trim().to_owned(), content.clone()))
+        .collect();
 
     let id = Uuid::now_v7();
     let title = if req.title.trim().is_empty() {
@@ -62,6 +91,7 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         req.title.trim()
     };
     let planning = convert::status_to_db(ExecutionStatus::Planning);
+    let project_name = rt.outcomes.project_name(req.project_id.trim()).await;
 
     let mut tx = rt.pool.begin().await.map_err(db_status)?;
     db::executions::insert(
@@ -69,13 +99,14 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         NewExecution {
             id,
             project_id: req.project_id.trim(),
-            project_name: "",
+            project_name: &project_name,
             proposal_id: req.proposal_id.trim(),
             pattern_id: req.pattern_id.trim(),
             title,
             status: planning,
-            adapter: adapters::SIMULATED,
+            adapter: runtime,
             identity_id: identity.id,
+            artifacts: &artifacts,
         },
     )
     .await
@@ -141,6 +172,16 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
     .map_err(db_status)?;
     tx.commit().await.map_err(db_status)?;
     rt.bus.publish(convert::event_to_proto(event));
+    rt.platform.execution(
+        &id.to_string(),
+        req.project_id.trim(),
+        "created",
+        &planning.to_ascii_lowercase(),
+        BTreeMap::from([
+            ("revision".to_owned(), "0".to_owned()),
+            ("adapter".to_owned(), runtime.to_owned()),
+        ]),
+    );
 
     load_execution(rt, id, true).await
 }

@@ -1,4 +1,4 @@
-import type { StatusTone } from '@/components/shared/data'
+import type { StatusTone } from '@/components/shared/data/status-badge'
 import type { components } from '@/lib/api/schema'
 
 type ExecutionStatus = components['schemas']['ExecutionStatus']
@@ -62,14 +62,6 @@ export const STEP_STATUS: Record<StepStatus, StatusMeta> = {
   cancelled: { label: 'Cancelled', tone: 'neutral' },
 }
 
-export const RISK: Record<RiskLevel, { label: string; dot: string }> = {
-  unspecified: { label: 'Unknown risk', dot: 'bg-muted-foreground/50' },
-  safe: { label: 'Safe', dot: 'bg-success' },
-  medium: { label: 'Medium risk', dot: 'bg-warning' },
-  high: { label: 'High risk', dot: 'bg-destructive' },
-  blocked: { label: 'Blocked', dot: 'bg-foreground' },
-}
-
 export const POLICY_DECISION: Record<PolicyDecision, string> = {
   unspecified: 'No policy',
   auto: 'Runs automatically',
@@ -96,9 +88,86 @@ export const EVENT_TYPE: Record<EventType, StatusMeta> = {
   log: { label: 'log', tone: 'neutral' },
 }
 
-/** `simulated` is a dry run; everything else is named as-is. */
+export type Adapter = components['schemas']['Adapter']
+
+/** The runtimes that exist (CONTRACT.md §5.4), in the order offered. */
+export const RUNTIME_ADAPTERS = ['simulated', 'docker', 'github'] as const satisfies readonly Adapter[]
+
+export function isRuntimeAdapter(value: string): value is Adapter {
+  return (RUNTIME_ADAPTERS as readonly string[]).includes(value)
+}
+
+export interface AdapterChoice {
+  value: Adapter
+  label: string
+  description: string
+}
+
+export const ADAPTER_CHOICES: readonly AdapterChoice[] = [
+  {
+    value: 'simulated',
+    label: 'Dry run (simulated)',
+    description: 'Timed dry run with optional fault injection. Never touches anything.',
+  },
+  {
+    value: 'docker',
+    label: 'Verify locally with Docker',
+    description: 'Builds and runs the image on this machine, needs the local-docker identity.',
+  },
+  {
+    value: 'github',
+    label: 'Open pull request',
+    description: 'Commits the generated files to a new branch and opens a PR, needs repository write.',
+  },
+]
+
+/** Short chip text: `simulated` reads as "dry run"; the real runtimes are named as-is. */
+const ADAPTER_CHIP: Record<Adapter, string> = { simulated: 'dry run', docker: 'docker', github: 'github' }
+
 export function adapterLabel(adapter: string) {
-  return adapter === 'simulated' ? 'dry run' : adapter
+  return isRuntimeAdapter(adapter) ? ADAPTER_CHIP[adapter] : adapter
+}
+
+/**
+ * CONTRACT.md §5.4: the action types each runtime can run. `null` means every
+ * action type (the simulated runtime refuses nothing).
+ */
+const ADAPTER_SUPPORT: Record<Adapter, ReadonlySet<string> | null> = {
+  simulated: null,
+  docker: new Set([
+    'repo.checkout',
+    'container.build',
+    'container.run',
+    'tests.run_local',
+    'env.create_temporary',
+    'env.destroy_temporary',
+    'deps.install',
+  ]),
+  github: new Set(['repo.checkout', 'repo.open_pull_request']),
+}
+
+/**
+ * Action types the chosen runtime cannot run, deduplicated, in plan order.
+ * A plan may mix families: when the runtime is not `simulated`, a step that
+ * names `docker` or `github` itself is routed to that family instead.
+ */
+export function unsupportedActions(runtime: Adapter, steps: { actionType: string; adapter: string }[]) {
+  if (runtime === 'simulated') return []
+  const unsupported = new Set<string>()
+  for (const step of steps) {
+    const family = step.adapter === 'docker' || step.adapter === 'github' ? step.adapter : runtime
+    const support = ADAPTER_SUPPORT[family]
+    if (support !== null && !support.has(step.actionType)) unsupported.add(step.actionType)
+  }
+  return [...unsupported]
+}
+
+/** Display labels for `Execution.outputs` keys; unknown keys fall back to the key itself. */
+export const OUTPUT_LABEL: Record<string, string> = {
+  pull_request_url: 'Pull request',
+  image: 'Image',
+  container_url: 'Container',
+  workdir: 'Working directory',
 }
 
 /** CONTRACT.md §5.5 */
@@ -136,6 +205,9 @@ export const ACTION_TYPES: { actionType: string; label: string; risk: RiskLevel 
   { actionType: 'firewall.modify', label: 'Modify firewall', risk: 'high' },
   { actionType: 'secrets.rotate', label: 'Rotate secrets', risk: 'high' },
   { actionType: 'db.destroy_production', label: 'Destroy production database', risk: 'blocked' },
+  { actionType: 'repo.checkout', label: 'Download the repository at a commit', risk: 'safe' },
+  { actionType: 'env.destroy_temporary', label: 'Remove a temporary environment', risk: 'safe' },
+  { actionType: 'repo.open_pull_request', label: 'Open a pull request with generated files', risk: 'medium' },
 ]
 
 /** CONTRACT.md §5.4 */

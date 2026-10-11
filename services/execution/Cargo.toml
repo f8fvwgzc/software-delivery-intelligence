@@ -13,11 +13,14 @@ sdi-proto.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+flate2.workspace = true
 futures.workspace = true
 prost-types.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -25,3 +28,7 @@ tonic.workspace = true
 tonic-health.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# Fake GitHub API for the github adapter tests (a plain axum server on a random port).
+axum.workspace = true

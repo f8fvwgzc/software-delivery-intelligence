@@ -88,6 +88,11 @@ pub(super) async fn generate(
         None => None,
     };
 
+    let params = accepted
+        .or_else(|| deployment.clone().find(|p| p.is_open()))
+        .map(|p| crate::domain::model::params_of(&p.constraints.0))
+        .unwrap_or_default();
+
     let now = Utc::now();
     let generated = documents::generate(
         kind,
@@ -95,6 +100,7 @@ pub(super) async fn generate(
             context: &context,
             decisions: &decisions,
             plan_option: plan_option.as_ref(),
+            params: &params,
             pipeline_runs: &pipeline_runs,
             delivery: delivery.as_ref(),
             execution: execution.as_ref(),
@@ -118,6 +124,14 @@ pub(super) async fn generate(
         generated_at: now,
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
+    svc.events.emit(
+        "document",
+        &row.id.to_string(),
+        &row.project_id,
+        "created",
+        "",
+        &[("kind", row.kind.clone()), ("title", row.title.clone())],
+    );
     Ok(convert::document(&row))
 }
 

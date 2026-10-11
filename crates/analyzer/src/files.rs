@@ -1,8 +1,9 @@
 //! Which files are worth downloading. Ranking matters because the scanner
 //! stops at [`MAX_FILES`], so the root manifest must never lose to a doc.
 
+use crate::config::CONFIG_PATH;
 use crate::model::TreeEntry;
-use crate::util::{basename, depth, dirname, extension, has_dir, is_yaml};
+use crate::util::{basename, depth, dirname, excluded, extension, has_dir, is_yaml};
 use crate::{MAX_FILE_BYTES, MAX_FILES};
 
 const VENDORED_DIRS: &[&str] = &[
@@ -109,7 +110,75 @@ pub(crate) fn is_manifest_name(name: &str) -> bool {
             | "Gemfile"
             | "composer.json"
             | "mix.exs"
+            | "packages.config"
+            | "cpanfile"
     ) || name.starts_with("requirements") && name.ends_with(".txt")
+        || name.ends_with(".csproj")
+        || name.ends_with(".vbproj")
+        || name.ends_with(".fsproj")
+}
+
+/// Files that pin a runtime version (CONTRACT.md §13): cheap, tiny, and the
+/// only evidence the end-of-life check has.
+pub(crate) fn is_runtime_file(name: &str) -> bool {
+    matches!(
+        name,
+        ".nvmrc"
+            | ".node-version"
+            | ".tool-versions"
+            | "runtime.txt"
+            | ".python-version"
+            | ".ruby-version"
+            | ".go-version"
+            | ".java-version"
+            | ".sdkmanrc"
+            | "global.json"
+            | "rust-toolchain"
+            | "rust-toolchain.toml"
+    )
+}
+
+/// Build systems and legacy configuration that have no manifest of their
+/// own but say a lot about how old the project is.
+pub(crate) fn is_legacy_signal_file(path: &str) -> bool {
+    let name = basename(path);
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        name,
+        "Makefile"
+            | "GNUmakefile"
+            | "CMakeLists.txt"
+            | "configure.ac"
+            | "configure.in"
+            | "Makefile.am"
+            | "Makefile.PL"
+            | "Build.PL"
+            | "Directory.Build.props"
+    ) || lower == "web.config"
+        || lower == "web.xml"
+        || lower == "wp-config.php"
+        || lower == "config.ru"
+        || name.ends_with(".sln")
+        || name.ends_with(".gemspec")
+}
+
+/// Hand-rolled deploy scripts are read to see whether they push over FTP.
+pub(crate) fn is_deploy_script(path: &str) -> bool {
+    let lower = basename(path).to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "deploy.sh"
+            | "deploy.bat"
+            | "deploy.ps1"
+            | "deploy.cmd"
+            | "publish.sh"
+            | "upload.sh"
+            | "release.sh"
+            | "ftp.sh"
+            | ".ftpconfig"
+            | "sftp-config.json"
+            | "deploy.php"
+    ) || (lower.starts_with("ftp") && (lower.ends_with(".sh") || lower.ends_with(".txt")))
 }
 
 pub(crate) fn is_dockerfile(name: &str) -> bool {
@@ -164,63 +233,104 @@ fn is_entry_file(name: &str) -> bool {
         && CODE_EXTENSIONS.contains(&ext)
 }
 
+// Priorities, lowest first. Named so the special cases below read as intent.
+const P_CONFIG: u8 = 0;
+const P_ROOT_MANIFEST: u8 = 1;
+const P_README: u8 = 2;
+const P_ROOT_CONTAINER: u8 = 3;
+const P_PIPELINE: u8 = 4;
+const P_IAC: u8 = 5;
+const P_SUPPORTING: u8 = 6;
+const P_NESTED_MANIFEST: u8 = 7;
+const P_MIGRATION: u8 = 8;
+const P_ENTRY: u8 = 9;
+const P_DOC: u8 = 10;
+const P_BIG_MIGRATION: u8 = 11;
+
 /// Lower is better. `None` means the file is not wanted at all.
 fn priority(path: &str) -> Option<u8> {
     let name = basename(path);
     let d = depth(path);
     let lower = name.to_ascii_lowercase();
-    if is_manifest_name(name) {
-        return Some(if d == 0 { 0 } else { 6 });
+    if path == CONFIG_PATH {
+        // The repository's own declarations outrank everything we could infer.
+        return Some(P_CONFIG);
+    }
+    if is_manifest_name(name) || (is_runtime_file(name) && d == 0) {
+        return Some(if d == 0 {
+            P_ROOT_MANIFEST
+        } else {
+            P_NESTED_MANIFEST
+        });
     }
     if lower.starts_with("readme") && d == 0 {
-        return Some(1);
+        return Some(P_README);
     }
     if is_dockerfile(name) || is_compose(name) {
-        return Some(if d == 0 { 2 } else { 5 });
+        return Some(if d == 0 {
+            P_ROOT_CONTAINER
+        } else {
+            P_SUPPORTING
+        });
     }
     if is_workflow(path) || path == ".gitlab-ci.yml" || path == ".github/dependabot.yml" {
-        return Some(3);
+        return Some(P_PIPELINE);
     }
     let ext = extension(path);
     if ext == "tf" || ext == "bicep" || name == "Pulumi.yaml" || name.starts_with("Pulumi.") {
-        return Some(4);
+        return Some(P_IAC);
     }
     if is_yaml(path) && (is_k8s_dir(path) || name == "Chart.yaml" || name == "values.yaml") {
-        return Some(4);
+        return Some(P_IAC);
+    }
+    if is_legacy_signal_file(path) || is_deploy_script(path) || is_runtime_file(name) {
+        return Some(if d == 0 {
+            P_ROOT_MANIFEST
+        } else {
+            P_SUPPORTING
+        });
     }
     if lower.starts_with("architecture") || lower.starts_with("adr") || has_dir(path, "adr") {
-        return Some(5);
+        return Some(P_SUPPORTING);
     }
     if is_env_template(&lower) || is_frontend_config(name) {
-        return Some(5);
+        return Some(P_SUPPORTING);
     }
     if lower == "security.md" || path == ".github/CODEOWNERS" || path == "CODEOWNERS" {
-        return Some(5);
+        return Some(P_SUPPORTING);
     }
     if is_migration_path(path) {
-        return Some(7);
+        return Some(P_MIGRATION);
     }
     if is_entry_file(name) && d <= 3 {
-        return Some(8);
+        return Some(P_ENTRY);
     }
     if ext == "md" && (path.starts_with("docs/") || path.starts_with("doc/")) {
-        return Some(9);
+        return Some(P_DOC);
     }
     None
 }
 
 /// Paths worth downloading, most valuable first.
 pub fn wanted_files(tree: &[TreeEntry]) -> Vec<String> {
+    wanted_files_with(tree, &[])
+}
+
+/// [`wanted_files`] minus everything matching an `.sdi.yml` `scan.exclude`
+/// glob. `.sdi.yml` itself can never be excluded, otherwise a typo in the
+/// file would hide the file that carries the typo.
+pub fn wanted_files_with(tree: &[TreeEntry], exclude: &[String]) -> Vec<String> {
     let mut ranked: Vec<(u8, usize, &str)> = tree
         .iter()
         .filter(|e| !e.is_dir && e.size <= MAX_FILE_BYTES)
         .filter(|e| !is_vendored(&e.path) && !is_lock_file(&e.path) && !looks_secret(&e.path))
         .filter(|e| !BINARY_EXTENSIONS.contains(&extension(&e.path).as_str()))
+        .filter(|e| e.path == CONFIG_PATH || !excluded(&e.path, exclude))
         .filter_map(|e| {
             let mut p = priority(&e.path)?;
             // Migrations are wanted for their names; big ones cost budget for little gain.
-            if p == 7 && e.size > 16_000 {
-                p = 10;
+            if p == P_MIGRATION && e.size > 16_000 {
+                p = P_BIG_MIGRATION;
             }
             Some((p, depth(&e.path), e.path.as_str()))
         })
@@ -229,7 +339,7 @@ pub fn wanted_files(tree: &[TreeEntry]) -> Vec<String> {
     let mut docs = 0usize;
     let mut out = Vec::new();
     for (p, _, path) in ranked {
-        if p == 9 {
+        if p == P_DOC {
             docs += 1;
             if docs > 12 {
                 continue;
@@ -284,6 +394,55 @@ mod tests {
                 "docs/guide.md",
             ]
         );
+    }
+
+    #[test]
+    fn config_first_runtime_files_and_excludes() {
+        let tree = vec![
+            entry("package.json", 10),
+            entry(".sdi.yml", 10),
+            entry(".nvmrc", 3),
+            entry("WebApp.sln", 10),
+            entry("WebApp/WebApp.csproj", 10),
+            entry("WebApp/packages.config", 10),
+            entry("WebApp/Web.config", 10),
+            entry("Makefile", 10),
+            entry("CMakeLists.txt", 10),
+            entry("deploy.sh", 10),
+            entry("vendor-legacy/old.csproj", 10),
+            entry("docs/legacy/plan.md", 10),
+            entry("docs/current/plan.md", 10),
+        ];
+        let all = wanted_files(&tree);
+        assert_eq!(all[0], ".sdi.yml");
+        for p in [
+            ".nvmrc",
+            "WebApp.sln",
+            "WebApp/WebApp.csproj",
+            "WebApp/packages.config",
+            "WebApp/Web.config",
+            "Makefile",
+            "CMakeLists.txt",
+            "deploy.sh",
+            "docs/legacy/plan.md",
+        ] {
+            assert!(all.iter().any(|w| w == p), "missing {p}: {all:?}");
+        }
+        let filtered = wanted_files_with(
+            &tree,
+            &[
+                "docs/legacy/**".into(),
+                "vendor-legacy".into(),
+                ".sdi.yml".into(),
+            ],
+        );
+        assert_eq!(
+            filtered[0], ".sdi.yml",
+            "the config can never exclude itself"
+        );
+        assert!(!filtered.iter().any(|w| w == "docs/legacy/plan.md"));
+        assert!(!filtered.iter().any(|w| w.starts_with("vendor-legacy/")));
+        assert!(filtered.iter().any(|w| w == "docs/current/plan.md"));
     }
 
     #[test]

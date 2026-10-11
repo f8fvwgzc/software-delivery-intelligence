@@ -28,6 +28,10 @@ const FRAMEWORKS: &[(&str, &str, &str, bool)] = &[
     ("bundler", "rspec", "rspec", false),
     ("bundler", "rspec-rails", "rspec", false),
     ("composer", "phpunit/phpunit", "phpunit", false),
+    ("nuget", "xunit", "xunit", false),
+    ("nuget", "NUnit", "nunit", false),
+    ("nuget", "MSTest.TestFramework", "mstest", false),
+    ("cpan", "Test::More", "perl_test", false),
 ];
 
 fn is_test_file(path: &str) -> bool {
@@ -41,6 +45,10 @@ fn is_test_file(path: &str) -> bool {
         || name.ends_with("_spec.rb")
         || name.ends_with("Test.java")
         || name.ends_with("Test.kt")
+        || name.ends_with("Tests.cs")
+        || name.ends_with("Test.cs")
+        || name.ends_with("Test.php")
+        || (path.starts_with("t/") && name.ends_with(".t"))
         || ((path.starts_with("tests/") || path.contains("/tests/")) && name.ends_with(".rs"))
 }
 

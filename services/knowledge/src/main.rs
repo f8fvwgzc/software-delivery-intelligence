@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use sdi_knowledge::{catalog, config::Settings, db, github::GithubClient, grpc::KnowledgeState};
+use sdi_knowledge::{
+    catalog, config::Settings, db, events::EventBus, github::GithubClient, grpc::KnowledgeState,
+};
 use sdi_proto::knowledge::v1::knowledge_service_server::KnowledgeServiceServer;
 use tonic::transport::Server;
 
@@ -24,7 +26,10 @@ async fn main() -> Result<()> {
     tracing::info!(seeded, "catalog patterns seeded");
 
     let github = GithubClient::new(settings.github_token.clone())?;
-    let state = KnowledgeState::new(pool, github);
+    // The cache switch is the one setting that applies outside a scan.
+    let stored = db::settings::get(&pool).await?;
+    github.set_cache_enabled(stored.cache_github);
+    let state = KnowledgeState::new(pool, github, EventBus::new());
 
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter

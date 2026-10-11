@@ -123,6 +123,19 @@ pub async fn cancel_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
     .map(|_| ())
 }
 
+/// Give-up: the failed step keeps its FAILED status as the record of what
+/// went wrong; everything that never ran is cancelled.
+pub async fn abandon_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE steps SET status = 'CANCELLED', finished_at = COALESCE(finished_at, now()) \
+         WHERE execution_id = $1 AND status NOT IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED', 'FAILED')",
+    )
+    .bind(execution_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+}
+
 pub async fn set_approval(
     tx: &mut Tx,
     id: Uuid,

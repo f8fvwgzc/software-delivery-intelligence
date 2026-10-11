@@ -1,7 +1,12 @@
 import type { StatusTone } from '@/components/shared/data/status-badge'
 import type { ScanStatus } from '@/features/projects/api/queries'
 
-import type { Fact, FactCategory } from '../api/queries'
+import type { Fact, FactCategory, Question } from '../api/queries'
+
+/** True when `.sdi.yml` supplied the answer, so there was never a form to fill. */
+export function isAnsweredByConfig(question: Pick<Question, 'answeredBy'>) {
+  return question.answeredBy === 'config'
+}
 
 interface StatusLabel {
   label: string
@@ -34,12 +39,15 @@ export const FACT_CATEGORY: Record<FactCategory, string> = {
   documentation: 'Documentation',
   deployment: 'Deployment',
   migration: 'Migrations',
+  runtime: 'Runtime',
+  configuration: 'Configuration',
 }
 
 /** Display order: what the system is, then how it is built, run and shipped. */
 const FACT_CATEGORY_ORDER: FactCategory[] = [
   'repository',
   'language',
+  'runtime',
   'framework',
   'datastore',
   'dependency',
@@ -52,6 +60,7 @@ const FACT_CATEGORY_ORDER: FactCategory[] = [
   'migration',
   'security',
   'documentation',
+  'configuration',
   'unspecified',
 ]
 

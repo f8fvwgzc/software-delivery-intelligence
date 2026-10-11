@@ -35,6 +35,7 @@ const SearchPage = lazy(() => import('@/features/search/pages/search-page'))
 
 const PoliciesPage = lazy(() => import('@/features/policies/pages/policies-page'))
 const SystemPage = lazy(() => import('@/features/system/pages/system-page'))
+const SettingsPage = lazy(() => import('@/features/settings/pages/settings-page'))
 
 // Breadcrumbs that need data (a project name, an execution number) are
 // components, loaded lazily like everything else.
@@ -111,6 +112,7 @@ export const router = createBrowserRouter([
 
       { path: 'policies', Component: PoliciesPage, handle: crumb('Policies') },
       { path: 'system', Component: SystemPage, handle: crumb('System') },
+      { path: 'settings', Component: SettingsPage, handle: crumb('Settings') },
 
       { path: '*', Component: NotFoundPage, handle: crumb('Not found') },
     ],

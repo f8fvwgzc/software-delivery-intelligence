@@ -64,6 +64,13 @@ pub(crate) fn derive(
     if !snap.topics.is_empty() {
         parts.push(format!("Topics: {}.", snap.topics.join(", ")));
     }
+    if !ctx.out.maturity.stage.is_empty() {
+        // Lets a legacy project land near other legacy projects in retrieval.
+        parts.push(format!(
+            "Delivery maturity: {} ({}/100).",
+            ctx.out.maturity.stage, ctx.out.maturity.overall
+        ));
+    }
     if !ctx.environments.is_empty() {
         parts.push(format!(
             "Environments: {}.",

@@ -10,6 +10,7 @@ pub mod execution;
 pub mod github;
 pub mod intelligence;
 pub mod knowledge;
+pub mod settings;
 pub mod system;
 
 /// Declares a public enum mirroring a proto enum: same variants, snake_case

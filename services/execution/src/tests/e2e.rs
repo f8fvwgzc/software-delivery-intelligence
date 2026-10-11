@@ -17,7 +17,7 @@ use tonic::{Code, Request};
 use uuid::Uuid;
 
 use crate::{
-    adapters::{Registry, SimulatedAdapter},
+    adapters::{self, Adapter, Registry, RunContext, StepInput, StepOutcome},
     grpc::ExecutionGrpc,
     knowledge::RecordingPatternOutcomes,
     runner::Runtime,
@@ -37,6 +37,10 @@ struct Harness {
 impl Harness {
     /// None (with a note on stderr) when no database is configured.
     async fn new() -> Option<Self> {
+        Self::with_registry(adapters::test_registry()).await
+    }
+
+    async fn with_registry(registry: Registry) -> Option<Self> {
         let Some(url) = std::env::var("DATABASE_URL")
             .ok()
             .filter(|u| !u.trim().is_empty())
@@ -63,7 +67,7 @@ impl Harness {
         let outcomes = RecordingPatternOutcomes::default();
         let rt = Runtime::new(
             pool.clone(),
-            Registry::new(Arc::new(SimulatedAdapter::new(1))),
+            registry,
             Arc::new(outcomes.clone()),
             Duration::ZERO,
         );
@@ -230,6 +234,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
             pattern_id: "pattern-aws".into(),
             title: "Ship it".into(),
             steps: five_step_plan(),
+            ..Default::default()
         }))
         .await
         .expect("create")
@@ -575,6 +580,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
                 step("a", "repo.read", "local", &["b"], &[]),
                 step("b", "repo.read", "local", &["a"], &[]),
             ],
+            ..Default::default()
         }))
         .await
         .unwrap_err();
@@ -588,6 +594,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
             pattern_id: String::new(),
             title: "ghost".into(),
             steps: vec![step("a", "repo.read", "local", &["ghost"], &[])],
+            ..Default::default()
         }))
         .await
         .unwrap_err();
@@ -601,6 +608,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
             pattern_id: String::new(),
             title: String::new(),
             steps: vec![step("a", "something.new", "local", &[], &[])],
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -662,7 +670,7 @@ async fn policies_and_grants_follow_the_contract() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies.len(), 19);
+    assert_eq!(policies.len(), 22);
     let production = policies
         .iter()
         .find(|p| p.action_type == "deploy.production")
@@ -717,8 +725,22 @@ async fn policies_and_grants_follow_the_contract() {
         .unwrap()
         .into_inner()
         .identities;
-    assert_eq!(identities.len(), 1);
-    let simulated = &identities[0];
+    assert_eq!(
+        identities.len(),
+        2,
+        "simulated + local-docker; github-token only with a token"
+    );
+    let simulated = identities.iter().find(|i| i.name == "simulated").unwrap();
+    let docker = identities
+        .iter()
+        .find(|i| i.name == "local-docker")
+        .unwrap();
+    assert!(
+        docker
+            .grants
+            .iter()
+            .any(|g| g.permission == "container:run")
+    );
     let base: Vec<&str> = simulated
         .grants
         .iter()
@@ -784,6 +806,7 @@ async fn startup_recovery_pauses_executions_left_mid_step() {
                 step("a", "repo.read", "local", &[], &[]),
                 step("b", "tests.run_local", "local", &["a"], &[]),
             ],
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -818,6 +841,532 @@ async fn startup_recovery_pauses_executions_left_mid_step() {
     let done = h.wait_status(&exec.id, ExecutionStatus::Succeeded).await;
     assert_eq!(done.revision, 1);
     assert!(done.steps.iter().all(|s| s.checkpointed));
+
+    h.teardown().await;
+}
+
+/// Fails every attempt with the same code, to drive the retry cap.
+struct AlwaysFailing;
+
+#[async_trait::async_trait]
+impl Adapter for AlwaysFailing {
+    fn name(&self) -> &'static str {
+        "simulated"
+    }
+
+    async fn run(&self, step: &StepInput, _ctx: &RunContext) -> StepOutcome {
+        StepOutcome::failed("BUILD_FAILED", format!("attempt {} exploded", step.attempt))
+    }
+}
+
+/// Emits many lines at once, to exercise LOG coalescing and ordering.
+struct Chatty;
+
+#[async_trait::async_trait]
+impl Adapter for Chatty {
+    fn name(&self) -> &'static str {
+        "simulated"
+    }
+
+    async fn run(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
+        for n in 1..=120 {
+            ctx.logs
+                .line(format!("{} line {n} {}", step.key, "x".repeat(3000)));
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        StepOutcome::Succeeded {
+            output: "done".into(),
+            outputs: [("image".to_string(), format!("sdi/{}", step.key))].into(),
+        }
+    }
+}
+
+fn with_simulated(adapter: Arc<dyn Adapter>) -> Registry {
+    let dir = std::env::temp_dir().join("sdi-execution-tests");
+    Registry::new(
+        adapter,
+        Arc::new(adapters::DockerAdapter::new(
+            dir,
+            None,
+            adapters::github::DEFAULT_API,
+        )),
+        Arc::new(adapters::GithubAdapter::new(
+            None,
+            adapters::github::DEFAULT_API,
+        )),
+    )
+}
+
+#[tokio::test]
+async fn adapter_choice_validates_steps_and_picks_the_identity() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let docker_plan = || {
+        vec![
+            step(
+                "checkout",
+                "repo.checkout",
+                "docker",
+                &[],
+                &["repository:read"],
+            ),
+            step(
+                "build",
+                "container.build",
+                "docker",
+                &["checkout"],
+                &["container:build"],
+            ),
+            step(
+                "pr",
+                "repo.open_pull_request",
+                "github",
+                &["build"],
+                &["repository:write"],
+            ),
+        ]
+    };
+    let created = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            title: "local build".into(),
+            steps: docker_plan(),
+            adapter: "docker".into(),
+            artifacts: HashMap::from([("Dockerfile".to_string(), "FROM scratch\n".to_string())]),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(created.adapter, "docker");
+    let identities = h
+        .svc
+        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    let local_docker = identities
+        .iter()
+        .find(|i| i.name == "local-docker")
+        .unwrap();
+    assert_eq!(created.identity_id, local_docker.id);
+    let (artifacts,): (sqlx::types::Json<HashMap<String, String>>,) =
+        sqlx::query_as("SELECT artifacts FROM executions WHERE id = $1")
+            .bind(Uuid::parse_str(&created.id).unwrap())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(artifacts.0["Dockerfile"], "FROM scratch\n");
+
+    let refused = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            title: "too much".into(),
+            steps: vec![
+                step("build", "container.build", "docker", &[], &[]),
+                step("deploy", "deploy.production", "kubernetes", &["build"], &[]),
+            ],
+            adapter: "docker".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    assert!(
+        refused.message().contains("step deploy"),
+        "{}",
+        refused.message()
+    );
+    assert!(refused.message().contains("deploy.production"));
+
+    let reserved = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            steps: vec![step("a", "repo.read", "local", &[], &[])],
+            adapter: "kubernetes".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(reserved.code(), Code::Unimplemented);
+
+    let unknown = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            steps: vec![step("a", "repo.read", "local", &[], &[])],
+            adapter: "mystery".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Code::InvalidArgument);
+
+    // github needs the token identity, which only exists while GITHUB_TOKEN is set.
+    let github_plan = || {
+        vec![
+            step("checkout", "repo.checkout", "docker", &[], &[]),
+            step(
+                "pr",
+                "repo.open_pull_request",
+                "github",
+                &["checkout"],
+                &["repository:write"],
+            ),
+        ]
+    };
+    let no_token = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            steps: github_plan(),
+            adapter: "github".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(no_token.code(), Code::FailedPrecondition);
+    assert!(no_token.message().contains("GITHUB_TOKEN"));
+
+    crate::db::identities::seed_github_token(&h.pool, true)
+        .await
+        .unwrap();
+    let github = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            steps: github_plan(),
+            adapter: "github".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(github.adapter, "github");
+    let identities = h
+        .svc
+        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    let token = identities
+        .iter()
+        .find(|i| i.name == "github-token")
+        .unwrap();
+    assert_eq!(github.identity_id, token.id);
+    let scopes: Vec<&str> = token.grants.iter().map(|g| g.permission.as_str()).collect();
+    assert_eq!(scopes, vec!["repository:read", "repository:write"]);
+
+    // A github run cannot build containers.
+    let refused = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "p".into(),
+            steps: vec![step("build", "container.build", "docker", &[], &[])],
+            adapter: "github".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+
+    // Without the token the base grants go; the identity stays because an
+    // execution references it, but it can no longer be chosen.
+    crate::db::identities::seed_github_token(&h.pool, false)
+        .await
+        .unwrap();
+    let identities = h
+        .svc
+        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    let token = identities
+        .iter()
+        .find(|i| i.name == "github-token")
+        .unwrap();
+    assert!(token.grants.is_empty());
+
+    h.teardown().await;
+}
+
+#[tokio::test]
+async fn platform_events_report_executions_and_approvals() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let mut feed = h
+        .svc
+        .watch_events(Request::new(sdi_proto::common::v1::WatchEventsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let created = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "proj-live".into(),
+            title: "live".into(),
+            steps: vec![
+                step("read", "repo.read", "github", &[], &[]),
+                step("run", "container.run", "docker", &["read"], &[]),
+            ],
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let first = tokio::time::timeout(WAIT, feed.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.entity, "execution");
+    assert_eq!(first.entity_id, created.id);
+    assert_eq!(first.project_id, "proj-live");
+    assert_eq!(first.action, "created");
+    assert_eq!(first.status, "planning");
+    assert_eq!(first.data["adapter"], "simulated");
+
+    h.svc
+        .start_execution(Request::new(StartExecutionRequest {
+            id: created.id.clone(),
+            fault: None,
+        }))
+        .await
+        .unwrap();
+    let approval = h.wait_pending_approval(&created.id).await;
+
+    // Everything up to the approval request is an execution update; the
+    // request itself also announces the approval.
+    let mut seen_statuses = Vec::new();
+    let requested = loop {
+        let event = tokio::time::timeout(WAIT, feed.next())
+            .await
+            .expect("feed alive")
+            .unwrap()
+            .unwrap();
+        if event.entity == "approval" {
+            break event;
+        }
+        assert_eq!(event.entity, "execution");
+        assert_eq!(event.action, "updated");
+        assert_eq!(event.data["revision"], "0");
+        seen_statuses.push(event.status);
+    };
+    assert!(
+        seen_statuses.contains(&"executing".to_string()),
+        "{seen_statuses:?}"
+    );
+    assert!(
+        seen_statuses.contains(&"waiting_for_approval".to_string()),
+        "{seen_statuses:?}"
+    );
+    assert_eq!(requested.action, "created");
+    assert_eq!(requested.status, "pending");
+    assert_eq!(requested.entity_id, approval.id);
+    assert_eq!(requested.data["execution_id"], created.id);
+
+    h.approve(&approval).await;
+    let decided = tokio::time::timeout(WAIT, feed.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(decided.entity, "approval");
+    assert_eq!(decided.action, "updated");
+    assert_eq!(decided.status, "approved");
+
+    h.wait_status(&created.id, ExecutionStatus::Succeeded).await;
+    let mut last = None;
+    while let Ok(Some(Ok(event))) =
+        tokio::time::timeout(Duration::from_millis(300), feed.next()).await
+    {
+        last = Some(event);
+    }
+    let last = last.expect("a final execution event");
+    assert_eq!(last.entity, "execution");
+    assert_eq!(last.status, "succeeded");
+
+    h.teardown().await;
+}
+
+#[tokio::test]
+async fn the_retry_cap_forces_give_up_which_fails_the_run() {
+    let Some(h) = Harness::with_registry(with_simulated(Arc::new(AlwaysFailing))).await else {
+        return;
+    };
+    let created = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "proj-cap".into(),
+            pattern_id: "pattern-flaky".into(),
+            title: "never builds".into(),
+            steps: vec![
+                step("build", "container.build", "docker", &[], &[]),
+                step("test", "tests.run_local", "docker", &["build"], &[]),
+            ],
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let id = created.id.clone();
+    h.svc
+        .start_execution(Request::new(StartExecutionRequest {
+            id: id.clone(),
+            fault: None,
+        }))
+        .await
+        .unwrap();
+
+    for attempt in 1..5u32 {
+        let diagnosing = h.wait_status(&id, ExecutionStatus::Diagnosing).await;
+        let failure = diagnosing.failure.expect("failure");
+        assert_eq!(failure.code, "BUILD_FAILED");
+        assert_eq!(diagnosing.steps[0].attempts, attempt);
+        assert!(failure.raw_output.contains(&format!("attempt {attempt}")));
+        let ids: Vec<&str> = failure.options.iter().map(|o| o.id.as_str()).collect();
+        assert!(ids.contains(&"retry"), "{ids:?}");
+        assert!(ids.contains(&"give_up"), "{ids:?}");
+        let replanned = h
+            .svc
+            .resolve_failure(Request::new(ResolveFailureRequest {
+                execution_id: id.clone(),
+                option_id: "retry".into(),
+                instruction: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(replanned.revision, attempt);
+    }
+
+    let exhausted = h.wait_status(&id, ExecutionStatus::Diagnosing).await;
+    assert_eq!(exhausted.steps[0].attempts, 5);
+    let failure = exhausted.failure.expect("failure");
+    let ids: Vec<&str> = failure.options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, vec!["give_up", "cancel"]);
+    assert!(failure.diagnosis.contains("no longer offered"));
+    let retry = h
+        .svc
+        .resolve_failure(Request::new(ResolveFailureRequest {
+            execution_id: id.clone(),
+            option_id: "retry".into(),
+            instruction: String::new(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(retry.code(), Code::InvalidArgument);
+
+    let failed = h
+        .svc
+        .resolve_failure(Request::new(ResolveFailureRequest {
+            execution_id: id.clone(),
+            option_id: "give_up".into(),
+            instruction: String::new(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(failed.status, ExecutionStatus::Failed as i32);
+    assert_eq!(status_of(&failed.steps[0]), StepStatus::Failed);
+    assert_eq!(status_of(&failed.steps[1]), StepStatus::Cancelled);
+    assert!(failed.finished_at.is_some());
+    assert!(failed.failure.is_some(), "the last failure stays readable");
+    assert_eq!(
+        h.outcomes.calls.lock().unwrap().as_slice(),
+        &[("pattern-flaky".to_string(), "proj-cap".to_string(), false)]
+    );
+    let stats = h
+        .svc
+        .get_delivery_stats(Request::new(GetDeliveryStatsRequest {
+            project_id: "proj-cap".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(stats.executions_failed, 1);
+    assert_eq!(stats.success_rate, 0.0);
+
+    h.teardown().await;
+}
+
+#[tokio::test]
+async fn adapter_output_becomes_coalesced_log_events_and_outputs() {
+    let Some(h) = Harness::with_registry(with_simulated(Arc::new(Chatty))).await else {
+        return;
+    };
+    let created = h
+        .svc
+        .create_execution(Request::new(CreateExecutionRequest {
+            project_id: "proj-logs".into(),
+            title: "chatty".into(),
+            steps: vec![step("build", "container.build", "docker", &[], &[])],
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    h.svc
+        .start_execution(Request::new(StartExecutionRequest {
+            id: created.id.clone(),
+            fault: None,
+        }))
+        .await
+        .unwrap();
+    let done = h.wait_status(&created.id, ExecutionStatus::Succeeded).await;
+    assert_eq!(done.outputs["image"], "sdi/build");
+
+    let events = h
+        .svc
+        .list_events(Request::new(ListEventsRequest {
+            execution_id: created.id.clone(),
+            after_seq: 0,
+            limit: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .events;
+    let logs: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.r#type == EventType::Log as i32
+                && e.data.get("source").map(String::as_str) == Some("adapter")
+        })
+        .collect();
+    assert!(!logs.is_empty());
+    assert!(logs.len() < 120, "{} events for 120 lines", logs.len());
+    let lines: usize = logs
+        .iter()
+        .map(|e| e.data["lines"].parse::<usize>().unwrap())
+        .sum();
+    assert_eq!(lines, 120);
+    let text: Vec<&str> = logs.iter().flat_map(|e| e.message.lines()).collect();
+    assert_eq!(text.len(), 120);
+    assert!(text[0].starts_with("build line 1 "));
+    assert!(text[119].starts_with("build line 120 "));
+    assert!(text.iter().all(|l| l.len() <= 2048 && l.ends_with("...")));
+    // Adapter output lands before the step is verified.
+    let last_log = events
+        .iter()
+        .rposition(|e| e.data.get("source").map(String::as_str) == Some("adapter"))
+        .unwrap();
+    let succeeded = events
+        .iter()
+        .position(|e| e.r#type == EventType::StepSucceeded as i32)
+        .unwrap();
+    assert!(last_log < succeeded);
+    assert_eq!(events[succeeded].data["output.image"], "sdi/build");
 
     h.teardown().await;
 }

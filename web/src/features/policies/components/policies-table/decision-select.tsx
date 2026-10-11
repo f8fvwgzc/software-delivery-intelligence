@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { components } from '@/lib/api/schema'
+import { testIds } from '@/test-ids'
 
 import { useUpdatePolicy } from '../../api/mutations'
 import { EDITABLE_DECISIONS, POLICY_DECISION } from '../../lib/labels'
@@ -24,7 +25,11 @@ export function DecisionSelect({ policy }: DecisionSelectProps) {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-flex h-7 cursor-default items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground ring-1 ring-border/60" tabIndex={0}>
+          <span
+            data-testid={testIds.policies.lockedDecision}
+            className="inline-flex h-7 cursor-default items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground ring-1 ring-border/60"
+            tabIndex={0}
+          >
             <LockIcon className="size-3" />
             {POLICY_DECISION[policy.decision].label}
           </span>

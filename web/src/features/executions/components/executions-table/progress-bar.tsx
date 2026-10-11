@@ -31,7 +31,7 @@ export function ProgressBar({ progress, className }: ProgressBarProps) {
         return (
           <span
             key={key}
-            className={cn('h-full transition-[flex-grow] duration-300 ease-out', segmentClass)}
+            className={cn('h-full transition-[flex-grow] duration-300 ease-out motion-reduce:transition-none', segmentClass)}
             style={{ flexGrow: count }}
           />
         )

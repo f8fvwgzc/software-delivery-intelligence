@@ -9,26 +9,29 @@ use std::collections::{BTreeMap, HashMap};
 use sdi_analyzer as an;
 use sdi_common::time::{opt_to_proto, to_proto};
 use sdi_proto::{
-    common::v1::{KnowledgeScope, PlanStep},
+    common::v1::{CostLine, KnowledgeScope, PlanStep},
     knowledge::v1::{
         Dependency, Deployment as DeploymentMsg, DeploymentStatus, Fact, FactCategory, FactKind,
-        GraphEdge, GraphNode, KnowledgeKind, NodeKind, Pattern, PatternSource, PatternStatus,
-        Pipeline, PipelineJob, PipelineRun, Project, ProjectMode, ProjectStatus, Question,
-        RelationCategory, RunFailure, RunStatus, Scan, ScanStage, ScanStatus, StageStatus,
-        Understanding, UnderstandingSection,
+        GraphEdge, GraphNode, KnowledgeKind, KnowledgeSettings, MaturityAxis, MaturityScore,
+        NodeKind, Pattern, PatternSource, PatternStatus, Pipeline, PipelineJob, PipelineRun,
+        Project, ProjectConfig, ProjectMode, ProjectStatus, Question, RelationCategory, RunFailure,
+        RunStatus, Scan, ScanStage, ScanStatus, StageStatus, Understanding, UnderstandingSection,
     },
 };
 
 use crate::db::{
+    config::ConfigRow,
     delivery::{DeploymentRow, RunRow},
     dependencies::DependencyRow,
     facts::FactRow,
     graph::{EdgeRow, NodeRow},
+    maturity::MaturityRow,
     patterns::PatternRow,
     pipelines::PipelineRow,
     projects::ProjectRow,
     questions::QuestionRow,
     scans::ScanRow,
+    settings::SettingsRow,
     understanding::UnderstandingRow,
 };
 
@@ -142,6 +145,7 @@ pub fn fact_kind(kind: an::FactKind) -> FactKind {
     match kind {
         an::FactKind::Detected => FactKind::Detected,
         an::FactKind::Inferred => FactKind::Inferred,
+        an::FactKind::Configured => FactKind::Configured,
     }
 }
 
@@ -162,6 +166,8 @@ pub fn fact_category(category: an::FactCategory) -> FactCategory {
         A::Documentation => FactCategory::Documentation,
         A::Deployment => FactCategory::Deployment,
         A::Migration => FactCategory::Migration,
+        A::Runtime => FactCategory::Runtime,
+        A::Configuration => FactCategory::Configuration,
     }
 }
 
@@ -251,6 +257,8 @@ pub fn project(row: ProjectRow) -> Project {
         tldr: row.tldr,
         stack: row.stack,
         open_questions: row.open_questions.max(0) as u32,
+        maturity_score: row.maturity_score.clamp(0, 100) as u32,
+        has_config: row.has_config,
     }
 }
 
@@ -309,10 +317,13 @@ pub fn question(row: QuestionRow) -> Question {
         allow_free_text: row.allow_free_text,
         answer: row.answer,
         answered_at: opt_to_proto(row.answered_at),
+        answered_by: row.answered_by,
     }
 }
 
-pub fn understanding(row: UnderstandingRow) -> Understanding {
+/// `maturity` is attached by the caller: the report lives in its own table
+/// and only `GetUnderstanding` and `GetProjectContext` need it inline.
+pub fn understanding(row: UnderstandingRow, maturity: Option<MaturityScore>) -> Understanding {
     Understanding {
         project_id: row.project_id.to_string(),
         tldr: row.tldr,
@@ -332,6 +343,58 @@ pub fn understanding(row: UnderstandingRow) -> Understanding {
         request_flow: row.request_flow,
         commit_sha: row.commit_sha,
         generated_at: Some(to_proto(row.generated_at)),
+        maturity,
+    }
+}
+
+pub fn maturity(row: MaturityRow) -> MaturityScore {
+    MaturityScore {
+        project_id: row.project_id.to_string(),
+        overall: row.overall.clamp(0, 100) as u32,
+        stage: row.stage,
+        axes: row
+            .axes
+            .0
+            .into_iter()
+            .map(|a| MaturityAxis {
+                key: a.key,
+                label: a.label,
+                score: a.score.min(100),
+                summary: a.summary,
+                findings: a.findings,
+                recommended_patterns: a.recommended_patterns,
+            })
+            .collect(),
+        computed_at: Some(to_proto(row.computed_at)),
+    }
+}
+
+/// A project without a stored config answers `present=false` rather than
+/// nothing, so clients never have to special-case a missing message.
+pub fn project_config(row: Option<ConfigRow>) -> ProjectConfig {
+    let draft = row.map(|r| r.config.0).unwrap_or_default();
+    ProjectConfig {
+        present: draft.present,
+        path: draft.path,
+        deploy_target: draft.deploy_target,
+        environments: draft.environments,
+        region: draft.region,
+        budget_monthly_usd: draft.budget_monthly_usd,
+        test_command: draft.test_command,
+        health_path: draft.health_path,
+        port: draft.port,
+        scan_exclude: draft.scan_exclude,
+        errors: draft.errors,
+    }
+}
+
+pub fn settings(row: SettingsRow) -> KnowledgeSettings {
+    KnowledgeSettings {
+        scan_max_files: row.scan_max_files.max(0) as u32,
+        scan_max_file_bytes: row.scan_max_file_bytes.max(0) as u32,
+        scan_concurrency: row.scan_concurrency.max(0) as u32,
+        pipeline_runs_limit: row.pipeline_runs_limit.max(0) as u32,
+        cache_github: row.cache_github,
     }
 }
 
@@ -467,7 +530,50 @@ pub fn pattern(row: PatternRow) -> Pattern {
         cons: row.cons,
         plan: row.plan.0.into_iter().map(plan_step).collect(),
         created_at: Some(to_proto(row.created_at)),
+        targets_axes: string_list(&row.attributes.0, "targets_axes"),
+        cost_lines: cost_lines(&row.attributes.0),
     }
+}
+
+/// `attributes.<key>` as strings; anything else in the list is dropped.
+fn string_list(attributes: &serde_json::Value, key: &str) -> Vec<String> {
+    attributes
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `attributes.cost_lines` in the shape [`crate::catalog::attributes`] writes.
+/// The catalog is the only writer, so a malformed line is dropped rather
+/// than failing the read: a pattern without a cost model still ranks.
+fn cost_lines(attributes: &serde_json::Value) -> Vec<CostLine> {
+    attributes
+        .get("cost_lines")
+        .and_then(serde_json::Value::as_array)
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|line| {
+                    Some(CostLine {
+                        item: line.get("item")?.as_str()?.to_owned(),
+                        monthly_usd: line.get("monthly_usd")?.as_f64()?,
+                        note: line
+                            .get("note")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn plan_step(step: crate::db::patterns::PlanStepRow) -> PlanStep {
@@ -506,5 +612,32 @@ mod tests {
             run_status_from_db("in_progress"),
             RunStatus::InProgress as i32
         );
+    }
+
+    #[test]
+    fn pattern_attributes_become_cost_lines_and_axes() {
+        let attributes = crate::catalog::attributes(
+            &[
+                ("Smallest managed instance", 12.0, "database"),
+                ("Backups", 3.0, "database"),
+            ],
+            &["iac", "containerization"],
+        );
+        let lines = cost_lines(&attributes);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].item, "Smallest managed instance");
+        assert!((lines[0].monthly_usd - 12.0).abs() < 1e-9);
+        assert_eq!(lines[1].note, "database");
+        assert_eq!(
+            string_list(&attributes, "targets_axes"),
+            vec!["iac", "containerization"]
+        );
+        // A learned pattern has no attributes at all.
+        let none = serde_json::json!({});
+        assert!(cost_lines(&none).is_empty());
+        assert!(string_list(&none, "targets_axes").is_empty());
+        // A malformed line is dropped, not fatal.
+        let odd = serde_json::json!({ "cost_lines": [{ "item": "x" }, 7] });
+        assert!(cost_lines(&odd).is_empty());
     }
 }

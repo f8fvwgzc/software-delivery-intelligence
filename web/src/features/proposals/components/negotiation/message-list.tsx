@@ -13,13 +13,16 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, pendingContent }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
   const count = messages.length + (pendingContent ? 1 : 0)
 
-  // DOM sync, not derived state: keep the newest turn in view.
+  // DOM sync, not derived state: keep the newest turn in view. Only the
+  // thread's own viewport scrolls; `scrollIntoView` would also scroll the
+  // document, which on a single-column layout jumps the page to the thread.
   useEffect(() => {
-    if (count === 0) return
-    endRef.current?.scrollIntoView({ block: 'end' })
+    const viewport = viewportRef.current
+    if (count === 0 || !viewport) return
+    viewport.scrollTop = viewport.scrollHeight
   }, [count])
 
   if (count === 0) {
@@ -38,13 +41,12 @@ export function MessageList({ messages, pendingContent }: MessageListProps) {
     // A plain scroll container: Radix ScrollArea sizes its viewport to the
     // content, so a max-height on it never clips and the thread would run
     // under the constraints and weights below.
-    <div className="max-h-[28rem] min-h-40 overflow-y-auto [scrollbar-gutter:stable]">
+    <div ref={viewportRef} className="max-h-[28rem] min-h-40 overflow-y-auto [scrollbar-gutter:stable]">
       <ol className="flex flex-col gap-3 px-4 py-3">
         {messages.map((message) => (
           <MessageItem key={message.id} message={message} />
         ))}
         {pendingContent ? <PendingMessageItem content={pendingContent} /> : null}
-        <div ref={endRef} aria-hidden="true" />
       </ol>
     </div>
   )

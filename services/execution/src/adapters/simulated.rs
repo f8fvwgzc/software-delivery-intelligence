@@ -164,13 +164,10 @@ impl Adapter for SimulatedAdapter {
         if let Some(fault) = &ctx.fault
             && fault.step_key == step.key
         {
-            let code = diagnosis::normalize_code(&fault.code).to_owned();
-            let raw_output = failure_output(step, &code);
-            return StepOutcome::Failed { code, raw_output };
+            let code = diagnosis::normalize_code(&fault.code);
+            return StepOutcome::failed(code, failure_output(step, code));
         }
-        StepOutcome::Succeeded {
-            output: success_output(step, delay),
-        }
+        StepOutcome::ok(success_output(step, delay))
     }
 }
 
@@ -202,7 +199,7 @@ mod tests {
             )
             .await;
         match out {
-            StepOutcome::Succeeded { output } => assert!(output.contains("Dockerfile")),
+            StepOutcome::Succeeded { output, .. } => assert!(output.contains("Dockerfile")),
             other => panic!("{other:?}"),
         }
     }
@@ -215,6 +212,7 @@ mod tests {
                 step_key: "db".into(),
                 code: "sku_unavailable".into(),
             }),
+            ..Default::default()
         };
         let failed = adapter
             .run(&step("db", "cloud", "cloud.create_dev_resource"), &ctx)

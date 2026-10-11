@@ -108,6 +108,27 @@ const TABLE: &[PolicyRow] = &[
         "blocked",
         Gate::Blocked,
     ),
+    // Phase 2 adapters (CONTRACT §5.2): a tarball download and removing a
+    // container we started are as safe as reading the repository; a pull
+    // request is visible to everyone, so it waits for a human.
+    row(
+        "repo.checkout",
+        "Download the repository at a commit",
+        "safe",
+        Gate::Auto,
+    ),
+    row(
+        "env.destroy_temporary",
+        "Remove a temporary environment",
+        "safe",
+        Gate::Auto,
+    ),
+    row(
+        "repo.open_pull_request",
+        "Open a pull request with generated files",
+        "medium",
+        Gate::Approval,
+    ),
 ];
 
 const fn row(

@@ -1,6 +1,7 @@
 import { RefreshCwIcon } from 'lucide-react'
 
-import { Markdown, RelativeTime } from '@/components/shared/data'
+import { Markdown } from '@/components/shared/data/markdown'
+import { RelativeTime } from '@/components/shared/data/relative-time'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import type { components } from '@/lib/api/schema'

@@ -70,6 +70,7 @@ Shared crates:
 | `LOG_FORMAT` | text (`json` in containers) | all |
 | `RUST_LOG` | `info,sqlx=warn` | all |
 | `SDI_RUN_DIR` | `.run` | execution (`docker` adapter workdirs) |
+| `GITHUB_API_URL` | `https://api.github.com` | execution (`docker` tarball downloads and the `github` adapter; GHES or a test server) |
 | `DOCKER_HOST` | Docker default | execution (`docker` adapter; the compose `local-exec` profile mounts the socket) |
 | `GITHUB_TOKEN` | — | execution (`github` adapter; same token as knowledge, needs `repo` write) |
 
@@ -184,8 +185,8 @@ runtime cannot provide.
 | adapter | what it does | steps it can run |
 |---|---|---|
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
-| `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/`, `container.build` runs `docker build`, `container.run` starts the image detached with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, `env.destroy_temporary` stops and removes everything; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
-| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal-id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url` | `repo.checkout`, `repo.open_pull_request` |
+| `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/` and writes `CreateExecutionRequest.artifacts` on top of it (so an option's generated Dockerfile is what gets built), `container.build` runs `docker build -f params.dockerfile params.context` (the application directory's Dockerfile in a monorepo), `container.run` starts the image detached (no `--rm`, so a crashed container keeps its logs for the failure) with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, or, when the plan names `params.test_image` (a compiled stack whose runtime image has no toolchain), in that image with `params.test_dir` of the checkout mounted at `/src`; `env.destroy_temporary` stops and removes everything, and a cancelled or finished run removes its container and workdir either way; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
+| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<first 8 chars of the proposal id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Files under `.github/workflows/` need the token's `workflow` scope; without it GitHub answers 404 on the tree and the step fails `PERMISSION_DENIED` naming that scope | `repo.checkout`, `repo.open_pull_request` |
 | `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
 
 A plan may mix families (build locally, then open a PR): the service routes
@@ -236,10 +237,13 @@ plus the free-text instruction path.
 Every pattern (catalog and modernization) ships a realistic `plan` (4–8
 `PlanStep`s with `action_type`, `adapter`, `depends_on`,
 `required_permissions`, `verification`), `pros`, `cons`, cost, security score,
-complexity, and a **cost model** (`CostLine`s: compute, database, registry,
-networking, CI minutes) that the generator fills per project.
-`modernization` patterns carry `targets_axes` in their attributes so the
-maturity report can point at them.
+complexity, and a **cost model** (`Pattern.cost_lines`, `CostLine`s: compute,
+database, registry, networking, CI minutes) that intelligence fills per
+project (replicas, private-repository CI minutes, the project's own
+datastores as managed services). `modernization` patterns carry
+`Pattern.targets_axes` so proposals and the maturity report point at the
+same axes. Both are seeded by the knowledge catalog and read back from the
+pattern, never recomputed elsewhere.
 
 Every catalog pattern ships a realistic `plan` (4–8 `PlanStep`s with
 `action_type`, `adapter`, `depends_on`, `required_permissions`,
@@ -392,7 +396,7 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 | `GET /events/stream` (SSE, `data: <PlatformEvent>`, never ends, keep-alive 15s) | gateway merges Knowledge/Intelligence/Execution.WatchEvents |
 | `GET /settings`, `PATCH /settings {knowledge?, intelligence?}` | Knowledge.Get/UpdateSettings + Intelligence.Get/UpdateSettings, composed as `{knowledge, intelligence}` |
 | `GET /proposals/{id}/options/{optionId}/artifacts` | gateway: the option's artifacts (omitted from `GET /proposals/{id}` and list responses to keep them small; `GET /proposals/{id}` carries `artifactCount` per option) |
-| `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the execution |
+| `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the proposal (201) whose `executionId` is that execution, where `outputs.pull_request_url` appears once the approved step ran |
 | `POST /executions {…, adapter?, artifacts?}` | Execution.CreateExecution (adapter per §5.4) |
 
 **Live events.** The web app opens `GET /events/stream` once (in the shell)
@@ -529,12 +533,12 @@ fixtures, and every file is complete (no `TODO` placeholders):
 |---|---|---|
 | `dockerfile` | `Dockerfile`, `.dockerignore` | language/framework/package manager, entry point, port, runtime version |
 | `compose` | `docker-compose.yml` | services, datastores, ports, env example |
-| `github_actions` | `.github/workflows/ci.yml`, `deploy.yml` | package manager, test command, image name, deploy target |
+| `github_actions` | `.github/workflows/ci.yml`, `deploy.yml` | package manager, test command, image name, deploy target; in a monorepo one `ci.yml` job per workspace package with that package's toolchain (a Cargo or pnpm workspace with a root manifest counts as one package tested from the root) |
 | `terraform` | `infra/<cloud>/{main,variables,outputs}.tf` | cloud, region, service name, database engine |
 | `bicep` | `infra/azure/main.bicep` | same as terraform for Azure |
 | `kubernetes` | `deploy/k8s/{deployment,service,ingress}.yaml` or `charts/<name>/` | image, port, health path, replicas |
 | `nginx` | `deploy/nginx/default.conf` | upstream port, static dir |
-| `dependabot` | `.github/dependabot.yml` | ecosystems found |
+| `dependabot` | `.github/dependabot.yml` | ecosystems found, one entry per package directory of each ecosystem |
 | `env` | `.env.example` | env vars referenced in code/compose |
 | `docs` | `docs/deployment.md`, `docs/runbook.md` | the plan and its policy gates |
 

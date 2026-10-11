@@ -1,6 +1,8 @@
 //! Languages come from the provider's byte counts when present and from
 //! manifests and file extensions otherwise, so fixtures without provider
-//! metadata still get `lang:*` facts.
+//! metadata still get `lang:*` facts. A plain HTML/CSS/JS tree with no
+//! manifest is a static site; a Vite build without a server framework is
+//! one too, and `frameworks` adds that case once the frameworks are known.
 
 use std::collections::BTreeMap;
 
@@ -26,6 +28,7 @@ fn key_for_language(name: &str) -> Option<&'static str> {
         "swift" => "swift",
         "scala" => "scala",
         "dart" => "dart",
+        "perl" => "perl",
         "c++" | "cpp" => "cpp",
         "c" => "c",
         "html" => "html",
@@ -53,7 +56,8 @@ fn key_for_extension(ext: &str) -> Option<&'static str> {
         "swift" => "swift",
         "scala" => "scala",
         "dart" => "dart",
-        "cpp" | "cc" | "hpp" => "cpp",
+        "pl" | "pm" => "perl",
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => "cpp",
         "c" | "h" => "c",
         "html" | "htm" => "html",
         "css" | "scss" => "css",
@@ -96,6 +100,8 @@ pub(crate) fn detect(ctx: &mut Ctx<'_>) {
             "bundler" => ("ruby", "Gemfile"),
             "composer" => ("php", "composer.json"),
             "mix" => ("elixir", "mix.exs"),
+            "nuget" => ("csharp", "*.csproj"),
+            "cpan" => ("perl", "cpanfile"),
             "maven" => {
                 if m.path.ends_with(".kts") || m.deps.iter().any(|d| d.name.contains("kotlin")) {
                     ("kotlin", "build.gradle.kts")

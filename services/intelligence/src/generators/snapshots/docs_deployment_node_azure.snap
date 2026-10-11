@@ -1,0 +1,36 @@
+# view-engine deployment guide
+
+## Pattern
+
+**Test option** - An option used by the generator tests.
+
+## Prerequisites
+
+- Runtime: Node.js 18
+- Container port `3000`, health endpoint `/healthz`
+- Test command: `pnpm test`
+- Cloud: azure in `westeurope`
+- Datastores: postgres
+- Environment variables (see `.env.example`): `PORT`, `DATABASE_URL`
+
+## Steps
+
+| # | Step | Action | Risk | Gate | Depends on | Verification |
+|---|---|---|---|---|---|---|
+| 1 | Build image | container.build | medium | auto |  | image exists |
+| 2 | Deploy to staging | deploy.staging | high | approval | build | health check passes |
+
+## Policy gates
+
+- `deploy` (deploy.staging - Deploy to staging) stops for human approval: approval gate, high risk
+
+## Permissions
+
+The executing identity needs: `container:build`, `deploy:staging`. Anything beyond `repository:read`, `container:build` and `environment:write` must be granted with a TTL first.
+
+## Verify
+
+1. Build the image: `docker build -t view-engine:local .`
+2. Run it: `docker compose up -d`
+3. Check health: `curl -fsS http://localhost:3000/healthz`
+4. Run the tests against the running services: `docker compose --profile test run --rm test`

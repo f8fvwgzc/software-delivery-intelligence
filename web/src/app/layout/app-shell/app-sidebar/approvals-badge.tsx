@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { SidebarMenuBadge } from '@/components/ui/sidebar'
 import { approvalQueries } from '@/features/approvals/api/queries'
+import { fallbackPoll } from '@/lib/live/connection-store'
 
 const COUNT_INTERVAL = 15_000
 
@@ -9,7 +10,7 @@ const COUNT_INTERVAL = 15_000
 export function ApprovalsBadge() {
   const { data: count } = useQuery({
     ...approvalQueries.list({ status: 'pending' }),
-    refetchInterval: COUNT_INTERVAL,
+    refetchInterval: () => fallbackPoll(COUNT_INTERVAL),
     select: (approvals) => approvals.length,
   })
 

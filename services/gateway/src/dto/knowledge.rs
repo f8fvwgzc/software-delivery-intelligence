@@ -10,6 +10,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::{
     common::{KnowledgeScope, PlanStep},
+    intelligence::CostLine,
     opt_string, opt_timestamp, proto_enum, timestamp,
 };
 
@@ -63,6 +64,10 @@ pub struct Project {
     pub stack: Vec<String>,
     /// Number of unanswered questions.
     pub open_questions: u32,
+    /// Delivery maturity 0–100 (CONTRACT.md §13). 0 until the first scan succeeds.
+    pub maturity_score: u32,
+    /// True when the repository carries a `.sdi.yml`.
+    pub has_config: bool,
 }
 
 impl From<proto::Project> for Project {
@@ -84,6 +89,8 @@ impl From<proto::Project> for Project {
             tldr: project.tldr,
             stack: project.stack,
             open_questions: project.open_questions,
+            maturity_score: project.maturity_score,
+            has_config: project.has_config,
         }
     }
 }
@@ -209,15 +216,17 @@ pub struct ListScansQuery {
 // ---------------------------------------------------------------------------
 
 proto_enum! {
-    /// Detected facts are read from the repository; inferred facts are conclusions drawn from them.
-    FactKind => proto::FactKind { Detected, Inferred }
+    /// Detected facts are read from the repository; inferred facts are conclusions
+    /// drawn from them; configured facts were declared in `.sdi.yml` (CONTRACT.md §12).
+    FactKind => proto::FactKind { Detected, Inferred, Configured }
 }
 
 proto_enum! {
     /// Area a fact belongs to.
     FactCategory => proto::FactCategory {
         Repository, Language, Framework, Datastore, Container, CiCd, Iac, Cloud,
-        Testing, Dependency, Security, Documentation, Deployment, Migration
+        Testing, Dependency, Security, Documentation, Deployment, Migration,
+        Runtime, Configuration
     }
 }
 
@@ -300,6 +309,8 @@ pub struct Question {
     pub answer: Option<String>,
     /// When it was answered.
     pub answered_at: Option<DateTime<Utc>>,
+    /// `user` or `config` (answered by `.sdi.yml`). Null while open.
+    pub answered_by: Option<String>,
 }
 
 impl From<proto::Question> for Question {
@@ -314,6 +325,7 @@ impl From<proto::Question> for Question {
             allow_free_text: question.allow_free_text,
             answer: opt_string(question.answer),
             answered_at: opt_timestamp(question.answered_at.as_ref()),
+            answered_by: opt_string(question.answered_by),
         }
     }
 }
@@ -384,6 +396,8 @@ pub struct Understanding {
     pub commit_sha: String,
     /// When it was generated.
     pub generated_at: DateTime<Utc>,
+    /// Delivery maturity, when computed.
+    pub maturity: Option<MaturityScore>,
 }
 
 impl From<proto::Understanding> for Understanding {
@@ -397,6 +411,193 @@ impl From<proto::Understanding> for Understanding {
             request_flow: understanding.request_flow,
             commit_sha: understanding.commit_sha,
             generated_at: timestamp(understanding.generated_at.as_ref()),
+            maturity: understanding.maturity.map(Into::into),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Maturity, repository configuration and settings
+// ---------------------------------------------------------------------------
+
+/// One of the eight delivery maturity axes (CONTRACT.md §13).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MaturityAxis {
+    /// `containerization`, `ci`, `tests`, `iac`, `dependencies`, `docs`, `secrets` or `runtime`.
+    pub key: String,
+    /// Human label.
+    pub label: String,
+    /// 0 – 100.
+    pub score: u32,
+    /// One-line summary of the axis.
+    pub summary: String,
+    /// Findings that lowered the score, e.g. `No Dockerfile`.
+    pub findings: Vec<String>,
+    /// Pattern ids that would raise this axis, best first.
+    pub recommended_patterns: Vec<String>,
+}
+
+impl From<proto::MaturityAxis> for MaturityAxis {
+    fn from(axis: proto::MaturityAxis) -> Self {
+        Self {
+            key: axis.key,
+            label: axis.label,
+            score: axis.score,
+            summary: axis.summary,
+            findings: axis.findings,
+            recommended_patterns: axis.recommended_patterns,
+        }
+    }
+}
+
+/// Delivery maturity of a project, computed from facts only.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MaturityScore {
+    /// Project id.
+    pub project_id: String,
+    /// Weighted mean of the axes, 0 – 100.
+    pub overall: u32,
+    /// `legacy` (< 35), `transitional` (35–69) or `modern` (≥ 70).
+    pub stage: String,
+    /// The eight axes in display order.
+    pub axes: Vec<MaturityAxis>,
+    /// When it was computed.
+    pub computed_at: DateTime<Utc>,
+}
+
+impl From<proto::MaturityScore> for MaturityScore {
+    fn from(score: proto::MaturityScore) -> Self {
+        Self {
+            project_id: score.project_id,
+            overall: score.overall,
+            stage: score.stage,
+            axes: score.axes.into_iter().map(Into::into).collect(),
+            computed_at: timestamp(score.computed_at.as_ref()),
+        }
+    }
+}
+
+/// What the repository declared in `.sdi.yml` (CONTRACT.md §12). Values that
+/// the file does not set are null, so the UI can tell "not configured" from
+/// a configured empty value.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfig {
+    /// True when the repository carries the file.
+    pub present: bool,
+    /// Repository path of the file, when present.
+    pub path: Option<String>,
+    /// `vm`, `azure`, `aws`, `gcp`, `kubernetes`, `fly`, `render` or `none`.
+    pub deploy_target: Option<String>,
+    /// Declared environments, e.g. `staging`, `production`.
+    pub environments: Vec<String>,
+    /// Cloud region.
+    pub region: Option<String>,
+    /// Monthly budget in USD; becomes the budget constraint on every proposal.
+    pub budget_monthly_usd: Option<f64>,
+    /// Test command used by the docker adapter's `tests.run_local`.
+    pub test_command: Option<String>,
+    /// Health path polled by `container.run`.
+    pub health_path: Option<String>,
+    /// Port the service listens on.
+    pub port: Option<u32>,
+    /// Globs excluded from the scan.
+    pub scan_exclude: Vec<String>,
+    /// Parse problems, in plain words. The config is ignored when non-empty.
+    pub errors: Vec<String>,
+}
+
+impl From<proto::ProjectConfig> for ProjectConfig {
+    fn from(config: proto::ProjectConfig) -> Self {
+        Self {
+            present: config.present,
+            path: opt_string(config.path),
+            deploy_target: opt_string(config.deploy_target),
+            environments: config.environments,
+            region: opt_string(config.region),
+            budget_monthly_usd: (config.budget_monthly_usd > 0.0)
+                .then_some(config.budget_monthly_usd),
+            test_command: opt_string(config.test_command),
+            health_path: opt_string(config.health_path),
+            port: (config.port > 0).then_some(config.port),
+            scan_exclude: config.scan_exclude,
+            errors: config.errors,
+        }
+    }
+}
+
+/// Scanner limits, changed from the settings page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeSettings {
+    /// Maximum files analysed per scan.
+    pub scan_max_files: u32,
+    /// Maximum size of one analysed file in bytes.
+    pub scan_max_file_bytes: u32,
+    /// Files fetched concurrently.
+    pub scan_concurrency: u32,
+    /// Pipeline runs synced from the provider per refresh.
+    pub pipeline_runs_limit: u32,
+    /// GitHub API ETag caching.
+    pub cache_github: bool,
+}
+
+impl From<proto::KnowledgeSettings> for KnowledgeSettings {
+    fn from(settings: proto::KnowledgeSettings) -> Self {
+        Self {
+            scan_max_files: settings.scan_max_files,
+            scan_max_file_bytes: settings.scan_max_file_bytes,
+            scan_concurrency: settings.scan_concurrency,
+            pipeline_runs_limit: settings.pipeline_runs_limit,
+            cache_github: settings.cache_github,
+        }
+    }
+}
+
+impl From<KnowledgeSettings> for proto::KnowledgeSettings {
+    fn from(settings: KnowledgeSettings) -> Self {
+        Self {
+            scan_max_files: settings.scan_max_files,
+            scan_max_file_bytes: settings.scan_max_file_bytes,
+            scan_concurrency: settings.scan_concurrency,
+            pipeline_runs_limit: settings.pipeline_runs_limit,
+            cache_github: settings.cache_github,
+        }
+    }
+}
+
+/// The `knowledge` part of `PATCH /settings`: every field is optional and
+/// unset fields keep their current value.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeSettingsPatch {
+    /// Maximum files analysed per scan.
+    pub scan_max_files: Option<u32>,
+    /// Maximum size of one analysed file in bytes.
+    pub scan_max_file_bytes: Option<u32>,
+    /// Files fetched concurrently.
+    pub scan_concurrency: Option<u32>,
+    /// Pipeline runs synced from the provider per refresh.
+    pub pipeline_runs_limit: Option<u32>,
+    /// GitHub API ETag caching.
+    pub cache_github: Option<bool>,
+}
+
+impl KnowledgeSettingsPatch {
+    /// The current settings with the patched fields replaced.
+    pub fn apply(self, current: KnowledgeSettings) -> KnowledgeSettings {
+        KnowledgeSettings {
+            scan_max_files: self.scan_max_files.unwrap_or(current.scan_max_files),
+            scan_max_file_bytes: self
+                .scan_max_file_bytes
+                .unwrap_or(current.scan_max_file_bytes),
+            scan_concurrency: self.scan_concurrency.unwrap_or(current.scan_concurrency),
+            pipeline_runs_limit: self
+                .pipeline_runs_limit
+                .unwrap_or(current.pipeline_runs_limit),
+            cache_github: self.cache_github.unwrap_or(current.cache_github),
         }
     }
 }
@@ -1063,6 +1264,10 @@ pub struct Pattern {
     pub plan: Vec<PlanStep>,
     /// When the pattern was created.
     pub created_at: DateTime<Utc>,
+    /// Maturity axes a modernization pattern raises (CONTRACT.md §13 keys); empty otherwise.
+    pub targets_axes: Vec<String>,
+    /// The catalog's cost model: the baseline a proposal rescales per project.
+    pub cost_lines: Vec<CostLine>,
 }
 
 impl From<proto::Pattern> for Pattern {
@@ -1093,6 +1298,8 @@ impl From<proto::Pattern> for Pattern {
             cons: pattern.cons,
             plan: pattern.plan.into_iter().map(Into::into).collect(),
             created_at: timestamp(pattern.created_at.as_ref()),
+            targets_axes: pattern.targets_axes,
+            cost_lines: pattern.cost_lines.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1305,6 +1512,51 @@ mod tests {
             serde_json::to_string(&NodeKind::ExternalApi).unwrap(),
             "\"external_api\""
         );
+    }
+
+    #[test]
+    fn phase_two_enum_variants_are_wired() {
+        assert_eq!(
+            serde_json::to_string(&FactKind::Configured).unwrap(),
+            "\"configured\""
+        );
+        assert_eq!(FactKind::from(3), FactKind::Configured);
+        assert_eq!(FactCategory::from(15), FactCategory::Runtime);
+        assert_eq!(FactCategory::from(16), FactCategory::Configuration);
+    }
+
+    #[test]
+    fn project_config_nulls_unset_values() {
+        let config = ProjectConfig::from(proto::ProjectConfig {
+            present: true,
+            path: ".sdi.yml".into(),
+            port: 0,
+            budget_monthly_usd: 0.0,
+            ..Default::default()
+        });
+        assert_eq!(config.path.as_deref(), Some(".sdi.yml"));
+        assert_eq!(config.port, None);
+        assert_eq!(config.budget_monthly_usd, None);
+        assert_eq!(config.deploy_target, None);
+        assert!(!ProjectConfig::default().present);
+    }
+
+    #[test]
+    fn knowledge_settings_patch_keeps_unset_fields() {
+        let current = KnowledgeSettings {
+            scan_max_files: 1,
+            scan_max_file_bytes: 2,
+            scan_concurrency: 3,
+            pipeline_runs_limit: 4,
+            cache_github: true,
+        };
+        let patch: KnowledgeSettingsPatch =
+            serde_json::from_str(r#"{"scanMaxFiles": 10, "cacheGithub": false}"#).unwrap();
+        let merged = patch.apply(current.clone());
+        assert_eq!(merged.scan_max_files, 10);
+        assert!(!merged.cache_github);
+        assert_eq!(merged.scan_concurrency, current.scan_concurrency);
+        assert_eq!(merged.pipeline_runs_limit, current.pipeline_runs_limit);
     }
 
     #[test]

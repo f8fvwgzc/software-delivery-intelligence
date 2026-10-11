@@ -1,6 +1,7 @@
 import { RelativeTime } from '@/components/shared/data/relative-time'
 import { TechChips } from '@/components/shared/data/tech-chip'
 import { Skeleton } from '@/components/ui/skeleton'
+import { testIds } from '@/test-ids'
 
 import type { Understanding } from '../../api/queries'
 import { shortSha } from '../../lib/github'
@@ -11,7 +12,7 @@ import { shortSha } from '../../lib/github'
  */
 export function TldrCallout({ understanding }: { understanding: Understanding }) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg bg-brand/5 p-4 ring-1 ring-brand/10">
+    <div data-testid={testIds.understanding.tldr} className="flex flex-col gap-3 rounded-lg bg-brand/5 p-4 ring-1 ring-brand/10">
       <p className="text-base leading-snug font-medium text-balance">
         {understanding.tldr || 'No summary was generated for this commit.'}
       </p>

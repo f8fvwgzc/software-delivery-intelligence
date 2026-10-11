@@ -13,12 +13,16 @@ pub(crate) mod docs;
 pub(crate) mod frameworks;
 pub(crate) mod iac;
 pub(crate) mod languages;
+pub(crate) mod legacy;
 pub(crate) mod migrations;
+pub(crate) mod runtime;
 pub(crate) mod security;
 pub(crate) mod testing;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::config::CONFIG_PATH;
+use crate::eol::Day;
 use crate::manifests::Manifest;
 use crate::model::*;
 use crate::util::{basename, dirname, excerpt};
@@ -55,6 +59,8 @@ pub(crate) struct Ctx<'a> {
     pub environments: BTreeSet<String>,
     /// Where deploys go, from IaC or CI: `azure`, `aws`, `gcp`, `kubernetes`, `github_pages`, ...
     pub deploy_targets: BTreeSet<String>,
+    /// The day the end-of-life table is compared against. Passed in, never read from a clock.
+    pub today: Day,
 }
 
 pub(crate) fn attrs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -66,7 +72,7 @@ pub(crate) fn attrs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 impl<'a> Ctx<'a> {
-    pub fn new(snap: &'a RepoSnapshot) -> Self {
+    pub fn new(snap: &'a RepoSnapshot, today: Day) -> Self {
         let name = if snap.full_name.is_empty() {
             "repository".to_string()
         } else {
@@ -81,6 +87,7 @@ impl<'a> Ctx<'a> {
             images: Vec::new(),
             environments: BTreeSet::new(),
             deploy_targets: BTreeSet::new(),
+            today,
         };
         let key = ctx.repo_key.clone();
         ctx.node(
@@ -150,6 +157,21 @@ impl<'a> Ctx<'a> {
             value: value.to_string(),
             confidence: confidence.clamp(0.0, 0.99),
             source_path: String::new(),
+            evidence: excerpt(evidence, 160),
+        });
+    }
+
+    /// A value the repository declared in `.sdi.yml`: as trustworthy as a
+    /// detected fact, kept apart so the UI can show who said it.
+    pub fn configured(&mut self, key: &str, label: &str, value: &str, evidence: &str) {
+        self.out.facts.push(FactDraft {
+            kind: FactKind::Configured,
+            category: FactCategory::Configuration,
+            key: key.to_string(),
+            label: label.to_string(),
+            value: value.to_string(),
+            confidence: 1.0,
+            source_path: CONFIG_PATH.to_string(),
             evidence: excerpt(evidence, 160),
         });
     }
@@ -328,14 +350,19 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// Runs every detector in dependency order.
+/// Runs every detector in dependency order. The configuration goes first so
+/// its facts exist for everything else; runtime reads base images, so it
+/// follows the container and IaC passes that collect them.
 pub(crate) fn run_all(ctx: &mut Ctx<'_>) {
+    crate::config::detect(ctx);
     dependencies::detect(ctx);
     languages::detect(ctx);
     frameworks::detect(ctx);
+    legacy::detect(ctx);
     containers::detect(ctx);
     iac::detect(ctx);
     ci::detect(ctx);
+    runtime::detect(ctx);
     datastores::detect(ctx);
     cloud::detect(ctx);
     testing::detect(ctx);
