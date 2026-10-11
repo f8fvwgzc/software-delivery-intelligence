@@ -12,7 +12,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
 } from '@/components/ui/sidebar'
 
 import { ApprovalsBadge } from './approvals-badge'
@@ -28,7 +27,7 @@ export function AppSidebar() {
   const { pathname } = useLocation()
 
   return (
-    <Sidebar>
+    <Sidebar collapsible="none" className="h-svh">
       <SidebarContent className="gap-0">
         {navigation.map((group) => (
           <SidebarGroup key={group.label} className="py-1.5">
@@ -61,7 +60,6 @@ export function AppSidebar() {
           <SidebarStatus />
         </Suspense>
       </SidebarFooter>
-      <SidebarRail />
     </Sidebar>
   )
 }
