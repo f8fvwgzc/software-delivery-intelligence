@@ -22,6 +22,16 @@ fi
 export SDI_RUN_DIR="${SDI_RUN_DIR:-$PWD/.run}"
 mkdir -p "$SDI_RUN_DIR"
 
+# Refuse to start on top of a previous stack: a half-bound set of services is
+# worse than a clear message.
+for port in 8080 5173 50051 50052 50053; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $port is already in use (an earlier stack is still running)." >&2
+    echo "stop it with: pkill -f scripts/dev.sh; pkill -f target/debug/sdi-; pkill -f vite" >&2
+    exit 1
+  fi
+done
+
 cargo build --workspace
 
 pids=()
