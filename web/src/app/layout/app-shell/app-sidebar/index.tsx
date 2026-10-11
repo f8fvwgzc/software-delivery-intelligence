@@ -34,7 +34,7 @@ export function AppSidebar() {
           <SidebarGroup key={group.label} className="py-1.5">
             <SidebarGroupLabel className="text-2xs tracking-wide uppercase">{group.label}</SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu>
+              <SidebarMenu className="gap-1">
                 {group.items.map((item) => (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton asChild isActive={isActive(item, pathname)} tooltip={item.label}>
