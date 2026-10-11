@@ -1,0 +1,42 @@
+import { useSuspenseQuery } from '@tanstack/react-query'
+import { useNavigate, useParams } from 'react-router'
+
+import { routes } from '@/app/router/routes'
+import { QueryBoundary } from '@/components/shared/feedback'
+import { Page, PageHeader } from '@/components/shared/page'
+
+import { diagramsQuery } from '../api/queries'
+import { DiagramsTable, DiagramsTableSkeleton } from '../components/diagrams-table'
+import { GenerateForm } from '../components/generate-form'
+
+/** /projects/:projectId/diagrams — the generate form, then every diagram as a dense table. */
+export default function DiagramsPage() {
+  const { projectId = '' } = useParams()
+  const navigate = useNavigate()
+
+  return (
+    <Page>
+      <PageHeader
+        title="Diagrams"
+        description="Built from the knowledge graph, the repository tree and a few key files. Nodes open the code that implements them; edges name their evidence."
+      />
+      <GenerateForm projectId={projectId} onGenerated={(diagram) => navigate(routes.diagram(diagram.id))} />
+      <QueryBoundary fallback={<DiagramsTableSkeleton />}>
+        <DiagramsBody projectId={projectId} />
+      </QueryBoundary>
+    </Page>
+  )
+}
+
+function DiagramsBody({ projectId }: { projectId: string }) {
+  const { data: diagrams } = useSuspenseQuery(diagramsQuery(projectId))
+
+  return (
+    <div className="flex flex-col gap-3">
+      <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
+        {diagrams.length} {diagrams.length === 1 ? 'diagram' : 'diagrams'}
+      </span>
+      <DiagramsTable diagrams={diagrams} />
+    </div>
+  )
+}

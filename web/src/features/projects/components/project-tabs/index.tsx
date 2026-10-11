@@ -17,10 +17,12 @@ function buildTabs(project: Project): ProjectTab[] {
   return [
     { label: 'Understanding', to: routes.project(project.id), end: true, count: project.openQuestions },
     { label: 'Architecture', to: routes.projectArchitecture(project.id) },
+    { label: 'Code', to: routes.projectCode(project.id) },
     { label: 'Dependencies', to: routes.projectDependencies(project.id) },
     { label: 'Delivery', to: routes.projectDelivery(project.id) },
     { label: 'Proposals', to: routes.projectProposals(project.id) },
     { label: 'Documents', to: routes.projectDocuments(project.id) },
+    { label: 'Diagrams', to: routes.projectDiagrams(project.id) },
     { label: 'Executions', to: routes.projectExecutions(project.id) },
   ]
 }

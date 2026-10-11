@@ -23,6 +23,7 @@ const FAMILIES_BY_ENTITY: Record<string, readonly (readonly string[])[]> = {
   execution: [['executions'], ['approvals']],
   approval: [['executions'], ['approvals']],
   pattern: [['patterns']],
+  diagram: [['diagrams']],
 }
 
 /** Every family the stream can touch; refetched when the stream comes up or drops. */
@@ -35,6 +36,7 @@ const ALL_FAMILIES: readonly (readonly string[])[] = [
   ['executions'],
   ['approvals'],
   ['patterns'],
+  ['diagrams'],
 ]
 
 /**

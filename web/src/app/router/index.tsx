@@ -16,10 +16,12 @@ const ProjectsPage = lazy(() => import('@/features/projects/pages/projects-page'
 const ProjectLayout = lazy(() => import('@/features/projects/pages/project-layout'))
 const UnderstandingPage = lazy(() => import('@/features/understanding/pages/understanding-page'))
 const ArchitecturePage = lazy(() => import('@/features/graph/pages/architecture-page'))
+const CodePage = lazy(() => import('@/features/code/pages/code-page'))
 const DependenciesPage = lazy(() => import('@/features/dependencies/pages/dependencies-page'))
 const DeliveryPage = lazy(() => import('@/features/delivery/pages/delivery-page'))
 const ProjectProposalsPage = lazy(() => import('@/features/proposals/pages/project-proposals-page'))
 const DocumentsPage = lazy(() => import('@/features/documents/pages/documents-page'))
+const DiagramsPage = lazy(() => import('@/features/diagrams/pages/diagrams-page'))
 const ProjectExecutionsPage = lazy(() => import('@/features/executions/pages/project-executions-page'))
 
 const ProposalsPage = lazy(() => import('@/features/proposals/pages/proposals-page'))
@@ -28,6 +30,7 @@ const ProposalPage = lazy(() => import('@/features/proposals/pages/proposal-page
 const ExecutionsPage = lazy(() => import('@/features/executions/pages/executions-page'))
 const ExecutionPage = lazy(() => import('@/features/executions/pages/execution-page'))
 const ApprovalsPage = lazy(() => import('@/features/approvals/pages/approvals-page'))
+const DiagramPage = lazy(() => import('@/features/diagrams/pages/diagram-page'))
 
 const PatternsPage = lazy(() => import('@/features/patterns/pages/patterns-page'))
 const DecisionsPage = lazy(() => import('@/features/decisions/pages/decisions-page'))
@@ -42,6 +45,7 @@ const SettingsPage = lazy(() => import('@/features/settings/pages/settings-page'
 const ProjectCrumb = lazy(() => import('@/features/projects/components/project-crumb'))
 const ProposalCrumb = lazy(() => import('@/features/proposals/components/proposal-crumb'))
 const ExecutionCrumb = lazy(() => import('@/features/executions/components/execution-crumb'))
+const DiagramCrumb = lazy(() => import('@/features/diagrams/components/diagram-crumb'))
 
 /** Route metadata read by the header breadcrumbs. */
 export interface RouteHandle {
@@ -71,10 +75,13 @@ export const router = createBrowserRouter([
             children: [
               { index: true, Component: UnderstandingPage },
               { path: 'architecture', Component: ArchitecturePage, handle: crumb('Architecture') },
+              { path: 'code', Component: CodePage, handle: crumb('Code') },
+              { path: 'code/*', Component: CodePage, handle: crumb('Code') },
               { path: 'dependencies', Component: DependenciesPage, handle: crumb('Dependencies') },
               { path: 'delivery', Component: DeliveryPage, handle: crumb('Delivery') },
               { path: 'proposals', Component: ProjectProposalsPage, handle: crumb('Proposals') },
               { path: 'documents', Component: DocumentsPage, handle: crumb('Documents') },
+              { path: 'diagrams', Component: DiagramsPage, handle: crumb('Diagrams') },
               { path: 'executions', Component: ProjectExecutionsPage, handle: crumb('Executions') },
             ],
           },
@@ -99,6 +106,7 @@ export const router = createBrowserRouter([
         ],
       },
       { path: 'approvals', Component: ApprovalsPage, handle: crumb('Approvals') },
+      { path: 'diagrams/:diagramId', Component: DiagramPage, handle: crumb(DiagramCrumb) },
 
       {
         path: 'knowledge',
