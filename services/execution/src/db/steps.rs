@@ -9,6 +9,7 @@ use super::Tx;
 #[derive(Debug, Clone, FromRow)]
 pub struct StepRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub execution_id: Uuid,
     pub key: String,
     pub position: i32,
@@ -31,13 +32,18 @@ pub struct StepRow {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+const COLUMNS: &str = "id, workspace_id, execution_id, key, position, title, description, action_type, adapter, \
+     depends_on, status, risk, policy_decision, required_permissions, approval_id, params, verification, output, \
+     checkpointed, attempts, started_at, finished_at";
+
 pub async fn insert(tx: &mut Tx, step: &StepRow) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO steps (id, execution_id, key, position, title, description, action_type, adapter, \
+        "INSERT INTO steps (id, workspace_id, execution_id, key, position, title, description, action_type, adapter, \
          depends_on, status, risk, policy_decision, required_permissions, params, verification) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(step.id)
+    .bind(step.workspace_id)
     .bind(step.execution_id)
     .bind(&step.key)
     .bind(step.position)
@@ -59,13 +65,13 @@ pub async fn insert(tx: &mut Tx, step: &StepRow) -> sqlx::Result<()> {
 
 pub async fn list_for<'e>(
     exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
     execution_id: Uuid,
 ) -> sqlx::Result<Vec<StepRow>> {
-    sqlx::query_as(
-        "SELECT id, execution_id, key, position, title, description, action_type, adapter, depends_on, \
-         status, risk, policy_decision, required_permissions, approval_id, params, verification, output, \
-         checkpointed, attempts, started_at, finished_at FROM steps WHERE execution_id = $1 ORDER BY position",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM steps WHERE workspace_id = $1 AND execution_id = $2 ORDER BY position"
+    )))
+    .bind(workspace_id)
     .bind(execution_id)
     .fetch_all(exec)
     .await
@@ -73,21 +79,27 @@ pub async fn list_for<'e>(
 
 pub async fn list_for_many<'e>(
     exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
     execution_ids: &[Uuid],
 ) -> sqlx::Result<Vec<StepRow>> {
-    sqlx::query_as(
-        "SELECT id, execution_id, key, position, title, description, action_type, adapter, depends_on, \
-         status, risk, policy_decision, required_permissions, approval_id, params, verification, output, \
-         checkpointed, attempts, started_at, finished_at FROM steps WHERE execution_id = ANY($1) \
-         ORDER BY execution_id, position",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM steps WHERE workspace_id = $1 AND execution_id = ANY($2) \
+         ORDER BY execution_id, position"
+    )))
+    .bind(workspace_id)
     .bind(execution_ids)
     .fetch_all(exec)
     .await
 }
 
-pub async fn set_status(tx: &mut Tx, id: Uuid, status: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE steps SET status = $2 WHERE id = $1")
+pub async fn set_status(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    status: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE steps SET status = $3 WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .bind(status)
         .execute(&mut **tx)
@@ -98,25 +110,30 @@ pub async fn set_status(tx: &mut Tx, id: Uuid, status: &str) -> sqlx::Result<()>
 /// Moves every step of `execution_id` whose key is listed to `status`.
 pub async fn set_status_for_keys(
     tx: &mut Tx,
+    workspace_id: Uuid,
     execution_id: Uuid,
     keys: &[String],
     status: &str,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE steps SET status = $3 WHERE execution_id = $1 AND key = ANY($2)")
-        .bind(execution_id)
-        .bind(keys)
-        .bind(status)
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "UPDATE steps SET status = $4 WHERE workspace_id = $1 AND execution_id = $2 AND key = ANY($3)",
+    )
+    .bind(workspace_id)
+    .bind(execution_id)
+    .bind(keys)
+    .bind(status)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
 /// Cancels whatever has not reached a terminal status yet.
-pub async fn cancel_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
+pub async fn cancel_open(tx: &mut Tx, workspace_id: Uuid, execution_id: Uuid) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE steps SET status = 'CANCELLED', finished_at = COALESCE(finished_at, now()) \
-         WHERE execution_id = $1 AND status NOT IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED')",
+         WHERE workspace_id = $1 AND execution_id = $2 AND status NOT IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED')",
     )
+    .bind(workspace_id)
     .bind(execution_id)
     .execute(&mut **tx)
     .await
@@ -125,11 +142,13 @@ pub async fn cancel_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
 
 /// Give-up: the failed step keeps its FAILED status as the record of what
 /// went wrong; everything that never ran is cancelled.
-pub async fn abandon_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
+pub async fn abandon_open(tx: &mut Tx, workspace_id: Uuid, execution_id: Uuid) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE steps SET status = 'CANCELLED', finished_at = COALESCE(finished_at, now()) \
-         WHERE execution_id = $1 AND status NOT IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED', 'FAILED')",
+         WHERE workspace_id = $1 AND execution_id = $2 \
+           AND status NOT IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED', 'FAILED')",
     )
+    .bind(workspace_id)
     .bind(execution_id)
     .execute(&mut **tx)
     .await
@@ -138,24 +157,29 @@ pub async fn abandon_open(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
 
 pub async fn set_approval(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     approval_id: Option<Uuid>,
     status: &str,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE steps SET approval_id = $2, status = $3 WHERE id = $1")
-        .bind(id)
-        .bind(approval_id)
-        .bind(status)
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "UPDATE steps SET approval_id = $3, status = $4 WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(approval_id)
+    .bind(status)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
-pub async fn start_attempt(tx: &mut Tx, id: Uuid) -> sqlx::Result<i32> {
+pub async fn start_attempt(tx: &mut Tx, workspace_id: Uuid, id: Uuid) -> sqlx::Result<i32> {
     sqlx::query_scalar(
         "UPDATE steps SET status = 'RUNNING', attempts = attempts + 1, output = '', \
-         started_at = now(), finished_at = NULL WHERE id = $1 RETURNING attempts",
+         started_at = now(), finished_at = NULL WHERE workspace_id = $1 AND id = $2 RETURNING attempts",
     )
+    .bind(workspace_id)
     .bind(id)
     .fetch_one(&mut **tx)
     .await
@@ -163,14 +187,17 @@ pub async fn start_attempt(tx: &mut Tx, id: Uuid) -> sqlx::Result<i32> {
 
 pub async fn finish(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     status: &str,
     output: &str,
     checkpointed: bool,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE steps SET status = $2, output = $3, checkpointed = $4, finished_at = now() WHERE id = $1",
+        "UPDATE steps SET status = $3, output = $4, checkpointed = $5, finished_at = now() \
+         WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(status)
     .bind(output)
@@ -183,12 +210,15 @@ pub async fn finish(
 /// Puts a failed step back in line with its (possibly patched) params.
 pub async fn reset_for_retry(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     params: &BTreeMap<String, String>,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE steps SET status = 'PENDING', approval_id = NULL, params = $2 WHERE id = $1",
+        "UPDATE steps SET status = 'PENDING', approval_id = NULL, params = $3 \
+         WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(Json(params))
     .execute(&mut **tx)
@@ -197,11 +227,16 @@ pub async fn reset_for_retry(
 }
 
 /// Steps parked on an approval go back to PENDING when a replan expires it.
-pub async fn release_waiting(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<()> {
+pub async fn release_waiting(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    execution_id: Uuid,
+) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE steps SET status = 'PENDING', approval_id = NULL \
-         WHERE execution_id = $1 AND status = 'WAITING_APPROVAL'",
+         WHERE workspace_id = $1 AND execution_id = $2 AND status = 'WAITING_APPROVAL'",
     )
+    .bind(workspace_id)
     .bind(execution_id)
     .execute(&mut **tx)
     .await

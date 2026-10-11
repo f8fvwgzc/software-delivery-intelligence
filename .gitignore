@@ -21,3 +21,4 @@ web/dist/
 # Logs and local runtime state
 *.log
 .run/
+docker-compose.override.yml

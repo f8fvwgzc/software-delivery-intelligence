@@ -9,9 +9,12 @@ use sdi_common::config;
 pub struct Settings {
     pub listen: SocketAddr,
     pub database_url: String,
-    /// Read-only GitHub token. `None` keeps the service up but every
-    /// connector call answers "token not configured".
+    /// Dev-mode GitHub token: used for every workspace while the identity
+    /// service cannot be reached (CONTRACT.md §18). `None` means a
+    /// workspace without identity-minted access answers "not configured".
     pub github_token: Option<String>,
+    /// Where workspace tokens, data controls and the audit log live.
+    pub identity_url: String,
 }
 
 impl Settings {
@@ -20,6 +23,7 @@ impl Settings {
             listen: config::listen_addr("KNOWLEDGE_LISTEN", "0.0.0.0:50051")?,
             database_url: config::database_url(),
             github_token: config::env_opt("GITHUB_TOKEN"),
+            identity_url: config::identity_url(),
         })
     }
 }

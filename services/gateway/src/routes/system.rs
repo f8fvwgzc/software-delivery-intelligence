@@ -32,7 +32,7 @@ async fn health() -> Json<Health> {
     })
 }
 
-/// gRPC health of every backing service, checked concurrently.
+/// gRPC health of every backing service (identity included), checked concurrently.
 #[utoipa::path(get, path = "/system/status", tag = "system", responses((status = 200, body = SystemStatus)))]
 async fn system_status(State(state): State<AppState>) -> Json<SystemStatus> {
     let services = futures::future::join_all(state.services.iter().map(check)).await;

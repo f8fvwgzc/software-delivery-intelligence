@@ -1,6 +1,6 @@
 //! Decision memory with provenance.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::intelligence::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -10,7 +10,7 @@ use crate::{
         CreateDecisionRequest, Decision, ListDecisionsQuery, SupersedeDecisionRequest,
     },
     error::{ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -28,7 +28,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Decision>), ErrorResponses),
 )]
 async fn list_decisions(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListDecisionsQuery>,
 ) -> ApiResult<Json<Vec<Decision>>> {
     let response = state
@@ -51,7 +51,7 @@ async fn list_decisions(
     responses((status = 201, body = Decision), ErrorResponses),
 )]
 async fn create_decision(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiJson(body): ApiJson<CreateDecisionRequest>,
 ) -> ApiResult<(StatusCode, Json<Decision>)> {
     let decision = state
@@ -80,7 +80,7 @@ async fn create_decision(
     responses((status = 200, body = Decision), ErrorResponses),
 )]
 async fn supersede_decision(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<SupersedeDecisionRequest>,
 ) -> ApiResult<Json<Decision>> {

@@ -156,6 +156,7 @@ impl Spec {
         );
         PatternUpsert {
             id: self.id.to_owned(),
+            workspace_id: None,
             name: self.name.to_owned(),
             summary: self.summary.to_owned(),
             category: self.category.to_owned(),

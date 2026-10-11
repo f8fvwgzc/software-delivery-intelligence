@@ -5,32 +5,18 @@ use tonic::Status;
 use uuid::Uuid;
 
 use super::{KnowledgeState, anyhow_status, limit, parse_id};
-use crate::{convert, db, domain::stats, scanner::delivery as sync};
+use crate::{auth::Caller, convert, db, domain::stats, scanner::delivery as sync};
 
 /// Rows considered for statistics; the response itself is cut to `limit`.
 const STATS_WINDOW: i64 = 500;
 
-/// How many runs a refresh pulls: the same setting the scan uses, so the
-/// list and the scan agree. Unreadable settings fall back to the seed value.
-async fn runs_limit(state: &KnowledgeState) -> u32 {
-    match db::settings::get(&state.pool).await {
-        Ok(settings) => {
-            state.github.set_cache_enabled(settings.cache_github);
-            settings.pipeline_runs_limit.max(1) as u32
-        }
-        Err(error) => {
-            tracing::warn!(%error, "settings unreadable, refreshing with defaults");
-            db::settings::SettingsRow::default().pipeline_runs_limit as u32
-        }
-    }
-}
-
 pub(super) async fn list_pipelines(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListPipelinesRequest,
 ) -> Result<ListPipelinesResponse, Status> {
     let project_id = parse_id(&req.project_id, "project id")?;
-    let pipelines = db::pipelines::list(&state.pool, project_id)
+    let pipelines = db::pipelines::list(&state.pool, caller.workspace_id, project_id)
         .await
         .map_err(db_status)?;
     Ok(ListPipelinesResponse {
@@ -38,26 +24,32 @@ pub(super) async fn list_pipelines(
     })
 }
 
+/// A refresh pulls as many runs as the workspace's `pipeline_runs_limit`,
+/// the same setting the scan uses, so the list and the scan agree.
 pub(super) async fn list_pipeline_runs(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListPipelineRunsRequest,
 ) -> Result<ListPipelineRunsResponse, Status> {
-    let mut project = state.project(&req.project_id).await?;
+    let ws = caller.workspace_id;
+    let mut project = state.project(caller, &req.project_id).await?;
     if req.refresh {
+        let settings = state.settings(caller).await;
+        let github = state.github(caller).await?;
         sync::sync_runs(
             &state.pool,
-            &state.github,
+            &github,
             &project,
-            runs_limit(state).await,
+            settings.pipeline_runs_limit.max(1) as u32,
         )
         .await
         .map_err(anyhow_status)?;
-        project = state.project(&req.project_id).await?;
+        project = state.project(caller, &req.project_id).await?;
     }
-    let rows = db::delivery::list_runs(&state.pool, project.id, STATS_WINDOW)
+    let rows = db::delivery::list_runs(&state.pool, ws, project.id, STATS_WINDOW)
         .await
         .map_err(db_status)?;
-    let stats = pipeline_stats(&state.pool, project.id).await?;
+    let stats = pipeline_stats(&state.pool, ws, project.id).await?;
     let runs = rows
         .into_iter()
         .take(limit(req.limit, 50, STATS_WINDOW as u32) as usize)
@@ -72,23 +64,27 @@ pub(super) async fn list_pipeline_runs(
 
 pub(super) async fn list_deployments(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListDeploymentsRequest,
 ) -> Result<ListDeploymentsResponse, Status> {
-    let project = state.project(&req.project_id).await?;
+    let ws = caller.workspace_id;
+    let project = state.project(caller, &req.project_id).await?;
     if req.refresh {
+        let settings = state.settings(caller).await;
+        let github = state.github(caller).await?;
         sync::sync_deployments(
             &state.pool,
-            &state.github,
+            &github,
             &project,
-            runs_limit(state).await,
+            settings.pipeline_runs_limit.max(1) as u32,
         )
         .await
         .map_err(anyhow_status)?;
     }
-    let rows = db::delivery::list_deployments(&state.pool, project.id, STATS_WINDOW)
+    let rows = db::delivery::list_deployments(&state.pool, ws, project.id, STATS_WINDOW)
         .await
         .map_err(db_status)?;
-    let stats = deployment_stats(&state.pool, project.id).await?;
+    let stats = deployment_stats(&state.pool, ws, project.id).await?;
     let deployments = rows
         .into_iter()
         .take(limit(req.limit, 50, STATS_WINDOW as u32) as usize)
@@ -102,9 +98,10 @@ pub(super) async fn list_deployments(
 
 pub(super) async fn pipeline_stats(
     pool: &PgPool,
+    workspace_id: Uuid,
     project_id: Uuid,
 ) -> Result<PipelineStats, Status> {
-    let rows = db::delivery::list_runs(pool, project_id, STATS_WINDOW)
+    let rows = db::delivery::list_runs(pool, workspace_id, project_id, STATS_WINDOW)
         .await
         .map_err(db_status)?;
     let statuses: Vec<&str> = rows.iter().map(|r| r.status.as_str()).collect();
@@ -124,9 +121,10 @@ pub(super) async fn pipeline_stats(
 
 pub(super) async fn deployment_stats(
     pool: &PgPool,
+    workspace_id: Uuid,
     project_id: Uuid,
 ) -> Result<DeploymentStats, Status> {
-    let rows = db::delivery::list_deployments(pool, project_id, STATS_WINDOW)
+    let rows = db::delivery::list_deployments(pool, workspace_id, project_id, STATS_WINDOW)
         .await
         .map_err(db_status)?;
     let statuses: Vec<&str> = rows.iter().map(|r| r.status.as_str()).collect();

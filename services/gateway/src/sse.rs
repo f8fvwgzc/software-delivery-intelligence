@@ -6,10 +6,7 @@
 
 use std::{convert::Infallible, future::Future, time::Duration};
 
-use axum::{
-    extract::State,
-    response::sse::{Event, KeepAlive, Sse},
-};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{
     Stream, StreamExt,
     stream::{self, BoxStream},
@@ -26,7 +23,7 @@ use crate::{
         knowledge::Scan,
     },
     error::{ApiError, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 /// Proxies in between (nginx, browsers) drop idle connections; a comment
@@ -38,6 +35,9 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// an hour is not hammered.
 const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
+/// The `data` key every service stamps its events with (CONTRACT.md §18).
+pub const WORKSPACE_KEY: &str = "workspace_id";
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -60,7 +60,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     ),
 )]
 async fn watch_execution(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<WatchEventsQuery>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
@@ -96,7 +96,7 @@ async fn watch_execution(
     ),
 )]
 async fn watch_scan(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let upstream = state
@@ -110,11 +110,12 @@ async fn watch_scan(
     ))
 }
 
-/// Every change on the platform as it happens, merged from the three
-/// services (CONTRACT.md §8, "Live events"). Each `data:` line is a
+/// Every change in the caller's workspace as it happens, merged from the
+/// three services (CONTRACT.md §8, "Live events"). Each `data:` line is a
 /// `PlatformEvent`. The stream never ends: a service that goes away is
 /// reconnected with backoff while the others keep flowing, so the web app
-/// opens it once per tab and invalidates its caches by `entity`.
+/// opens it once per tab and invalidates its caches by `entity`. Events
+/// of other workspaces (or without one) are dropped here (§18).
 #[utoipa::path(
     get,
     path = "/events/stream",
@@ -124,7 +125,7 @@ async fn watch_scan(
     ),
 )]
 async fn watch_platform_events(
-    State(state): State<AppState>,
+    state: Scoped,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let knowledge = resilient("knowledge", {
         let state = state.clone();
@@ -163,7 +164,11 @@ async fn watch_platform_events(
         }
     });
 
+    let workspace_id = state.workspace_id().to_owned();
     let merged = stream::select_all([knowledge, intelligence, execution])
+        .filter(move |event| {
+            std::future::ready(event.data.get(WORKSPACE_KEY) == Some(&workspace_id))
+        })
         .map(|event| Ok(data_event(None, &PlatformEvent::from(event))))
         .take_until(sdi_common::shutdown::cancelled());
 

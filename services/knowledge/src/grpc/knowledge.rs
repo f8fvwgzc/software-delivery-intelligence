@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use sdi_common::grpc::db_status;
+use sdi_common::{grpc::db_status, principal::Role};
 use sdi_proto::knowledge::v1::*;
 use tonic::Status;
 
 use super::{KnowledgeState, parse_id};
 use crate::{
+    auth::Caller,
     convert::{self, fact_category_to_db, fact_kind_to_db},
     db,
     domain::impact,
@@ -13,6 +14,7 @@ use crate::{
 
 pub(super) async fn list_facts(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListFactsRequest,
 ) -> Result<ListFactsResponse, Status> {
     let project_id = parse_id(&req.project_id, "project id")?;
@@ -26,6 +28,7 @@ pub(super) async fn list_facts(
         .map(fact_category_to_db);
     let facts = db::facts::list(
         &state.pool,
+        caller.workspace_id,
         project_id,
         kind.as_deref(),
         category.as_deref(),
@@ -39,12 +42,14 @@ pub(super) async fn list_facts(
 
 pub(super) async fn list_questions(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListQuestionsRequest,
 ) -> Result<ListQuestionsResponse, Status> {
     let project_id = parse_id(&req.project_id, "project id")?;
-    let questions = db::questions::list(&state.pool, project_id, req.only_open)
-        .await
-        .map_err(db_status)?;
+    let questions =
+        db::questions::list(&state.pool, caller.workspace_id, project_id, req.only_open)
+            .await
+            .map_err(db_status)?;
     Ok(ListQuestionsResponse {
         questions: questions.into_iter().map(convert::question).collect(),
     })
@@ -52,14 +57,17 @@ pub(super) async fn list_questions(
 
 pub(super) async fn answer_question(
     state: &KnowledgeState,
+    caller: &Caller,
     req: AnswerQuestionRequest,
 ) -> Result<Question, Status> {
+    caller.require(Role::Member)?;
+    let ws = caller.workspace_id;
     let id = parse_id(&req.id, "question id")?;
     let answer = req.answer.trim();
     if answer.is_empty() {
         return Err(Status::invalid_argument("answer is required"));
     }
-    let question = db::questions::get(&state.pool, id)
+    let question = db::questions::get(&state.pool, ws, id)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => Status::not_found("question not found"),
@@ -70,26 +78,33 @@ pub(super) async fn answer_question(
             "answer must be one of the offered options",
         ));
     }
-    let answered = db::questions::answer(&state.pool, id, answer)
+    let answered = db::questions::answer(&state.pool, ws, id, answer)
         .await
         .map_err(db_status)?;
     // `open_questions` on the project changed; list views refresh on this.
-    if let Ok(project) = state.project(&answered.project_id.to_string()).await {
-        state.events.project(project.id, "updated", &project.status);
+    if let Ok(project) = state
+        .project(caller, &answered.project_id.to_string())
+        .await
+    {
+        state
+            .events
+            .project(ws, project.id, "updated", &project.status);
     }
     Ok(convert::question(answered))
 }
 
 pub(super) async fn get_understanding(
     state: &KnowledgeState,
+    caller: &Caller,
     req: GetUnderstandingRequest,
 ) -> Result<Understanding, Status> {
-    let project = state.project(&req.project_id).await?;
-    let maturity = db::maturity::get(&state.pool, project.id)
+    let ws = caller.workspace_id;
+    let project = state.project(caller, &req.project_id).await?;
+    let maturity = db::maturity::get(&state.pool, ws, project.id)
         .await
         .map_err(db_status)?
         .map(convert::maturity);
-    db::understanding::get(&state.pool, project.id)
+    db::understanding::get(&state.pool, ws, project.id)
         .await
         .map_err(db_status)?
         .map(|row| convert::understanding(row, maturity))
@@ -99,10 +114,11 @@ pub(super) async fn get_understanding(
 /// The report the last successful scan stored; nothing is computed on read.
 pub(super) async fn get_maturity(
     state: &KnowledgeState,
+    caller: &Caller,
     req: GetMaturityRequest,
 ) -> Result<MaturityScore, Status> {
-    let project = state.project(&req.project_id).await?;
-    db::maturity::get(&state.pool, project.id)
+    let project = state.project(caller, &req.project_id).await?;
+    db::maturity::get(&state.pool, caller.workspace_id, project.id)
         .await
         .map_err(db_status)?
         .map(convert::maturity)
@@ -111,13 +127,15 @@ pub(super) async fn get_maturity(
 
 pub(super) async fn get_graph(
     state: &KnowledgeState,
+    caller: &Caller,
     req: GetGraphRequest,
 ) -> Result<Graph, Status> {
+    let ws = caller.workspace_id;
     let project_id = parse_id(&req.project_id, "project id")?;
-    let nodes = db::graph::nodes(&state.pool, project_id)
+    let nodes = db::graph::nodes(&state.pool, ws, project_id)
         .await
         .map_err(db_status)?;
-    let edges = db::graph::edges(&state.pool, project_id, req.include_history)
+    let edges = db::graph::edges(&state.pool, ws, project_id, req.include_history)
         .await
         .map_err(db_status)?;
     Ok(Graph {
@@ -128,13 +146,15 @@ pub(super) async fn get_graph(
 
 pub(super) async fn analyze_impact(
     state: &KnowledgeState,
+    caller: &Caller,
     req: AnalyzeImpactRequest,
 ) -> Result<ImpactAnalysis, Status> {
+    let ws = caller.workspace_id;
     let project_id = parse_id(&req.project_id, "project id")?;
     if req.node_id.trim().is_empty() && req.path.trim().is_empty() {
         return Err(Status::invalid_argument("node_id or path is required"));
     }
-    let nodes = db::graph::nodes(&state.pool, project_id)
+    let nodes = db::graph::nodes(&state.pool, ws, project_id)
         .await
         .map_err(db_status)?;
     let by_id: HashMap<String, _> = nodes.into_iter().map(|n| (n.id.to_string(), n)).collect();
@@ -155,7 +175,7 @@ pub(super) async fn analyze_impact(
             .ok_or_else(|| Status::not_found("no graph node covers that path"))?
     };
 
-    let edges: Vec<impact::Edge> = db::graph::edges(&state.pool, project_id, false)
+    let edges: Vec<impact::Edge> = db::graph::edges(&state.pool, ws, project_id, false)
         .await
         .map_err(db_status)?
         .into_iter()
@@ -197,16 +217,18 @@ pub(super) async fn analyze_impact(
 
 pub(super) async fn list_dependencies(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListDependenciesRequest,
 ) -> Result<ListDependenciesResponse, Status> {
+    let ws = caller.workspace_id;
     let project_id = parse_id(&req.project_id, "project id")?;
-    let dependencies = db::dependencies::list(&state.pool, project_id)
+    let dependencies = db::dependencies::list(&state.pool, ws, project_id)
         .await
         .map_err(db_status)?;
-    let by_ecosystem = db::dependencies::by_ecosystem(&state.pool, project_id)
+    let by_ecosystem = db::dependencies::by_ecosystem(&state.pool, ws, project_id)
         .await
         .map_err(db_status)?;
-    let dependabot = db::dependencies::get_dependabot(&state.pool, project_id)
+    let dependabot = db::dependencies::get_dependabot(&state.pool, ws, project_id)
         .await
         .map_err(db_status)?;
     Ok(ListDependenciesResponse {

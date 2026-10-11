@@ -1,6 +1,6 @@
 //! Policies per action type and the scoped identities actions run as.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::execution::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -8,7 +8,7 @@ use super::map_all;
 use crate::{
     dto::execution::{GrantPermissionRequest, Identity, Policy, UpdatePolicyRequest},
     error::{ApiError, ApiJson, ApiPath, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -26,7 +26,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     tag = "policies",
     responses((status = 200, body = Vec<Policy>), ErrorResponses),
 )]
-async fn list_policies(State(state): State<AppState>) -> ApiResult<Json<Vec<Policy>>> {
+async fn list_policies(state: Scoped) -> ApiResult<Json<Vec<Policy>>> {
     let response = state
         .execution()
         .list_policies(proto::ListPoliciesRequest {})
@@ -45,7 +45,7 @@ async fn list_policies(State(state): State<AppState>) -> ApiResult<Json<Vec<Poli
     responses((status = 200, body = Policy), ErrorResponses),
 )]
 async fn update_policy(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(action_type): ApiPath<String>,
     ApiJson(body): ApiJson<UpdatePolicyRequest>,
 ) -> ApiResult<Json<Policy>> {
@@ -67,7 +67,7 @@ async fn update_policy(
     tag = "policies",
     responses((status = 200, body = Vec<Identity>), ErrorResponses),
 )]
-async fn list_identities(State(state): State<AppState>) -> ApiResult<Json<Vec<Identity>>> {
+async fn list_identities(state: Scoped) -> ApiResult<Json<Vec<Identity>>> {
     let response = state
         .execution()
         .list_identities(proto::ListIdentitiesRequest {})
@@ -86,7 +86,7 @@ async fn list_identities(State(state): State<AppState>) -> ApiResult<Json<Vec<Id
     responses((status = 200, body = Identity), ErrorResponses),
 )]
 async fn grant_permission(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<GrantPermissionRequest>,
 ) -> ApiResult<Json<Identity>> {

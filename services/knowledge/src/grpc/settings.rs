@@ -1,9 +1,9 @@
-use sdi_common::grpc::db_status;
+use sdi_common::{grpc::db_status, principal::Role};
 use sdi_proto::knowledge::v1::*;
 use tonic::Status;
 
 use super::KnowledgeState;
-use crate::{convert, db::settings::SettingsRow};
+use crate::{auth::Caller, convert, db::settings::SettingsRow};
 
 /// Bounds keep a typo from turning the scanner into a GitHub quota burner
 /// (or into a no-op). They are generous: the defaults sit well inside.
@@ -12,11 +12,13 @@ const MAX_FILE_BYTES: u32 = 5_000_000;
 const MAX_CONCURRENCY: u32 = 32;
 const MAX_RUNS_LIMIT: u32 = 100;
 
+/// The workspace's settings, seeded with the defaults on first read.
 pub(super) async fn get_settings(
     state: &KnowledgeState,
+    caller: &Caller,
     _req: GetSettingsRequest,
 ) -> Result<KnowledgeSettings, Status> {
-    let row = crate::db::settings::get(&state.pool)
+    let row = crate::db::settings::get(&state.pool, caller.workspace_id)
         .await
         .map_err(db_status)?;
     Ok(convert::settings(row))
@@ -28,17 +30,28 @@ pub(super) async fn get_settings(
 /// scan limits apply to the next scan, which reads the row when it starts.
 pub(super) async fn update_settings(
     state: &KnowledgeState,
+    caller: &Caller,
     req: UpdateSettingsRequest,
 ) -> Result<KnowledgeSettings, Status> {
+    caller.require(Role::Admin)?;
     let settings = req
         .settings
         .ok_or_else(|| Status::invalid_argument("settings are required"))?;
     let row = validate(&settings)?;
-    let row = crate::db::settings::update(&state.pool, &row)
+    let row = crate::db::settings::update(&state.pool, caller.workspace_id, &row)
         .await
         .map_err(db_status)?;
-    state.github.set_cache_enabled(row.cache_github);
-    tracing::info!(?row, "settings updated");
+    if !row.cache_github {
+        state.github.forget_cache(caller.workspace_id);
+    }
+    state.identity.audit(
+        caller,
+        "settings.update",
+        "settings",
+        "knowledge",
+        &format!("{row:?}"),
+    );
+    tracing::info!(?row, workspace = %caller.workspace_id, "settings updated");
     Ok(convert::settings(row))
 }
 

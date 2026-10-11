@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 
-use sdi_common::{embed::embed, grpc::db_status};
+use sdi_common::{embed::embed, grpc::db_status, principal::Role};
 use sdi_proto::knowledge::v1::*;
 use tonic::Status;
 
 use super::{KnowledgeState, limit, opt_id};
 use crate::{
+    auth::Caller,
     convert::{self, knowledge_kind_from_db, knowledge_kind_to_db},
     db::{self, chunks::NewChunk},
     domain::similarity,
 };
 
+/// Semantic search over the workspace's chunks only.
 pub(super) async fn search_knowledge(
     state: &KnowledgeState,
+    caller: &Caller,
     req: SearchKnowledgeRequest,
 ) -> Result<SearchKnowledgeResponse, Status> {
     let query = req.query.trim();
@@ -29,6 +32,7 @@ pub(super) async fn search_knowledge(
         .collect();
     let hits = db::chunks::search(
         &state.pool,
+        caller.workspace_id,
         &embed(query),
         project_id,
         &kinds,
@@ -54,10 +58,14 @@ pub(super) async fn search_knowledge(
     })
 }
 
+/// Other services store text as the workspace's semantic memory; the
+/// workspace's `minimal_chunks` control applies here too.
 pub(super) async fn index_knowledge(
     state: &KnowledgeState,
+    caller: &Caller,
     req: IndexKnowledgeRequest,
 ) -> Result<IndexKnowledgeResponse, Status> {
+    caller.require(Role::Member)?;
     let kind = match KnowledgeKind::try_from(req.kind) {
         Ok(KnowledgeKind::Unspecified) | Err(_) => {
             return Err(Status::invalid_argument("kind is required"));
@@ -69,41 +77,46 @@ pub(super) async fn index_knowledge(
     }
     let project_id = opt_id(&req.project_id, "project id")?;
     if let Some(id) = project_id {
-        state.project(&id.to_string()).await?;
+        state.project(caller, &id.to_string()).await?;
     }
+    let controls = state.controls.get(caller).await;
+    let content = controls.chunk_content(req.content);
     let chunk = NewChunk {
         kind: knowledge_kind_to_db(kind),
         project_id,
         ref_id: req.ref_id,
         title: req.title,
         path: req.path,
-        embedding: embed(&req.content),
-        content: req.content,
+        embedding: embed(&content),
+        content,
     };
-    let id = db::chunks::insert(&state.pool, &chunk)
+    let id = db::chunks::insert(&state.pool, caller.workspace_id, &chunk)
         .await
         .map_err(db_status)?;
     Ok(IndexKnowledgeResponse { id: id.to_string() })
 }
 
+/// Similar projects within the workspace.
 pub(super) async fn list_similar_projects(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListSimilarProjectsRequest,
 ) -> Result<ListSimilarProjectsResponse, Status> {
-    let project = state.project(&req.project_id).await?;
-    let own = db::profiles::get(&state.pool, project.id)
+    let ws = caller.workspace_id;
+    let project = state.project(caller, &req.project_id).await?;
+    let own = db::profiles::get(&state.pool, ws, project.id)
         .await
         .map_err(db_status)?
         .ok_or_else(|| Status::failed_precondition("project has not been scanned yet"))?
         .to_profile();
 
-    let projects: HashMap<_, _> = db::projects::list(&state.pool)
+    let projects: HashMap<_, _> = db::projects::list(&state.pool, ws)
         .await
         .map_err(db_status)?
         .into_iter()
         .map(|p| (p.id, p))
         .collect();
-    let mut similar: Vec<SimilarProject> = db::profiles::list(&state.pool)
+    let mut similar: Vec<SimilarProject> = db::profiles::list(&state.pool, ws)
         .await
         .map_err(db_status)?
         .into_iter()

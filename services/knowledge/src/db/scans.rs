@@ -15,6 +15,7 @@ pub struct Stage {
 #[derive(Debug, Clone, FromRow)]
 pub struct ScanRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub status: String,
     pub commit_sha: String,
@@ -32,21 +33,24 @@ pub struct ScanRow {
 
 pub async fn insert(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     stages: &[Stage],
 ) -> sqlx::Result<ScanRow> {
     sqlx::query_as::<_, ScanRow>(
-        "INSERT INTO scans (id, project_id, status, stages) VALUES ($1, $2, 'queued', $3) RETURNING *",
+        "INSERT INTO scans (id, workspace_id, project_id, status, stages) VALUES ($1, $2, $3, 'queued', $4) RETURNING *",
     )
     .bind(Uuid::now_v7())
+    .bind(workspace_id)
     .bind(project_id)
     .bind(Json(stages))
     .fetch_one(exec)
     .await
 }
 
-pub async fn get(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<ScanRow> {
-    sqlx::query_as::<_, ScanRow>("SELECT * FROM scans WHERE id = $1")
+pub async fn get(exec: impl PgExecutor<'_>, workspace_id: Uuid, id: Uuid) -> sqlx::Result<ScanRow> {
+    sqlx::query_as::<_, ScanRow>("SELECT * FROM scans WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .fetch_one(exec)
         .await
@@ -54,37 +58,55 @@ pub async fn get(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<ScanRow> {
 
 pub async fn list(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     limit: i64,
 ) -> sqlx::Result<Vec<ScanRow>> {
     sqlx::query_as::<_, ScanRow>(
-        "SELECT * FROM scans WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "SELECT * FROM scans WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT $3",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(limit)
     .fetch_all(exec)
     .await
 }
 
-pub async fn active_exists(exec: impl PgExecutor<'_>, project_id: Uuid) -> sqlx::Result<bool> {
+pub async fn active_exists(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+) -> sqlx::Result<bool> {
     sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM scans WHERE project_id = $1 AND status IN ('queued', 'running'))",
+        "SELECT EXISTS (SELECT 1 FROM scans WHERE workspace_id = $1 AND project_id = $2 AND status IN ('queued', 'running'))",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_one(exec)
     .await
 }
 
-pub async fn set_running(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE scans SET status = 'running', started_at = now() WHERE id = $1")
+pub async fn set_running(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE scans SET status = 'running', started_at = now() WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .execute(exec)
         .await?;
     Ok(())
 }
 
-pub async fn set_commit(exec: impl PgExecutor<'_>, id: Uuid, commit_sha: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE scans SET commit_sha = $2 WHERE id = $1")
+pub async fn set_commit(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    id: Uuid,
+    commit_sha: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE scans SET commit_sha = $3 WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .bind(commit_sha)
         .execute(exec)
@@ -92,8 +114,14 @@ pub async fn set_commit(exec: impl PgExecutor<'_>, id: Uuid, commit_sha: &str) -
     Ok(())
 }
 
-pub async fn set_stages(exec: impl PgExecutor<'_>, id: Uuid, stages: &[Stage]) -> sqlx::Result<()> {
-    sqlx::query("UPDATE scans SET stages = $2 WHERE id = $1")
+pub async fn set_stages(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    id: Uuid,
+    stages: &[Stage],
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE scans SET stages = $3 WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .bind(Json(stages))
         .execute(exec)
@@ -103,11 +131,13 @@ pub async fn set_stages(exec: impl PgExecutor<'_>, id: Uuid, stages: &[Stage]) -
 
 pub async fn set_files(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     id: Uuid,
     total: i32,
     analyzed: i32,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE scans SET files_total = $2, files_analyzed = $3 WHERE id = $1")
+    sqlx::query("UPDATE scans SET files_total = $3, files_analyzed = $4 WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .bind(total)
         .bind(analyzed)
@@ -118,14 +148,16 @@ pub async fn set_files(
 
 pub async fn set_counts(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     id: Uuid,
     facts: i32,
     nodes: i32,
     edges: i32,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE scans SET facts_found = $2, nodes_found = $3, edges_found = $4 WHERE id = $1",
+        "UPDATE scans SET facts_found = $3, nodes_found = $4, edges_found = $5 WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(facts)
     .bind(nodes)
@@ -137,12 +169,14 @@ pub async fn set_counts(
 
 pub async fn set_succeeded(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     id: Uuid,
     stages: &[Stage],
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE scans SET status = 'succeeded', finished_at = now(), stages = $2 WHERE id = $1",
+        "UPDATE scans SET status = 'succeeded', finished_at = now(), stages = $3 WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(Json(stages))
     .execute(exec)
@@ -152,21 +186,26 @@ pub async fn set_succeeded(
 
 pub async fn set_failed(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     id: Uuid,
     error: &str,
     stages: &[Stage],
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE scans SET status = 'failed', finished_at = now(), error = $2, stages = $3 WHERE id = $1")
-        .bind(id)
-        .bind(error)
-        .bind(Json(stages))
-        .execute(exec)
-        .await?;
+    sqlx::query(
+        "UPDATE scans SET status = 'failed', finished_at = now(), error = $3, stages = $4 WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(error)
+    .bind(Json(stages))
+    .execute(exec)
+    .await?;
     Ok(())
 }
 
-/// Fails every queued or running scan; called once at startup because a scan
-/// only lives inside the process that started it.
+/// Fails every queued or running scan of every workspace; called once at
+/// startup because a scan only lives inside the process that started it.
+/// Startup housekeeping is the one place that legitimately spans tenants.
 pub async fn fail_interrupted(exec: impl PgExecutor<'_>) -> sqlx::Result<u64> {
     let result = sqlx::query(
         "UPDATE scans SET status = 'failed', finished_at = now(), error = 'interrupted by service restart'

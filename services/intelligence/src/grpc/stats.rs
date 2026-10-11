@@ -2,14 +2,19 @@ use sdi_common::grpc::db_status;
 use sdi_proto::intelligence::v1::IntelligenceStats;
 use tonic::Status;
 
-use super::IntelligenceGrpc;
+use super::{Caller, IntelligenceGrpc};
 
 fn count(value: i64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-pub(super) async fn get(svc: &IntelligenceGrpc) -> Result<IntelligenceStats, Status> {
-    let row = crate::db::stats(&svc.pool).await.map_err(db_status)?;
+pub(super) async fn get(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+) -> Result<IntelligenceStats, Status> {
+    let row = crate::db::stats(&svc.pool, caller.workspace)
+        .await
+        .map_err(db_status)?;
     Ok(IntelligenceStats {
         proposals: count(row.proposals),
         proposals_open: count(row.proposals_open),

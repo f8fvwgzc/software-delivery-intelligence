@@ -1,4 +1,5 @@
 use sqlx::{FromRow, PgExecutor};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct CountsRow {
@@ -11,16 +12,19 @@ pub struct CountsRow {
     pub open_questions: i64,
 }
 
-pub async fn counts(exec: impl PgExecutor<'_>) -> sqlx::Result<CountsRow> {
+/// Counts for one workspace. `patterns` is the catalog plus the
+/// workspace's learned patterns, which is what `ListPatterns` returns.
+pub async fn counts(exec: impl PgExecutor<'_>, workspace_id: Uuid) -> sqlx::Result<CountsRow> {
     sqlx::query_as::<_, CountsRow>(
-        "SELECT (SELECT count(*) FROM projects) AS projects,
-                (SELECT count(*) FROM facts) AS facts,
-                (SELECT count(*) FROM graph_nodes) AS nodes,
-                (SELECT count(*) FROM graph_edges WHERE valid_to IS NULL) AS edges,
-                (SELECT count(*) FROM patterns WHERE status = 'active') AS patterns,
-                (SELECT count(*) FROM chunks) AS chunks,
-                (SELECT count(*) FROM questions WHERE answered_at IS NULL) AS open_questions",
+        "SELECT (SELECT count(*) FROM projects WHERE workspace_id = $1) AS projects,
+                (SELECT count(*) FROM facts WHERE workspace_id = $1) AS facts,
+                (SELECT count(*) FROM graph_nodes WHERE workspace_id = $1) AS nodes,
+                (SELECT count(*) FROM graph_edges WHERE workspace_id = $1 AND valid_to IS NULL) AS edges,
+                (SELECT count(*) FROM patterns WHERE status = 'active' AND (workspace_id IS NULL OR workspace_id = $1)) AS patterns,
+                (SELECT count(*) FROM chunks WHERE workspace_id = $1) AS chunks,
+                (SELECT count(*) FROM questions WHERE workspace_id = $1 AND answered_at IS NULL) AS open_questions",
     )
+    .bind(workspace_id)
     .fetch_one(exec)
     .await
 }

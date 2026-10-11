@@ -10,6 +10,7 @@ pub mod common;
 pub mod diagrams;
 pub mod execution;
 pub mod github;
+pub mod identity;
 pub mod intelligence;
 pub mod knowledge;
 pub mod settings;

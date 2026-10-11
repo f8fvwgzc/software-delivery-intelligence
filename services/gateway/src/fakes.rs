@@ -1,17 +1,29 @@
-//! Real tonic servers in-process standing in for the three services, so the
-//! SSE bridges, the gRPC status mapping, the settings composition and the
-//! health check are exercised against actual streams and calls instead of a
-//! closed port. Each fake implements the handful of RPCs a gateway test
-//! needs for real and answers `UNIMPLEMENTED` to the rest.
+//! Real tonic servers in-process standing in for the four services, so the
+//! auth middleware, the SSE bridges, the gRPC status mapping, the settings
+//! composition and the health check are exercised against actual streams
+//! and calls instead of a closed port. Each fake implements the handful of
+//! RPCs a gateway test needs for real and answers `UNIMPLEMENTED` to the rest.
 
-use std::{net::SocketAddr, pin::Pin, time::Duration};
+use std::{
+    net::SocketAddr,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures::{Stream, StreamExt, stream};
+use sdi_common::principal::Principal;
 use sdi_proto::common::v1 as common;
 use tonic::{Request, Response, Status, transport::server::Router};
 use tonic_health::ServingStatus;
 
 pub type ServerStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+
+/// The workspace every fake stamps on its events and expects in metadata.
+pub const WORKSPACE: &str = "w1";
 
 /// `#[async_trait]` cannot see into a nested macro, so the macro emits the
 /// whole impl: the real methods verbatim, the rest unimplemented.
@@ -59,7 +71,27 @@ fn at(seconds: i64) -> Option<prost_types::Timestamp> {
     Some(prost_types::Timestamp { seconds, nanos: 0 })
 }
 
+/// The principal the gateway forwarded, or `UNAUTHENTICATED`: every fake
+/// that serves data checks it, which is how the tests prove the metadata
+/// travels.
+pub fn principal<T>(request: &Request<T>) -> Result<Principal, Status> {
+    let principal = Principal::from_request(request)?;
+    if principal.workspace_id != WORKSPACE {
+        return Err(Status::permission_denied("wrong workspace"));
+    }
+    Ok(principal)
+}
+
 pub fn platform_event(entity: &str, entity_id: &str, action: &str) -> common::PlatformEvent {
+    platform_event_in(WORKSPACE, entity, entity_id, action)
+}
+
+pub fn platform_event_in(
+    workspace: &str,
+    entity: &str,
+    entity_id: &str,
+    action: &str,
+) -> common::PlatformEvent {
     common::PlatformEvent {
         entity: entity.into(),
         entity_id: entity_id.into(),
@@ -67,7 +99,7 @@ pub fn platform_event(entity: &str, entity_id: &str, action: &str) -> common::Pl
         action: action.into(),
         status: String::new(),
         at: at(1_700_000_000),
-        data: Default::default(),
+        data: [("workspace_id".to_owned(), workspace.to_owned())].into(),
     }
 }
 
@@ -108,11 +140,13 @@ pub mod execution {
         ExecutionService for Fake {
             type WatchExecutionStream = ServerStream<proto::ExecutionEvent>;
             type WatchEventsStream = ServerStream<common::PlatformEvent>;
+            type ExportWorkspaceDataStream = ServerStream<proto::WorkspaceDataRecord>;
 
             async fn watch_execution(
                 &self,
                 request: Request<proto::WatchExecutionRequest>,
             ) -> Result<Response<Self::WatchExecutionStream>, Status> {
+                principal(&request)?;
                 watch(request.into_inner()).map(Response::new)
             }
 
@@ -133,6 +167,7 @@ pub mod execution {
                 &self,
                 request: Request<proto::CreateExecutionRequest>,
             ) -> Result<Response<proto::Execution>, Status> {
+                let caller = principal(&request)?;
                 let request = request.into_inner();
                 Ok(Response::new(proto::Execution {
                     id: "e-new".into(),
@@ -141,8 +176,29 @@ pub mod execution {
                     adapter: request.adapter,
                     status: proto::ExecutionStatus::Planning as i32,
                     outputs: request.artifacts,
+                    // The caller's role, so a test can see what was forwarded.
+                    last_checkpoint: caller.role.as_str().into(),
                     ..Default::default()
                 }))
+            }
+
+            async fn delete_workspace_data(
+                &self,
+                request: Request<proto::DeleteWorkspaceDataRequest>,
+            ) -> Result<Response<proto::DeleteWorkspaceDataResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::DeleteWorkspaceDataResponse {
+                    deleted: [("execution".to_owned(), 3u64)].into(),
+                    cancelled: 1,
+                }))
+            }
+
+            /// Not implemented here on purpose: the export must still finish.
+            async fn export_workspace_data(
+                &self,
+                _: Request<proto::ExportWorkspaceDataRequest>,
+            ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
+                Err(Status::unimplemented("export_workspace_data"))
             }
         }
         unimplemented {
@@ -201,11 +257,13 @@ pub mod knowledge {
         KnowledgeService for Fake {
             type WatchScanStream = ServerStream<proto::Scan>;
             type WatchEventsStream = ServerStream<common::PlatformEvent>;
+            type ExportWorkspaceDataStream = ServerStream<proto::ExportRecord>;
 
             async fn watch_scan(
                 &self,
                 request: Request<proto::WatchScanRequest>,
             ) -> Result<Response<Self::WatchScanStream>, Status> {
+                principal(&request)?;
                 if request.into_inner().id == "missing" {
                     return Err(Status::not_found("no such scan"));
                 }
@@ -216,22 +274,52 @@ pub mod knowledge {
                 Ok(Response::new(stream::iter(scans).boxed()))
             }
 
-            /// Two events, then the stream ends: the "service dropped" case.
+            /// Two events of the workspace, one of another workspace (which
+            /// the gateway must drop), then the stream ends: the "service
+            /// dropped" case.
             async fn watch_events(
                 &self,
                 _: Request<common::WatchEventsRequest>,
             ) -> Result<Response<Self::WatchEventsStream>, Status> {
                 let events = vec![
                     Ok(platform_event("scan", "s1", "progress")),
+                    Ok(platform_event_in("w2", "project", "other", "updated")),
                     Ok(platform_event("project", "p1", "updated")),
                 ];
                 Ok(Response::new(stream::iter(events).boxed()))
+            }
+
+            async fn list_projects(
+                &self,
+                request: Request<proto::ListProjectsRequest>,
+            ) -> Result<Response<proto::ListProjectsResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::ListProjectsResponse {
+                    projects: vec![proto::Project {
+                        id: "p1".into(),
+                        name: "repo".into(),
+                        repo_full_name: "acme/repo".into(),
+                        ..Default::default()
+                    }],
+                }))
+            }
+
+            async fn start_scan(
+                &self,
+                request: Request<proto::StartScanRequest>,
+            ) -> Result<Response<proto::Scan>, Status> {
+                let caller = principal(&request)?;
+                if caller.user_id != sdi_common::principal::SYSTEM_USER {
+                    return Err(Status::permission_denied("fake only scans for system"));
+                }
+                Ok(Response::new(scan(proto::ScanStatus::Queued)))
             }
 
             async fn get_maturity(
                 &self,
                 request: Request<proto::GetMaturityRequest>,
             ) -> Result<Response<proto::MaturityScore>, Status> {
+                principal(&request)?;
                 let project_id = request.into_inner().project_id;
                 if project_id == "missing" {
                     return Err(Status::not_found("no such project"));
@@ -256,6 +344,7 @@ pub mod knowledge {
                 &self,
                 request: Request<proto::GetProjectContextRequest>,
             ) -> Result<Response<proto::ProjectContext>, Status> {
+                principal(&request)?;
                 let project_id = request.into_inner().project_id;
                 let config = (project_id == "configured").then(|| proto::ProjectConfig {
                     present: true,
@@ -276,6 +365,7 @@ pub mod knowledge {
                 &self,
                 request: Request<proto::GetRepoTreeRequest>,
             ) -> Result<Response<proto::RepoTree>, Status> {
+                principal(&request)?;
                 let project_id = request.into_inner().project_id;
                 match project_id.as_str() {
                     "missing" => return Err(Status::not_found("no such project")),
@@ -309,6 +399,7 @@ pub mod knowledge {
                 &self,
                 request: Request<proto::GetRepoFileRequest>,
             ) -> Result<Response<proto::RepoFile>, Status> {
+                principal(&request)?;
                 let request = request.into_inner();
                 if request.path.starts_with(".env") {
                     return Err(Status::permission_denied("secret-looking file"));
@@ -334,8 +425,9 @@ pub mod knowledge {
 
             async fn get_settings(
                 &self,
-                _: Request<proto::GetSettingsRequest>,
+                request: Request<proto::GetSettingsRequest>,
             ) -> Result<Response<proto::KnowledgeSettings>, Status> {
+                principal(&request)?;
                 Ok(Response::new(settings()))
             }
 
@@ -343,22 +435,56 @@ pub mod knowledge {
                 &self,
                 request: Request<proto::UpdateSettingsRequest>,
             ) -> Result<Response<proto::KnowledgeSettings>, Status> {
+                principal(&request)?;
                 request
                     .into_inner()
                     .settings
                     .map(Response::new)
                     .ok_or_else(|| Status::invalid_argument("settings missing"))
             }
+
+            async fn purge_code_cache(
+                &self,
+                request: Request<proto::PurgeCodeCacheRequest>,
+            ) -> Result<Response<proto::PurgeCodeCacheResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::PurgeCodeCacheResponse {
+                    files_deleted: 12,
+                    trees_deleted: 1,
+                }))
+            }
+
+            async fn delete_workspace_data(
+                &self,
+                request: Request<proto::DeleteWorkspaceDataRequest>,
+            ) -> Result<Response<proto::DeleteWorkspaceDataResponse>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Owner)?;
+                Ok(Response::new(proto::DeleteWorkspaceDataResponse {
+                    deleted: [("projects".to_owned(), 1u64), ("facts".to_owned(), 40u64)].into(),
+                }))
+            }
+
+            async fn export_workspace_data(
+                &self,
+                request: Request<proto::ExportWorkspaceDataRequest>,
+            ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
+                principal(&request)?;
+                let records = vec![
+                    Ok(proto::ExportRecord { entity: "projects".into(), record: r#"{"id":"p1"}"#.into() }),
+                    Ok(proto::ExportRecord { entity: "facts".into(), record: r#"{"id":"f1"}"#.into() }),
+                    Ok(proto::ExportRecord { entity: "facts".into(), record: r#"{"id":"f2"}"#.into() }),
+                ];
+                Ok(Response::new(stream::iter(records).boxed()))
+            }
         }
         unimplemented {
             get_github_account: proto::GetGithubAccountRequest => proto::GithubAccount,
             list_github_repos: proto::ListGithubReposRequest => proto::ListGithubReposResponse,
             connect_project: proto::ConnectProjectRequest => proto::Project,
-            list_projects: proto::ListProjectsRequest => proto::ListProjectsResponse,
             get_project: proto::GetProjectRequest => proto::Project,
             delete_project: proto::DeleteProjectRequest => proto::DeleteProjectResponse,
             set_project_mode: proto::SetProjectModeRequest => proto::Project,
-            start_scan: proto::StartScanRequest => proto::Scan,
             get_scan: proto::GetScanRequest => proto::Scan,
             list_scans: proto::ListScansRequest => proto::ListScansResponse,
             list_facts: proto::ListFactsRequest => proto::ListFactsResponse,
@@ -460,6 +586,7 @@ pub mod intelligence {
     fake_service! {
         IntelligenceService for Fake {
             type WatchEventsStream = ServerStream<common::PlatformEvent>;
+            type ExportWorkspaceDataStream = ServerStream<proto::WorkspaceDataRecord>;
 
             /// One event, then open for ever.
             async fn watch_events(
@@ -474,6 +601,7 @@ pub mod intelligence {
                 &self,
                 request: Request<proto::GetProposalRequest>,
             ) -> Result<Response<proto::Proposal>, Status> {
+                principal(&request)?;
                 let id = request.into_inner().id;
                 if id == "missing" {
                     return Err(Status::not_found("no such proposal"));
@@ -487,6 +615,7 @@ pub mod intelligence {
                 &self,
                 request: Request<proto::AcceptProposalRequest>,
             ) -> Result<Response<proto::Proposal>, Status> {
+                principal(&request)?;
                 let request = request.into_inner();
                 let mut accepted = proposal(request.id);
                 accepted.status = proto::ProposalStatus::Accepted as i32;
@@ -505,8 +634,9 @@ pub mod intelligence {
 
             async fn get_settings(
                 &self,
-                _: Request<proto::GetSettingsRequest>,
+                request: Request<proto::GetSettingsRequest>,
             ) -> Result<Response<proto::IntelligenceSettings>, Status> {
+                principal(&request)?;
                 Ok(Response::new(settings()))
             }
 
@@ -514,11 +644,34 @@ pub mod intelligence {
                 &self,
                 request: Request<proto::UpdateSettingsRequest>,
             ) -> Result<Response<proto::IntelligenceSettings>, Status> {
+                principal(&request)?;
                 request
                     .into_inner()
                     .settings
                     .map(Response::new)
                     .ok_or_else(|| Status::invalid_argument("settings missing"))
+            }
+
+            async fn delete_workspace_data(
+                &self,
+                request: Request<proto::DeleteWorkspaceDataRequest>,
+            ) -> Result<Response<proto::DeleteWorkspaceDataResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::DeleteWorkspaceDataResponse {
+                    deleted: [("proposals".to_owned(), 2u64)].into(),
+                }))
+            }
+
+            async fn export_workspace_data(
+                &self,
+                request: Request<proto::ExportWorkspaceDataRequest>,
+            ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
+                principal(&request)?;
+                let records = vec![Ok(proto::WorkspaceDataRecord {
+                    entity: "proposals".into(),
+                    json: r#"{"id":"pr1","title":"Deploy"}"#.into(),
+                })];
+                Ok(Response::new(stream::iter(records).boxed()))
             }
         }
         unimplemented {
@@ -544,5 +697,293 @@ pub mod intelligence {
 
     pub async fn serve() -> SocketAddr {
         super::serve(|router| router.add_service(IntelligenceServiceServer::new(Fake))).await
+    }
+}
+
+pub mod identity {
+    use super::*;
+    use sdi_proto::identity::v1::{
+        self as proto,
+        identity_service_server::{IdentityService, IdentityServiceServer},
+    };
+
+    /// Session tokens the fake knows, and the role each carries in `w1`.
+    pub const TOKENS: [(&str, proto::Role); 5] = [
+        ("t-owner", proto::Role::Owner),
+        ("t-admin", proto::Role::Admin),
+        ("t-approver", proto::Role::Approver),
+        ("t-member", proto::Role::Member),
+        ("t-viewer", proto::Role::Viewer),
+    ];
+
+    /// Counts `RecordAudit` calls and remembers the last action.
+    #[derive(Default)]
+    pub struct Recorder {
+        pub audits: AtomicUsize,
+        pub last_action: std::sync::Mutex<String>,
+    }
+
+    pub struct Fake {
+        pub recorder: Arc<Recorder>,
+    }
+
+    pub fn user() -> proto::User {
+        proto::User {
+            id: "u1".into(),
+            github_id: 1,
+            login: "octo".into(),
+            name: "Octo Cat".into(),
+            avatar_url: "https://avatars/octo".into(),
+            email: "octo@example.com".into(),
+            github_host: "github.com".into(),
+            created_at: at(1_700_000_000),
+        }
+    }
+
+    pub fn workspace(role: proto::Role) -> proto::Workspace {
+        proto::Workspace {
+            id: WORKSPACE.into(),
+            kind: proto::WorkspaceKind::Organization as i32,
+            slug: "acme".into(),
+            name: "Acme".into(),
+            avatar_url: "https://avatars/acme".into(),
+            github_host: "github.com".into(),
+            installation_id: 777,
+            repository_selection: "all".into(),
+            my_role: role as i32,
+            member_count: 2,
+            project_count: 0,
+            created_at: at(1_700_000_000),
+        }
+    }
+
+    fn member(role: proto::Role) -> proto::Member {
+        proto::Member {
+            user: Some(user()),
+            github_role: "member".into(),
+            teams: vec!["sdi-admins".into()],
+            derived_role: proto::Role::Admin as i32,
+            override_role: if role == proto::Role::Admin {
+                0
+            } else {
+                role as i32
+            },
+            effective_role: role as i32,
+            synced_at: at(1_700_000_000),
+        }
+    }
+
+    fn controls() -> proto::DataControls {
+        proto::DataControls {
+            workspace_id: WORKSPACE.into(),
+            code_cache: "session".into(),
+            code_cache_ttl_hours: 24,
+            minimal_chunks: false,
+            reasoner: "off".into(),
+            reasoner_key_configured: false,
+            reasoner_key_hint: String::new(),
+            audit_retention_days: 365,
+            updated_at: at(1_700_000_000),
+        }
+    }
+
+    fake_service! {
+        IdentityService for Fake {
+            async fn authorize(
+                &self,
+                request: Request<proto::AuthorizeRequest>,
+            ) -> Result<Response<proto::Principal>, Status> {
+                let request = request.into_inner();
+                let Some((_, role)) = TOKENS.iter().find(|(t, _)| *t == request.session_token) else {
+                    return Err(Status::unauthenticated("session expired or revoked"));
+                };
+                if !request.workspace_id.is_empty() && request.workspace_id != WORKSPACE {
+                    return Err(Status::permission_denied("no such workspace"));
+                }
+                Ok(Response::new(proto::Principal {
+                    user: Some(user()),
+                    workspace: Some(workspace(*role)),
+                    role: *role as i32,
+                }))
+            }
+
+            async fn begin_login(
+                &self,
+                request: Request<proto::BeginLoginRequest>,
+            ) -> Result<Response<proto::BeginLoginResponse>, Status> {
+                let return_to = request.into_inner().return_to;
+                Ok(Response::new(proto::BeginLoginResponse {
+                    authorize_url: format!("/api/v1/auth/callback?code=dev&state=dev&returnTo={return_to}"),
+                }))
+            }
+
+            async fn complete_login(
+                &self,
+                request: Request<proto::CompleteLoginRequest>,
+            ) -> Result<Response<proto::Session>, Status> {
+                let request = request.into_inner();
+                if request.code != "dev" {
+                    return Err(Status::invalid_argument("bad code"));
+                }
+                Ok(Response::new(proto::Session {
+                    token: "t-owner".into(),
+                    user: Some(user()),
+                    expires_at: at(1_900_000_000),
+                    return_to: "/".into(),
+                }))
+            }
+
+            async fn revoke_session(
+                &self,
+                _: Request<proto::RevokeSessionRequest>,
+            ) -> Result<Response<proto::RevokeSessionResponse>, Status> {
+                Ok(Response::new(proto::RevokeSessionResponse {}))
+            }
+
+            async fn list_workspaces(
+                &self,
+                request: Request<proto::ListWorkspacesRequest>,
+            ) -> Result<Response<proto::ListWorkspacesResponse>, Status> {
+                if request.into_inner().user_id != "u1" {
+                    return Err(Status::invalid_argument("unknown user"));
+                }
+                Ok(Response::new(proto::ListWorkspacesResponse {
+                    workspaces: vec![workspace(proto::Role::Owner)],
+                }))
+            }
+
+            async fn list_members(
+                &self,
+                _: Request<proto::ListMembersRequest>,
+            ) -> Result<Response<proto::ListMembersResponse>, Status> {
+                Ok(Response::new(proto::ListMembersResponse {
+                    members: vec![member(proto::Role::Admin)],
+                    synced_at: at(1_700_000_000),
+                }))
+            }
+
+            async fn set_member_role(
+                &self,
+                request: Request<proto::SetMemberRoleRequest>,
+            ) -> Result<Response<proto::Member>, Status> {
+                let request = request.into_inner();
+                let role = proto::Role::try_from(request.override_role).unwrap_or_default();
+                if role >= proto::Role::Admin {
+                    return Err(Status::invalid_argument("override is not lower than the derived role"));
+                }
+                Ok(Response::new(member(if role == proto::Role::Unspecified { proto::Role::Admin } else { role })))
+            }
+
+            async fn sync_members(
+                &self,
+                _: Request<proto::SyncMembersRequest>,
+            ) -> Result<Response<proto::ListMembersResponse>, Status> {
+                Ok(Response::new(proto::ListMembersResponse {
+                    members: vec![member(proto::Role::Admin)],
+                    synced_at: at(1_700_000_100),
+                }))
+            }
+
+            async fn record_installation(
+                &self,
+                request: Request<proto::RecordInstallationRequest>,
+            ) -> Result<Response<proto::Workspace>, Status> {
+                let request = request.into_inner();
+                if request.installation_id != 777 {
+                    return Err(Status::not_found("unknown installation"));
+                }
+                Ok(Response::new(workspace(proto::Role::Owner)))
+            }
+
+            async fn remove_installation(
+                &self,
+                _: Request<proto::RemoveInstallationRequest>,
+            ) -> Result<Response<proto::RemoveInstallationResponse>, Status> {
+                Ok(Response::new(proto::RemoveInstallationResponse {}))
+            }
+
+            async fn record_audit(
+                &self,
+                request: Request<proto::RecordAuditRequest>,
+            ) -> Result<Response<proto::RecordAuditResponse>, Status> {
+                let entry = request.into_inner().entry.unwrap_or_default();
+                if entry.workspace_id != WORKSPACE {
+                    return Err(Status::invalid_argument("wrong workspace"));
+                }
+                *self.recorder.last_action.lock().unwrap() = entry.action;
+                self.recorder.audits.fetch_add(1, Ordering::SeqCst);
+                Ok(Response::new(proto::RecordAuditResponse {}))
+            }
+
+            async fn list_audit(
+                &self,
+                request: Request<proto::ListAuditRequest>,
+            ) -> Result<Response<proto::ListAuditResponse>, Status> {
+                let request = request.into_inner();
+                // One page, then nothing: lets the export's pagination end.
+                if request.before.is_some() {
+                    return Ok(Response::new(proto::ListAuditResponse::default()));
+                }
+                Ok(Response::new(proto::ListAuditResponse {
+                    entries: vec![proto::AuditEntry {
+                        id: "a1".into(),
+                        workspace_id: WORKSPACE.into(),
+                        user_id: "u1".into(),
+                        user_login: "octo".into(),
+                        action: "project.connect".into(),
+                        entity: "project".into(),
+                        entity_id: "p1".into(),
+                        at: at(1_700_000_000),
+                        ..Default::default()
+                    }],
+                }))
+            }
+
+            async fn get_data_controls(
+                &self,
+                _: Request<proto::GetDataControlsRequest>,
+            ) -> Result<Response<proto::DataControls>, Status> {
+                Ok(Response::new(controls()))
+            }
+
+            async fn update_data_controls(
+                &self,
+                request: Request<proto::UpdateDataControlsRequest>,
+            ) -> Result<Response<proto::DataControls>, Status> {
+                request
+                    .into_inner()
+                    .controls
+                    .map(Response::new)
+                    .ok_or_else(|| Status::invalid_argument("controls missing"))
+            }
+
+            async fn set_reasoner_key(
+                &self,
+                request: Request<proto::SetReasonerKeyRequest>,
+            ) -> Result<Response<proto::DataControls>, Status> {
+                let key = request.into_inner().api_key;
+                Ok(Response::new(proto::DataControls {
+                    reasoner_key_configured: !key.is_empty(),
+                    reasoner_key_hint: key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect(),
+                    ..controls()
+                }))
+            }
+        }
+        unimplemented {
+            get_session: proto::GetSessionRequest => proto::Session,
+            get_workspace: proto::GetWorkspaceRequest => proto::Workspace,
+            get_installation_token: proto::GetInstallationTokenRequest => proto::InstallationToken,
+            get_reasoner_key: proto::GetReasonerKeyRequest => proto::ReasonerKey,
+        }
+    }
+
+    pub async fn serve() -> (SocketAddr, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let fake = Fake {
+            recorder: Arc::clone(&recorder),
+        };
+        let addr =
+            super::serve(|router| router.add_service(IdentityServiceServer::new(fake))).await;
+        (addr, recorder)
     }
 }

@@ -9,8 +9,10 @@ use std::{
     time::Duration,
 };
 
+use crate::identity::AuditSink;
+
 use chrono::Utc;
-use sdi_common::grpc::db_status;
+use sdi_common::{grpc::db_status, principal::Principal};
 use sdi_proto::execution::v1::{
     EventType, ExecutionEvent, ExecutionStatus, PolicyDecision, StepStatus,
 };
@@ -122,12 +124,18 @@ pub struct Runtime {
     pub pool: PgPool,
     pub adapters: Registry,
     pub outcomes: Arc<dyn PatternOutcomes>,
+    pub audit: Arc<dyn AuditSink>,
     pub bus: EventBus,
     /// Execution/approval change notifications for `WatchEvents`.
     pub platform: PlatformEvents,
     /// How long the simulated verification phase takes.
     pub verify_delay: Duration,
+    /// Whether `GITHUB_TOKEN` is configured: decides if a new workspace gets
+    /// the `github-token` identity (CONTRACT.md §5.3).
+    pub github_token: bool,
     runners: Mutex<HashMap<Uuid, mpsc::Sender<Command>>>,
+    /// Workspaces whose policy and identity seed was checked this process.
+    seeded: Mutex<HashSet<Uuid>>,
 }
 
 impl Runtime {
@@ -135,21 +143,53 @@ impl Runtime {
         pool: PgPool,
         adapters: Registry,
         outcomes: Arc<dyn PatternOutcomes>,
+        audit: Arc<dyn AuditSink>,
         verify_delay: Duration,
+        github_token: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
             adapters,
             outcomes,
+            audit,
             bus: EventBus::default(),
             platform: PlatformEvents::default(),
             verify_delay,
+            github_token,
             runners: Mutex::new(HashMap::new()),
+            seeded: Mutex::new(HashSet::new()),
         })
     }
 
+    /// Copies the §5.2 policies and creates the §5.3 identities for a
+    /// workspace on its first use. Checked once per process per workspace;
+    /// the seed itself is idempotent.
+    pub async fn ensure_workspace(&self, workspace_id: Uuid) -> Result<(), Status> {
+        if self
+            .seeded
+            .lock()
+            .expect("seeded lock")
+            .contains(&workspace_id)
+        {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(db_status)?;
+        db::policies::seed(&mut tx, workspace_id)
+            .await
+            .map_err(db_status)?;
+        db::identities::seed(&mut tx, workspace_id, self.github_token)
+            .await
+            .map_err(db_status)?;
+        tx.commit().await.map_err(db_status)?;
+        self.seeded
+            .lock()
+            .expect("seeded lock")
+            .insert(workspace_id);
+        Ok(())
+    }
+
     /// The runner for `id`, spawned on first use. Idempotent.
-    pub fn ensure_runner(self: &Arc<Self>, id: Uuid) -> mpsc::Sender<Command> {
+    pub fn ensure_runner(self: &Arc<Self>, workspace: Uuid, id: Uuid) -> mpsc::Sender<Command> {
         let mut runners = self.runners.lock().expect("runners lock");
         if let Some(sender) = runners.get(&id)
             && !sender.is_closed()
@@ -160,6 +200,7 @@ impl Runtime {
         runners.insert(id, sender.clone());
         let runner = Runner {
             rt: Arc::clone(self),
+            workspace,
             id,
             rx: receiver,
         };
@@ -170,11 +211,12 @@ impl Runtime {
     /// Sends a command and waits for the runner's verdict.
     pub async fn command(
         self: &Arc<Self>,
+        workspace: Uuid,
         id: Uuid,
         build: impl FnOnce(Reply) -> Command,
     ) -> Result<(), Status> {
         let (reply, verdict) = oneshot::channel();
-        self.ensure_runner(id)
+        self.ensure_runner(workspace, id)
             .send(build(reply))
             .await
             .map_err(|_| Status::unavailable("execution runner is shutting down"))?;
@@ -218,9 +260,18 @@ impl Runtime {
                     }
                 });
             }
-            self.ensure_runner(row.id);
+            self.ensure_runner(row.workspace_id, row.id);
         }
         Ok(rows.len())
+    }
+
+    /// Drops the seed note for a workspace whose rows were deleted, so a
+    /// later use seeds it again.
+    pub fn forget_workspace(&self, workspace_id: Uuid) {
+        self.seeded
+            .lock()
+            .expect("seeded lock")
+            .remove(&workspace_id);
     }
 
     fn forget(&self, id: Uuid, terminal: bool) {
@@ -255,9 +306,14 @@ impl Batch {
     async fn transition(&mut self, to: ExecutionStatus) -> Result<(), Status> {
         state::execution_transition(self.status(), to)
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
-        db::executions::set_status(&mut self.tx, self.exec.id, convert::status_to_db(to))
-            .await
-            .map_err(db_status)?;
+        db::executions::set_status(
+            &mut self.tx,
+            self.exec.workspace_id,
+            self.exec.id,
+            convert::status_to_db(to),
+        )
+        .await
+        .map_err(db_status)?;
         self.exec.status = convert::status_to_db(to).to_owned();
         Ok(())
     }
@@ -265,9 +321,14 @@ impl Batch {
     async fn step_status(&mut self, step: &StepRow, to: StepStatus) -> Result<(), Status> {
         state::step_transition(convert::step_status_from_db(&step.status), to)
             .map_err(|e| Status::failed_precondition(format!("step {}: {e}", step.key)))?;
-        db::steps::set_status(&mut self.tx, step.id, convert::step_status_to_db(to))
-            .await
-            .map_err(db_status)
+        db::steps::set_status(
+            &mut self.tx,
+            self.exec.workspace_id,
+            step.id,
+            convert::step_status_to_db(to),
+        )
+        .await
+        .map_err(db_status)
     }
 
     async fn event(
@@ -280,6 +341,7 @@ impl Batch {
         let row = db::events::append(
             &mut self.tx,
             NewEvent {
+                workspace_id: self.exec.workspace_id,
                 execution_id: self.exec.id,
                 r#type: convert::event_type_to_db(kind),
                 step_key,
@@ -325,6 +387,7 @@ impl Batch {
                 info.insert("step_key".to_owned(), step_key);
             }
             rt.platform.execution(
+                self.exec.workspace_id,
                 &id,
                 &self.exec.project_id,
                 "updated",
@@ -333,8 +396,14 @@ impl Batch {
             );
         }
         for approval in approvals {
-            rt.platform
-                .approval(&approval, &id, &self.exec.project_id, "created", "pending");
+            rt.platform.approval(
+                self.exec.workspace_id,
+                &approval,
+                &id,
+                &self.exec.project_id,
+                "created",
+                "pending",
+            );
         }
         Ok(())
     }
@@ -367,6 +436,7 @@ enum StepLoop {
 
 struct Runner {
     rt: Arc<Runtime>,
+    workspace: Uuid,
     id: Uuid,
     rx: mpsc::Receiver<Command>,
 }
@@ -374,7 +444,7 @@ struct Runner {
 impl Runner {
     async fn run(mut self) {
         let terminal = loop {
-            let exec = match db::executions::get(&self.rt.pool, self.id).await {
+            let exec = match db::executions::get(&self.rt.pool, self.workspace, self.id).await {
                 Ok(exec) => exec,
                 Err(error) => {
                     tracing::error!(execution = %self.id, %error, "runner cannot load execution");
@@ -415,7 +485,7 @@ impl Runner {
 
     async fn begin(&self) -> Result<Batch, Status> {
         let mut tx = self.rt.pool.begin().await.map_err(db_status)?;
-        let exec = db::executions::lock(&mut tx, self.id)
+        let exec = db::executions::lock(&mut tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
         Ok(Batch {
@@ -427,21 +497,24 @@ impl Runner {
     }
 
     async fn steps(&self) -> Result<Vec<StepRow>, Status> {
-        db::steps::list_for(&self.rt.pool, self.id)
+        db::steps::list_for(&self.rt.pool, self.workspace, self.id)
             .await
             .map_err(db_status)
     }
 
     /// Closes the loop with knowledge: the pattern's success rate learns
-    /// from every finished run. A missing peer is logged, never fatal.
+    /// from every finished run. A missing peer is logged, never fatal. The
+    /// runner is background work, so it calls as the workspace's system
+    /// principal (CONTRACT.md §18), not as whoever started the run.
     async fn record_outcome(&self, exec: &ExecutionRow, succeeded: bool) {
         if exec.pattern_id.is_empty() {
             return;
         }
+        let principal = Principal::system(self.workspace.to_string());
         if let Err(error) = self
             .rt
             .outcomes
-            .record(&exec.pattern_id, &exec.project_id, succeeded)
+            .record(&principal, &exec.pattern_id, &exec.project_id, succeeded)
             .await
         {
             tracing::warn!(execution = %self.id, pattern = %exec.pattern_id, %error, "could not record pattern outcome");
@@ -501,7 +574,7 @@ impl Runner {
         };
 
         // Decided while no runner was alive (restart): act on it now.
-        let approval = db::approvals::get(&self.rt.pool, approval_id)
+        let approval = db::approvals::get(&self.rt.pool, self.workspace, approval_id)
             .await
             .map_err(db_status)?;
         if approval.status != "PENDING" {
@@ -541,7 +614,7 @@ impl Runner {
         step: &StepRow,
         approval_id: Uuid,
     ) -> Result<(), Status> {
-        let approval = db::approvals::get(&self.rt.pool, approval_id)
+        let approval = db::approvals::get(&self.rt.pool, self.workspace, approval_id)
             .await
             .map_err(db_status)?;
         let mut batch = self.begin().await?;
@@ -566,10 +639,10 @@ impl Runner {
             }
             "REJECTED" => {
                 batch.transition(ExecutionStatus::Cancelled).await?;
-                db::steps::cancel_open(&mut batch.tx, exec.id)
+                db::steps::cancel_open(&mut batch.tx, self.workspace, exec.id)
                     .await
                     .map_err(db_status)?;
-                db::approvals::expire_pending(&mut batch.tx, exec.id)
+                db::approvals::expire_pending(&mut batch.tx, self.workspace, exec.id)
                     .await
                     .map_err(db_status)?;
                 let note = if approval.note.is_empty() {
@@ -590,6 +663,7 @@ impl Runner {
                 batch.transition(ExecutionStatus::Authorized).await?;
                 db::steps::set_approval(
                     &mut batch.tx,
+                    self.workspace,
                     step.id,
                     None,
                     convert::step_status_to_db(StepStatus::Pending),
@@ -646,7 +720,7 @@ impl Runner {
                 batch.exec.status
             )));
         }
-        db::executions::set_fault(&mut batch.tx, self.id, fault.as_ref())
+        db::executions::set_fault(&mut batch.tx, self.workspace, self.id, fault.as_ref())
             .await
             .map_err(db_status)?;
         batch.transition(ExecutionStatus::Authorized).await?;
@@ -670,17 +744,17 @@ impl Runner {
         // A cancelled docker run must leave neither its container nor its
         // workdir behind, whichever state it was cancelled from: a run paused
         // in diagnosis still holds the checkout on disk.
-        let adapter_name = db::executions::get(&self.rt.pool, self.id)
+        let adapter_name = db::executions::get(&self.rt.pool, self.workspace, self.id)
             .await
             .map_err(db_status)?
             .adapter;
         self.cleanup_real(&adapter_name).await;
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Cancelled).await?;
-        db::steps::cancel_open(&mut batch.tx, self.id)
+        db::steps::cancel_open(&mut batch.tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
-        db::approvals::expire_pending(&mut batch.tx, self.id)
+        db::approvals::expire_pending(&mut batch.tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
         let message = if reason.trim().is_empty() {
@@ -724,6 +798,7 @@ impl Runner {
             Resolution::UseAnotherIdentity => Some(
                 db::identities::holding_all(
                     &self.rt.pool,
+                    self.workspace,
                     &step.required_permissions,
                     exec.identity_id,
                 )
@@ -751,10 +826,10 @@ impl Runner {
             // Not a replan: the run ends here and the pattern learns from it.
             self.cleanup_real(&batch.exec.adapter).await;
             batch.transition(ExecutionStatus::Failed).await?;
-            db::steps::abandon_open(&mut batch.tx, self.id)
+            db::steps::abandon_open(&mut batch.tx, self.workspace, self.id)
                 .await
                 .map_err(db_status)?;
-            db::approvals::expire_pending(&mut batch.tx, self.id)
+            db::approvals::expire_pending(&mut batch.tx, self.workspace, self.id)
                 .await
                 .map_err(db_status)?;
             batch
@@ -799,10 +874,10 @@ impl Runner {
         let note = match resolution {
             Resolution::Cancel => {
                 batch.transition(ExecutionStatus::Cancelled).await?;
-                db::steps::cancel_open(&mut batch.tx, self.id)
+                db::steps::cancel_open(&mut batch.tx, self.workspace, self.id)
                     .await
                     .map_err(db_status)?;
-                db::approvals::expire_pending(&mut batch.tx, self.id)
+                db::approvals::expire_pending(&mut batch.tx, self.workspace, self.id)
                     .await
                     .map_err(db_status)?;
                 batch
@@ -824,6 +899,7 @@ impl Runner {
                 batch.step_status(&step, StepStatus::Skipped).await?;
                 db::steps::set_status_for_keys(
                     &mut batch.tx,
+                    self.workspace,
                     self.id,
                     &failure.blocked_steps,
                     convert::step_status_to_db(StepStatus::Skipped),
@@ -840,6 +916,7 @@ impl Runner {
             Resolution::RequestAccess => {
                 db::identities::grant(
                     &mut batch.tx,
+                    self.workspace,
                     exec.identity_id,
                     &failure.missing_permissions,
                     GRANT_TTL_MINUTES,
@@ -847,7 +924,7 @@ impl Runner {
                 .await
                 .map_err(db_status)?;
                 batch.step_status(&step, StepStatus::Pending).await?;
-                db::steps::reset_for_retry(&mut batch.tx, step.id, &step.params.0)
+                db::steps::reset_for_retry(&mut batch.tx, self.workspace, step.id, &step.params.0)
                     .await
                     .map_err(db_status)?;
                 format!(
@@ -857,11 +934,11 @@ impl Runner {
             }
             Resolution::UseAnotherIdentity => {
                 let identity = other_identity.expect("validated above");
-                db::executions::set_identity(&mut batch.tx, self.id, identity.id)
+                db::executions::set_identity(&mut batch.tx, self.workspace, self.id, identity.id)
                     .await
                     .map_err(db_status)?;
                 batch.step_status(&step, StepStatus::Pending).await?;
-                db::steps::reset_for_retry(&mut batch.tx, step.id, &step.params.0)
+                db::steps::reset_for_retry(&mut batch.tx, self.workspace, step.id, &step.params.0)
                     .await
                     .map_err(db_status)?;
                 format!("switched to identity {}", identity.name)
@@ -870,32 +947,33 @@ impl Runner {
                 let mut params = step.params.0.clone();
                 params.extend(patch);
                 batch.step_status(&step, StepStatus::Pending).await?;
-                db::steps::reset_for_retry(&mut batch.tx, step.id, &params)
+                db::steps::reset_for_retry(&mut batch.tx, self.workspace, step.id, &params)
                     .await
                     .map_err(db_status)?;
                 note
             }
         };
 
-        let revision = db::executions::bump_revision(&mut batch.tx, self.id)
+        let revision = db::executions::bump_revision(&mut batch.tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
         batch.exec.revision = revision;
-        let expired = db::approvals::expire_pending(&mut batch.tx, self.id)
+        let expired = db::approvals::expire_pending(&mut batch.tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
-        db::steps::release_waiting(&mut batch.tx, self.id)
+        db::steps::release_waiting(&mut batch.tx, self.workspace, self.id)
             .await
             .map_err(db_status)?;
         db::steps::set_status_for_keys(
             &mut batch.tx,
+            self.workspace,
             self.id,
             &unblock,
             convert::step_status_to_db(StepStatus::Pending),
         )
         .await
         .map_err(db_status)?;
-        db::executions::set_failure(&mut batch.tx, self.id, None)
+        db::executions::set_failure(&mut batch.tx, self.workspace, self.id, None)
             .await
             .map_err(db_status)?;
         batch.transition(ExecutionStatus::Authorized).await?;
@@ -932,7 +1010,7 @@ impl Runner {
             let approval_id = step.approval_id.ok_or_else(|| {
                 Status::internal(format!("step {} waits without an approval", step.key))
             })?;
-            let approval = db::approvals::get(&self.rt.pool, approval_id)
+            let approval = db::approvals::get(&self.rt.pool, self.workspace, approval_id)
                 .await
                 .map_err(db_status)?;
             return match approval.status.as_str() {
@@ -992,7 +1070,7 @@ impl Runner {
         step: &StepRow,
     ) -> Result<Flow, Status> {
         let grants: Vec<policy::Grant> =
-            db::identities::grants_for(&self.rt.pool, exec.identity_id)
+            db::identities::grants_for(&self.rt.pool, self.workspace, exec.identity_id)
                 .await
                 .map_err(db_status)?
                 .into_iter()
@@ -1048,7 +1126,7 @@ impl Runner {
             )
             .await?;
 
-        let rules = db::policies::rules(&self.rt.pool)
+        let rules = db::policies::rules(&self.rt.pool, self.workspace)
             .await
             .map_err(db_status)?;
         let rule = policy::lookup(&rules, &step.action_type);
@@ -1105,6 +1183,7 @@ impl Runner {
                 };
                 db::approvals::insert(
                     &mut batch.tx,
+                    self.workspace,
                     approval_id,
                     self.id,
                     batch.exec.revision,
@@ -1117,6 +1196,7 @@ impl Runner {
                     .map_err(|e| Status::failed_precondition(e.to_string()))?;
                 db::steps::set_approval(
                     &mut batch.tx,
+                    self.workspace,
                     step.id,
                     Some(approval_id),
                     convert::step_status_to_db(StepStatus::WaitingApproval),
@@ -1191,7 +1271,7 @@ impl Runner {
             StepStatus::Running,
         )
         .map_err(|e| Status::failed_precondition(format!("step {}: {e}", step.key)))?;
-        let attempt = db::steps::start_attempt(&mut batch.tx, step.id)
+        let attempt = db::steps::start_attempt(&mut batch.tx, self.workspace, step.id)
             .await
             .map_err(db_status)?;
         batch
@@ -1302,7 +1382,7 @@ impl Runner {
                 let mut batch = self.begin().await?;
                 if fault_targets_step {
                     // The rehearsed fault fired once; the retry must pass.
-                    db::executions::set_fault(&mut batch.tx, self.id, None)
+                    db::executions::set_fault(&mut batch.tx, self.workspace, self.id, None)
                         .await
                         .map_err(db_status)?;
                 }
@@ -1325,7 +1405,7 @@ impl Runner {
 
     async fn clear_fault(&self) -> Result<(), Status> {
         let mut tx = self.rt.pool.begin().await.map_err(db_status)?;
-        db::executions::set_fault(&mut tx, self.id, None)
+        db::executions::set_fault(&mut tx, self.workspace, self.id, None)
             .await
             .map_err(db_status)?;
         tx.commit().await.map_err(db_status)
@@ -1366,6 +1446,7 @@ impl Runner {
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
         db::steps::finish(
             &mut batch.tx,
+            self.workspace,
             verifying.id,
             convert::step_status_to_db(StepStatus::Succeeded),
             &output,
@@ -1373,10 +1454,10 @@ impl Runner {
         )
         .await
         .map_err(db_status)?;
-        db::executions::set_checkpoint(&mut batch.tx, self.id, &step.key)
+        db::executions::set_checkpoint(&mut batch.tx, self.workspace, self.id, &step.key)
             .await
             .map_err(db_status)?;
-        db::executions::merge_outputs(&mut batch.tx, self.id, &outputs)
+        db::executions::merge_outputs(&mut batch.tx, self.workspace, self.id, &outputs)
             .await
             .map_err(db_status)?;
         batch.transition(ExecutionStatus::Authorized).await?;
@@ -1428,6 +1509,7 @@ impl Runner {
         .map_err(|e| Status::failed_precondition(format!("step {}: {e}", step.key)))?;
         db::steps::finish(
             &mut batch.tx,
+            self.workspace,
             step.id,
             convert::step_status_to_db(StepStatus::Failed),
             raw_output,
@@ -1451,6 +1533,7 @@ impl Runner {
             .collect();
         db::steps::set_status_for_keys(
             &mut batch.tx,
+            self.workspace,
             self.id,
             &blocked,
             convert::step_status_to_db(StepStatus::Blocked),
@@ -1491,7 +1574,7 @@ impl Runner {
             missing_permissions,
             occurred_at: Utc::now(),
         };
-        db::executions::set_failure(&mut batch.tx, self.id, Some(&record))
+        db::executions::set_failure(&mut batch.tx, self.workspace, self.id, Some(&record))
             .await
             .map_err(db_status)?;
         batch
@@ -1548,7 +1631,7 @@ impl Runner {
         record.options = options;
 
         let mut batch = self.begin().await?;
-        db::executions::set_failure(&mut batch.tx, self.id, Some(&record))
+        db::executions::set_failure(&mut batch.tx, self.workspace, self.id, Some(&record))
             .await
             .map_err(db_status)?;
         batch.transition(ExecutionStatus::Diagnosing).await?;
@@ -1616,7 +1699,7 @@ impl Runner {
                     missing_permissions: Vec::new(),
                     occurred_at: Utc::now(),
                 };
-                db::executions::set_failure(&mut batch.tx, self.id, Some(&record))
+                db::executions::set_failure(&mut batch.tx, self.workspace, self.id, Some(&record))
                     .await
                     .map_err(db_status)?;
                 batch

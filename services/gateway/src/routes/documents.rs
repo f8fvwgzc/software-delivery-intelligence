@@ -1,6 +1,6 @@
 //! Generated documents and intelligence counters.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::intelligence::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -8,7 +8,7 @@ use super::map_all;
 use crate::{
     dto::intelligence::{Document, GenerateDocumentRequest, IntelligenceStats},
     error::{ApiJson, ApiPath, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -27,7 +27,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Document>), ErrorResponses),
 )]
 async fn list_documents(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Vec<Document>>> {
     let response = state
@@ -48,7 +48,7 @@ async fn list_documents(
     responses((status = 201, body = Document), ErrorResponses),
 )]
 async fn generate_document(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<GenerateDocumentRequest>,
 ) -> ApiResult<(StatusCode, Json<Document>)> {
@@ -71,10 +71,7 @@ async fn generate_document(
     params(("id" = String, Path, description = "Document id")),
     responses((status = 200, body = Document), ErrorResponses),
 )]
-async fn get_document(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Document>> {
+async fn get_document(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Document>> {
     let document = state
         .intelligence()
         .get_document(proto::GetDocumentRequest { id })
@@ -90,7 +87,7 @@ async fn get_document(
     tag = "proposals",
     responses((status = 200, body = IntelligenceStats), ErrorResponses),
 )]
-async fn intelligence_stats(State(state): State<AppState>) -> ApiResult<Json<IntelligenceStats>> {
+async fn intelligence_stats(state: Scoped) -> ApiResult<Json<IntelligenceStats>> {
     let stats = state
         .intelligence()
         .get_intelligence_stats(proto::GetIntelligenceStatsRequest {})

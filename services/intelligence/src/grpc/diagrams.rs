@@ -13,7 +13,7 @@ use sqlx::types::Json;
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{IntelligenceGrpc, parse_id, require};
+use super::{Caller, IntelligenceGrpc, parse_id, require};
 use crate::{
     convert,
     db::diagrams::{self as repo, DiagramRow},
@@ -26,6 +26,7 @@ use crate::{
 
 pub(super) async fn generate(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GenerateDiagramRequest,
 ) -> Result<Diagram, Status> {
     let project_id = require("project_id", &request.project_id)?;
@@ -37,12 +38,16 @@ pub(super) async fn generate(
 
     let mut context = svc
         .knowledge
-        .project_context(&project_id)
+        .project_context(&caller.principal, &project_id)
         .await
         .map_err(|e| e.into_status())?;
     if context.graph.is_none() {
         // Older knowledge builds leave the graph out of the context.
-        context.graph = svc.knowledge.graph(&project_id, false).await.ok();
+        context.graph = svc
+            .knowledge
+            .graph(&caller.principal, &project_id, false)
+            .await
+            .ok();
     }
     let commit_sha = context
         .understanding
@@ -69,14 +74,18 @@ pub(super) async fn generate(
         };
         (generated, prompt, "mermaid", "heuristic")
     } else {
-        let tree = match svc.knowledge.repo_tree(&project_id).await {
+        let tree = match svc
+            .knowledge
+            .repo_tree(&caller.principal, &project_id)
+            .await
+        {
             Ok(tree) => tree.entries,
             Err(error) => {
                 tracing::warn!(%error, "repository tree unavailable; building the diagram from the graph alone");
                 Vec::new()
             }
         };
-        let files = read_key_files(svc, &project_id, kind, &tree, &context, &prompt).await;
+        let files = read_key_files(svc, caller, &project_id, kind, &tree, &context, &prompt).await;
         let input = DiagramInput {
             context: &context,
             tree: &tree,
@@ -85,8 +94,9 @@ pub(super) async fn generate(
         };
         let mut generated = diagrams::generate(kind, &input)
             .ok_or_else(|| Status::invalid_argument("kind is required"))?;
-        let settings = svc.settings().await?;
-        let reasoner = svc.reasoner_for(&settings);
+        let settings = svc.settings(caller).await?;
+        let access = svc.reasoner_access(caller).await;
+        let reasoner = svc.reasoner_for(&settings, &access);
         let refined = reasoner::diagrams::refine(reasoner.as_ref(), kind, &mut generated).await;
         let mermaid = mermaid::render_kind(kind, &generated.spec, &project_id);
         (
@@ -99,6 +109,7 @@ pub(super) async fn generate(
 
     let row = DiagramRow {
         id: Uuid::now_v7(),
+        workspace_id: caller.workspace,
         project_id,
         kind: convert::diagram_kind_to_str(kind),
         title: generated.title,
@@ -114,6 +125,7 @@ pub(super) async fn generate(
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
     svc.events.emit(
+        caller.workspace,
         "diagram",
         &row.id.to_string(),
         &row.project_id,
@@ -129,15 +141,17 @@ pub(super) async fn generate(
 /// the files that sample imports most (`follow_imports`) up to
 /// `MAX_KEY_FILES`. Unreadable or binary files are skipped and every
 /// excerpt is cut at `MAX_FILE_BYTES`.
+#[allow(clippy::too_many_arguments)]
 async fn read_key_files(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     project_id: &str,
     kind: DiagramKind,
     tree: &[sdi_proto::knowledge::v1::RepoTreeEntry],
     context: &sdi_proto::knowledge::v1::ProjectContext,
     prompt: &str,
 ) -> BTreeMap<String, String> {
-    let mut files = fetch_files(svc, project_id, key_files(kind, tree)).await;
+    let mut files = fetch_files(svc, caller, project_id, key_files(kind, tree)).await;
     let follows = matches!(
         kind,
         DiagramKind::Architecture
@@ -156,7 +170,7 @@ async fn read_key_files(
             };
             follow_imports(&input, MAX_KEY_FILES - files.len())
         };
-        files.extend(fetch_files(svc, project_id, more).await);
+        files.extend(fetch_files(svc, caller, project_id, more).await);
     }
     tracing::debug!(
         kind = ?kind,
@@ -169,13 +183,14 @@ async fn read_key_files(
 
 async fn fetch_files(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     project_id: &str,
     paths: Vec<String>,
 ) -> BTreeMap<String, String> {
     let fetched = futures::future::join_all(
         paths
             .iter()
-            .map(|path| svc.knowledge.repo_file(project_id, path)),
+            .map(|path| svc.knowledge.repo_file(&caller.principal, project_id, path)),
     )
     .await;
     let mut files = BTreeMap::new();
@@ -244,10 +259,11 @@ fn imported_explanation(name: &str, source: &str) -> String {
 
 pub(super) async fn list(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: ListDiagramsRequest,
 ) -> Result<ListDiagramsResponse, Status> {
     let project_id = require("project_id", &request.project_id)?;
-    let rows = repo::list(&svc.pool, &project_id)
+    let rows = repo::list(&svc.pool, caller.workspace, &project_id)
         .await
         .map_err(db_status)?;
     Ok(ListDiagramsResponse {
@@ -266,10 +282,13 @@ pub(super) async fn list(
 
 pub(super) async fn get(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GetDiagramRequest,
 ) -> Result<Diagram, Status> {
     let id = parse_id("id", &request.id)?;
-    let row = repo::get(&svc.pool, id).await.map_err(db_status)?;
+    let row = repo::get(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?;
     Ok(convert::diagram(&row))
 }
 
@@ -278,6 +297,7 @@ pub(super) async fn get(
 /// keeps the spec (`source = "mermaid"`). Every edit bumps the revision.
 pub(super) async fn update(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: UpdateDiagramRequest,
 ) -> Result<Diagram, Status> {
     let id = parse_id("id", &request.id)?;
@@ -288,7 +308,9 @@ pub(super) async fn update(
             "nothing to update: set title, spec or mermaid",
         ));
     }
-    let mut row = repo::get(&svc.pool, id).await.map_err(db_status)?;
+    let mut row = repo::get(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?;
     if !title.is_empty() {
         row.title = title.to_owned();
     }
@@ -323,6 +345,7 @@ pub(super) async fn update(
     row.updated_at = Utc::now();
     repo::update(&svc.pool, &row).await.map_err(db_status)?;
     svc.events.emit(
+        caller.workspace,
         "diagram",
         &row.id.to_string(),
         &row.project_id,
@@ -339,14 +362,21 @@ pub(super) async fn update(
 
 pub(super) async fn delete(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: DeleteDiagramRequest,
 ) -> Result<DeleteDiagramResponse, Status> {
     let id = parse_id("id", &request.id)?;
-    let row = repo::get(&svc.pool, id).await.map_err(db_status)?;
-    if !repo::delete(&svc.pool, id).await.map_err(db_status)? {
+    let row = repo::get(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?;
+    if !repo::delete(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?
+    {
         return Err(Status::not_found("diagram not found"));
     }
     svc.events.emit(
+        caller.workspace,
         "diagram",
         &row.id.to_string(),
         &row.project_id,

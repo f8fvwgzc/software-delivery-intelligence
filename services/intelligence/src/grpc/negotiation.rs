@@ -11,7 +11,7 @@ use sqlx::types::Json;
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{IntelligenceGrpc, parse_id, proposals, require};
+use super::{Caller, IntelligenceGrpc, parse_id, proposals, require};
 use crate::{
     convert,
     db::{
@@ -27,10 +27,11 @@ use crate::{
 
 pub(super) async fn negotiate(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: NegotiateRequest,
 ) -> Result<NegotiateResponse, Status> {
     let content = require("content", &request.content)?;
-    let mut row = proposals::load(svc, &request.proposal_id).await?;
+    let mut row = proposals::load(svc, caller, &request.proposal_id).await?;
     if !row.is_open() {
         return Err(Status::failed_precondition(format!(
             "proposal is {}",
@@ -39,7 +40,14 @@ pub(super) async fn negotiate(
     }
     let kind = convert::kind_from_str(&row.kind);
 
-    let user_message = MessageRow::new(row.id, "user", content.clone(), false, Vec::new());
+    let user_message = MessageRow::new(
+        caller.workspace,
+        row.id,
+        "user",
+        content.clone(),
+        false,
+        Vec::new(),
+    );
     messages_repo::insert(&svc.pool, &user_message)
         .await
         .map_err(db_status)?;
@@ -62,6 +70,7 @@ pub(super) async fn negotiate(
     {
         let decision = DecisionRow {
             id: Uuid::now_v7(),
+            workspace_id: caller.workspace,
             project_id: String::new(),
             scope: convert::scope_to_str(DecisionScope::Organization),
             status: "active".to_owned(),
@@ -69,27 +78,25 @@ pub(super) async fn negotiate(
             title: draft.title.clone(),
             statement: draft.statement.clone(),
             reasons: draft.reasons.clone(),
-            approved_by: String::new(),
+            approved_by: caller.principal.user_id.clone(),
             proposal_id: row.id.to_string(),
             tags: draft.tags.clone(),
             created_at: Utc::now(),
             superseded_at: None,
             superseded_by: String::new(),
         };
-        crate::db::decisions::insert(&svc.pool, &decision)
-            .await
-            .map_err(db_status)?;
-        proposals::index_decision(svc, &decision).await;
-        proposals::emit_decision(svc, &decision, "created");
+        proposals::record_decision(svc, caller, &decision).await?;
         recorded = Some(decision);
     }
 
-    let settings = svc.settings().await?;
-    let reasoner = svc.reasoner_for(&settings);
+    let settings = svc.settings(caller).await?;
+    let access = svc.reasoner_access(caller).await;
+    let reasoner = svc.reasoner_for(&settings, &access);
     // Every revision re-ranks and regenerates artifacts, so a changed
     // region, port or runtime is reflected in the generated files.
     let (_, after) = proposals::rank_for(
         svc,
+        caller,
         &row.project_id,
         kind,
         &constraints,
@@ -120,6 +127,7 @@ pub(super) async fn negotiate(
     let text = reasoner.write_reply(&draft.text, &context_json).await;
 
     let reply = MessageRow::new(
+        caller.workspace,
         row.id,
         "assistant",
         text,
@@ -148,6 +156,7 @@ pub(super) async fn negotiate(
 
     index_turn(
         svc,
+        caller,
         &row.project_id,
         &row.id,
         &row.title,
@@ -156,7 +165,7 @@ pub(super) async fn negotiate(
     )
     .await;
 
-    let row = proposals::load(svc, &request.proposal_id).await?;
+    let row = proposals::load(svc, caller, &request.proposal_id).await?;
     Ok(NegotiateResponse {
         proposal: Some(convert::proposal(&row)),
         user_message: Some(convert::message(&user_message)),
@@ -167,10 +176,11 @@ pub(super) async fn negotiate(
 
 pub(super) async fn list_messages(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: ListMessagesRequest,
 ) -> Result<ListMessagesResponse, Status> {
     let id = parse_id("proposal_id", &request.proposal_id)?;
-    let rows = messages_repo::list(&svc.pool, id)
+    let rows = messages_repo::list(&svc.pool, caller.workspace, id)
         .await
         .map_err(db_status)?;
     Ok(ListMessagesResponse {
@@ -181,6 +191,7 @@ pub(super) async fn list_messages(
 /// One conversation turn (question + answer) becomes retrievable memory.
 async fn index_turn(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     project_id: &str,
     proposal_id: &Uuid,
     title: &str,
@@ -189,14 +200,17 @@ async fn index_turn(
 ) {
     if let Err(error) = svc
         .knowledge
-        .index_knowledge(IndexKnowledgeRequest {
-            kind: KnowledgeKind::Conversation as i32,
-            project_id: project_id.to_owned(),
-            ref_id: proposal_id.to_string(),
-            title: format!("{title} - negotiation"),
-            content: format!("User: {}\nAssistant: {}", user.content, reply.content),
-            path: format!("proposals/{proposal_id}/messages/{}", user.id),
-        })
+        .index_knowledge(
+            &caller.principal,
+            IndexKnowledgeRequest {
+                kind: KnowledgeKind::Conversation as i32,
+                project_id: project_id.to_owned(),
+                ref_id: proposal_id.to_string(),
+                title: format!("{title} - negotiation"),
+                content: format!("User: {}\nAssistant: {}", user.content, reply.content),
+                path: format!("proposals/{proposal_id}/messages/{}", user.id),
+            },
+        )
         .await
     {
         tracing::warn!(%error, proposal = %proposal_id, "could not index conversation turn");

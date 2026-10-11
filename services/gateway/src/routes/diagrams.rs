@@ -1,6 +1,6 @@
 //! Diagrams (CONTRACT.md §16): generation, listing, editing and deletion.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::intelligence::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -8,7 +8,7 @@ use super::map_all;
 use crate::{
     dto::diagrams::{Diagram, GenerateDiagramRequest, UpdateDiagramRequest},
     error::{ApiError, ApiJson, ApiPath, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -26,7 +26,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Diagram>), ErrorResponses),
 )]
 async fn list_diagrams(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Vec<Diagram>>> {
     let response = state
@@ -48,7 +48,7 @@ async fn list_diagrams(
     responses((status = 201, body = Diagram), ErrorResponses),
 )]
 async fn generate_diagram(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<GenerateDiagramRequest>,
 ) -> ApiResult<(StatusCode, Json<Diagram>)> {
@@ -72,10 +72,7 @@ async fn generate_diagram(
     params(("id" = String, Path, description = "Diagram id")),
     responses((status = 200, body = Diagram), ErrorResponses),
 )]
-async fn get_diagram(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Diagram>> {
+async fn get_diagram(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Diagram>> {
     let diagram = state
         .intelligence()
         .get_diagram(proto::GetDiagramRequest { id })
@@ -95,7 +92,7 @@ async fn get_diagram(
     responses((status = 200, body = Diagram), ErrorResponses),
 )]
 async fn update_diagram(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<UpdateDiagramRequest>,
 ) -> ApiResult<Json<Diagram>> {
@@ -128,10 +125,7 @@ async fn update_diagram(
     params(("id" = String, Path, description = "Diagram id")),
     responses((status = 200, description = "Deleted"), ErrorResponses),
 )]
-async fn delete_diagram(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<StatusCode> {
+async fn delete_diagram(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<StatusCode> {
     state
         .intelligence()
         .delete_diagram(proto::DeleteDiagramRequest { id })

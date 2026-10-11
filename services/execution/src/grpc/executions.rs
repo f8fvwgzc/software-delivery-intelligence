@@ -10,7 +10,7 @@ use sqlx::types::Json;
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{load_execution, parse_id};
+use super::{Caller, load_execution, parse_id};
 use crate::{
     adapters::{self, Fault},
     convert,
@@ -22,7 +22,19 @@ use crate::{
 const DEFAULT_LIST_LIMIT: i64 = 50;
 const MAX_LIST_LIMIT: i64 = 200;
 
-pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Execution, Status> {
+pub async fn create(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: CreateExecutionRequest,
+) -> Result<Execution, Status> {
+    // The runtime decides which steps may run at all (CONTRACT.md §5.4): a
+    // plan that needs a tool the runtime cannot provide is refused here,
+    // naming the step, rather than failing mid-flight. It also decides who
+    // may create the run: a dry run is a member's, a real one an approver's.
+    let runtime = adapters::runtime_name(&req.adapter)?;
+    caller.require_adapter(runtime)?;
+    let workspace = caller.workspace;
+
     let plan: Vec<_> = req
         .steps
         .iter()
@@ -41,10 +53,6 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         .map(|(key, depends_on)| dag::Node { key, depends_on })
         .collect();
     dag::validate(&nodes).map_err(|e| Status::invalid_argument(e.to_string()))?;
-    // The runtime decides which steps may run at all (CONTRACT.md §5.4): a
-    // plan that needs a tool the runtime cannot provide is refused here,
-    // naming the step, rather than failing mid-flight.
-    let runtime = adapters::runtime_name(&req.adapter)?;
     for step in &req.steps {
         let action_type = step.action_type.trim();
         if action_type.is_empty() {
@@ -61,9 +69,11 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         }
     }
 
-    let rules = db::policies::rules(&rt.pool).await.map_err(db_status)?;
+    let rules = db::policies::rules(&rt.pool, workspace)
+        .await
+        .map_err(db_status)?;
     let identity_name = adapters::identity_for(runtime);
-    let identity = match db::identities::by_name(&rt.pool, identity_name).await {
+    let identity = match db::identities::by_name(&rt.pool, workspace, identity_name).await {
         Ok(identity) => identity,
         Err(sqlx::Error::RowNotFound) if runtime == adapters::GITHUB => {
             return Err(Status::failed_precondition(
@@ -91,13 +101,17 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         req.title.trim()
     };
     let planning = convert::status_to_db(ExecutionStatus::Planning);
-    let project_name = rt.outcomes.project_name(req.project_id.trim()).await;
+    let project_name = rt
+        .outcomes
+        .project_name(&caller.principal, req.project_id.trim())
+        .await;
 
     let mut tx = rt.pool.begin().await.map_err(db_status)?;
     db::executions::insert(
         &mut tx,
         NewExecution {
             id,
+            workspace_id: workspace,
             project_id: req.project_id.trim(),
             project_name: &project_name,
             proposal_id: req.proposal_id.trim(),
@@ -106,6 +120,7 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
             status: planning,
             adapter: runtime,
             identity_id: identity.id,
+            created_by: &caller.principal.user_id,
             artifacts: &artifacts,
         },
     )
@@ -116,6 +131,7 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         let rule = policy::lookup(&rules, step.action_type.trim());
         let row = StepRow {
             id: Uuid::now_v7(),
+            workspace_id: workspace,
             execution_id: id,
             title: if step.title.trim().is_empty() {
                 key.clone()
@@ -160,6 +176,7 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
     let event = db::events::append(
         &mut tx,
         NewEvent {
+            workspace_id: workspace,
             execution_id: id,
             r#type: convert::event_type_to_db(EventType::StateChanged),
             step_key: "",
@@ -173,6 +190,7 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
     tx.commit().await.map_err(db_status)?;
     rt.bus.publish(convert::event_to_proto(event));
     rt.platform.execution(
+        workspace,
         &id.to_string(),
         req.project_id.trim(),
         "created",
@@ -183,22 +201,23 @@ pub async fn create(rt: &Arc<Runtime>, req: CreateExecutionRequest) -> Result<Ex
         ]),
     );
 
-    load_execution(rt, id, true).await
+    load_execution(rt, workspace, id, true).await
 }
 
 pub async fn list(
     rt: &Arc<Runtime>,
+    caller: &Caller,
     req: ListExecutionsRequest,
 ) -> Result<ListExecutionsResponse, Status> {
     let limit = match i64::from(req.limit) {
         0 => DEFAULT_LIST_LIMIT,
         n => n.min(MAX_LIST_LIMIT),
     };
-    let rows = db::executions::list(&rt.pool, req.project_id.trim(), limit)
+    let rows = db::executions::list(&rt.pool, caller.workspace, req.project_id.trim(), limit)
         .await
         .map_err(db_status)?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    let mut steps = db::steps::list_for_many(&rt.pool, &ids)
+    let mut steps = db::steps::list_for_many(&rt.pool, caller.workspace, &ids)
         .await
         .map_err(db_status)?;
     let executions = rows
@@ -213,9 +232,27 @@ pub async fn list(
     Ok(ListExecutionsResponse { executions })
 }
 
-pub async fn start(rt: &Arc<Runtime>, req: StartExecutionRequest) -> Result<Execution, Status> {
+/// The run named by a mutating RPC: scoped to the workspace (another
+/// workspace's id is NOT_FOUND), then gated by the adapter's role.
+async fn load_for_action(
+    rt: &Runtime,
+    caller: &Caller,
+    id: Uuid,
+) -> Result<db::executions::ExecutionRow, Status> {
+    let row = db::executions::get(&rt.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?;
+    caller.require_adapter(&row.adapter)?;
+    Ok(row)
+}
+
+pub async fn start(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: StartExecutionRequest,
+) -> Result<Execution, Status> {
     let id = parse_id(&req.id, "id")?;
-    let row = db::executions::get(&rt.pool, id).await.map_err(db_status)?;
+    let row = load_for_action(rt, caller, id).await?;
     if convert::status_from_db(&row.status) != ExecutionStatus::Planning {
         return Err(Status::failed_precondition(format!(
             "execution is {}, only PLANNING executions can be started",
@@ -224,7 +261,9 @@ pub async fn start(rt: &Arc<Runtime>, req: StartExecutionRequest) -> Result<Exec
     }
     let fault = match req.fault {
         Some(fault) if !fault.step_key.trim().is_empty() => {
-            let steps = db::steps::list_for(&rt.pool, id).await.map_err(db_status)?;
+            let steps = db::steps::list_for(&rt.pool, caller.workspace, id)
+                .await
+                .map_err(db_status)?;
             let key = fault.step_key.trim();
             if !steps.iter().any(|s| s.key == key) {
                 return Err(Status::invalid_argument(format!(
@@ -238,14 +277,32 @@ pub async fn start(rt: &Arc<Runtime>, req: StartExecutionRequest) -> Result<Exec
         }
         _ => None,
     };
-    rt.command(id, |reply| Command::Start { fault, reply })
-        .await?;
-    load_execution(rt, id, true).await
+    let mut detail = match &fault {
+        Some(fault) => format!(
+            "{} ({} adapter) with fault {} on {}",
+            row.title, row.adapter, fault.code, fault.step_key
+        ),
+        None => format!("{} ({} adapter)", row.title, row.adapter),
+    };
+    if !row.created_by.is_empty() && row.created_by != caller.principal.user_id {
+        detail.push_str(&format!(", created by {}", row.created_by));
+    }
+    rt.command(caller.workspace, id, |reply| Command::Start {
+        fault,
+        reply,
+    })
+    .await?;
+    caller.audit(rt, "execution.start", "execution", &id.to_string(), detail);
+    load_execution(rt, caller.workspace, id, true).await
 }
 
-pub async fn resolve(rt: &Arc<Runtime>, req: ResolveFailureRequest) -> Result<Execution, Status> {
+pub async fn resolve(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: ResolveFailureRequest,
+) -> Result<Execution, Status> {
     let id = parse_id(&req.execution_id, "execution_id")?;
-    let row = db::executions::get(&rt.pool, id).await.map_err(db_status)?;
+    let row = load_for_action(rt, caller, id).await?;
     if convert::status_from_db(&row.status) != ExecutionStatus::Diagnosing {
         return Err(Status::failed_precondition(format!(
             "execution is {}, only DIAGNOSING executions can be resolved",
@@ -257,28 +314,44 @@ pub async fn resolve(rt: &Arc<Runtime>, req: ResolveFailureRequest) -> Result<Ex
             "option_id or instruction is required",
         ));
     }
-    rt.command(id, |reply| Command::Resolve {
+    let detail = if req.option_id.trim().is_empty() {
+        format!("instruction \"{}\"", req.instruction.trim())
+    } else {
+        format!("option {}", req.option_id.trim())
+    };
+    rt.command(caller.workspace, id, |reply| Command::Resolve {
         option_id: req.option_id,
         instruction: req.instruction,
         reply,
     })
     .await?;
-    load_execution(rt, id, true).await
+    caller.audit(
+        rt,
+        "execution.resolve",
+        "execution",
+        &id.to_string(),
+        format!("{}: {detail}", row.title),
+    );
+    load_execution(rt, caller.workspace, id, true).await
 }
 
-pub async fn cancel(rt: &Arc<Runtime>, req: CancelExecutionRequest) -> Result<Execution, Status> {
+pub async fn cancel(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: CancelExecutionRequest,
+) -> Result<Execution, Status> {
     let id = parse_id(&req.id, "id")?;
-    let row = db::executions::get(&rt.pool, id).await.map_err(db_status)?;
+    let row = load_for_action(rt, caller, id).await?;
     if state::is_terminal(convert::status_from_db(&row.status)) {
         return Err(Status::failed_precondition(format!(
             "execution is already {}",
             row.status
         )));
     }
-    rt.command(id, |reply| Command::Cancel {
+    rt.command(caller.workspace, id, |reply| Command::Cancel {
         reason: req.reason,
         reply,
     })
     .await?;
-    load_execution(rt, id, true).await
+    load_execution(rt, caller.workspace, id, true).await
 }

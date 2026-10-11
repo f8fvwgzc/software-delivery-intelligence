@@ -44,6 +44,10 @@ service IdentityService {
   rpc UpdateDataControls(UpdateDataControlsRequest) returns (DataControls);
   // Stores a workspace-owned LLM key (encrypted at rest); never returned.
   rpc SetReasonerKey(SetReasonerKeyRequest) returns (DataControls);
+  // Internal (intelligence only): the decrypted workspace key so the reasoner
+  // can call the model API on the workspace's behalf. NOT_FOUND when no key
+  // is stored. Never exposed through the gateway and never logged.
+  rpc GetReasonerKey(GetReasonerKeyRequest) returns (ReasonerKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,4 +309,16 @@ message SetReasonerKeyRequest {
   string workspace_id = 1;
   // Empty removes the key.
   string api_key = 2;
+}
+
+message GetReasonerKeyRequest {
+  string workspace_id = 1;
+}
+
+// The workspace's own model credentials. Lives in memory for one request.
+message ReasonerKey {
+  string api_key = 1;
+  // Model the workspace chose when storing the key; empty means the
+  // intelligence service's default.
+  string model = 2;
 }

@@ -7,13 +7,16 @@ use sdi_common::config;
 
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Settings {
     pub listen: SocketAddr,
     pub database_url: String,
     pub knowledge_url: String,
     pub execution_url: String,
-    /// Optional: enables the `claude` reasoner.
+    pub identity_url: String,
+    /// Optional dev fallback for the `claude` reasoner: used only for a
+    /// workspace whose data controls allow the reasoner and that stored no
+    /// key of its own (CONTRACT.md §19).
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: String,
 }
@@ -25,6 +28,7 @@ impl Settings {
             database_url: config::database_url(),
             knowledge_url: config::knowledge_url(),
             execution_url: config::execution_url(),
+            identity_url: config::identity_url(),
             anthropic_api_key: config::env_opt("ANTHROPIC_API_KEY"),
             anthropic_model: config::env_or("ANTHROPIC_MODEL", DEFAULT_MODEL),
         })

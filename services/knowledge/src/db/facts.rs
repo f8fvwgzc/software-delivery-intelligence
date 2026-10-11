@@ -8,6 +8,7 @@ use crate::convert::{fact_category, fact_category_to_db, fact_kind, fact_kind_to
 #[derive(Debug, Clone, FromRow)]
 pub struct FactRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub kind: String,
     pub category: String,
@@ -23,21 +24,24 @@ pub struct FactRow {
 /// Facts are a snapshot: the new analysis replaces the old one wholesale.
 pub async fn replace(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     facts: &[FactDraft],
 ) -> sqlx::Result<usize> {
-    sqlx::query("DELETE FROM facts WHERE project_id = $1")
+    sqlx::query("DELETE FROM facts WHERE workspace_id = $1 AND project_id = $2")
+        .bind(workspace_id)
         .bind(project_id)
         .execute(&mut *conn)
         .await?;
     let mut inserted = 0;
     for fact in facts {
         let result = sqlx::query(
-            "INSERT INTO facts (id, project_id, kind, category, key, label, value, confidence, source_path, evidence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "INSERT INTO facts (id, workspace_id, project_id, kind, category, key, label, value, confidence, source_path, evidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (project_id, key) DO NOTHING",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(fact_kind_to_db(fact_kind(fact.kind)))
         .bind(fact_category_to_db(fact_category(fact.category)))
@@ -56,16 +60,18 @@ pub async fn replace(
 
 pub async fn list(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     kind: Option<&str>,
     category: Option<&str>,
 ) -> sqlx::Result<Vec<FactRow>> {
     sqlx::query_as::<_, FactRow>(
-        "SELECT * FROM facts WHERE project_id = $1
-           AND ($2::text IS NULL OR kind = $2)
-           AND ($3::text IS NULL OR category = $3)
+        "SELECT * FROM facts WHERE workspace_id = $1 AND project_id = $2
+           AND ($3::text IS NULL OR kind = $3)
+           AND ($4::text IS NULL OR category = $4)
          ORDER BY category, kind, key",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(kind)
     .bind(category)
@@ -76,12 +82,14 @@ pub async fn list(
 /// Ids of the facts whose evidence came from `path`, in the list order.
 pub async fn ids_for_path(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     path: &str,
 ) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM facts WHERE project_id = $1 AND source_path = $2 ORDER BY category, kind, key",
+        "SELECT id FROM facts WHERE workspace_id = $1 AND project_id = $2 AND source_path = $3 ORDER BY category, kind, key",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(path)
     .fetch_all(exec)

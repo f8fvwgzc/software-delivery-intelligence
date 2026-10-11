@@ -1,6 +1,7 @@
 //! In-process broadcast of `PlatformEvent`s (CONTRACT.md §8 live events).
 //! Publishing never blocks and never fails: a slow or absent watcher must not
-//! slow down a proposal, so lagging receivers simply skip ahead.
+//! slow down a proposal, so lagging receivers simply skip ahead. Every event
+//! carries `data["workspace_id"]` and a watch only sees its own workspace.
 
 use std::collections::HashMap;
 
@@ -9,9 +10,12 @@ use sdi_proto::common::v1::PlatformEvent;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
+use uuid::Uuid;
 
 const BUS_CAPACITY: usize = 256;
 const WATCH_BUFFER: usize = 64;
+
+pub const WORKSPACE_KEY: &str = "workspace_id";
 
 #[derive(Clone)]
 pub struct EventBus {
@@ -35,8 +39,10 @@ impl EventBus {
         let _ = self.tx.send(event);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn emit(
         &self,
+        workspace_id: Uuid,
         entity: &str,
         entity_id: &str,
         project_id: &str,
@@ -44,6 +50,11 @@ impl EventBus {
         status: &str,
         data: &[(&str, String)],
     ) {
+        let mut map: HashMap<String, String> = data
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        map.insert(WORKSPACE_KEY.to_owned(), workspace_id.to_string());
         self.publish(PlatformEvent {
             entity: entity.to_owned(),
             entity_id: entity_id.to_owned(),
@@ -51,10 +62,7 @@ impl EventBus {
             action: action.to_owned(),
             status: status.to_owned(),
             at: Some(time::to_proto(chrono::Utc::now())),
-            data: data
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                .collect::<HashMap<_, _>>(),
+            data: map,
         });
     }
 
@@ -62,12 +70,13 @@ impl EventBus {
         self.tx.subscribe()
     }
 
-    /// A stream that forwards every event from now on and never ends on its
-    /// own; it closes when the client hangs up or the service shuts down
+    /// A stream of the workspace's events from now on that never ends on
+    /// its own; it closes when the client hangs up or the service shuts down
     /// (an open feed would otherwise keep graceful shutdown waiting forever).
-    pub fn watch(&self) -> ReceiverStream<Result<PlatformEvent, Status>> {
+    pub fn watch(&self, workspace_id: Uuid) -> ReceiverStream<Result<PlatformEvent, Status>> {
         let mut rx = self.subscribe();
         let (tx, out) = mpsc::channel(WATCH_BUFFER);
+        let workspace = workspace_id.to_string();
         tokio::spawn(async move {
             let leaving = sdi_common::shutdown::cancelled();
             tokio::pin!(leaving);
@@ -78,6 +87,9 @@ impl EventBus {
                 };
                 match received {
                     Ok(event) => {
+                        if event.data.get(WORKSPACE_KEY) != Some(&workspace) {
+                            continue;
+                        }
                         if tx.send(Ok(event)).await.is_err() {
                             return;
                         }
@@ -99,10 +111,13 @@ mod tests {
     use tokio_stream::StreamExt;
 
     #[tokio::test]
-    async fn watch_forwards_events_in_order() {
+    async fn watch_forwards_the_workspaces_events_in_order() {
         let bus = EventBus::new();
-        let mut stream = bus.watch();
+        let ws = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let mut stream = bus.watch(ws);
         bus.emit(
+            ws,
             "proposal",
             "p1",
             "proj",
@@ -110,13 +125,18 @@ mod tests {
             "proposed",
             &[("revision", "1".into())],
         );
-        bus.emit("decision", "d1", "", "created", "active", &[]);
+        bus.emit(other, "proposal", "p9", "proj", "created", "proposed", &[]);
+        bus.emit(ws, "decision", "d1", "", "created", "active", &[]);
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(
             (first.entity.as_str(), first.action.as_str()),
             ("proposal", "created")
         );
         assert_eq!(first.data.get("revision").map(String::as_str), Some("1"));
+        assert_eq!(
+            first.data.get(WORKSPACE_KEY).map(String::as_str),
+            Some(ws.to_string().as_str())
+        );
         let second = stream.next().await.unwrap().unwrap();
         assert_eq!(second.entity, "decision");
         assert!(second.at.is_some());
@@ -124,6 +144,6 @@ mod tests {
 
     #[test]
     fn publishing_without_watchers_is_fine() {
-        EventBus::new().emit("document", "x", "p", "created", "", &[]);
+        EventBus::new().emit(Uuid::nil(), "document", "x", "p", "created", "", &[]);
     }
 }

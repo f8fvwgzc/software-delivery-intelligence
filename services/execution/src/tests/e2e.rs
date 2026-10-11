@@ -1,14 +1,16 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use sdi_common::principal::{Principal, Role};
 use sdi_proto::{
-    common::v1::PlanStep,
+    common::v1::{PlanStep, WatchEventsRequest},
     execution::v1::{
         Approval, ApprovalStatus, CancelExecutionRequest, CreateExecutionRequest,
-        DecideApprovalRequest, EventType, Execution, ExecutionStatus, FaultInjection,
-        GetDeliveryStatsRequest, GetExecutionRequest, GrantPermissionRequest, ListApprovalsRequest,
-        ListEventsRequest, ListIdentitiesRequest, ListPoliciesRequest, PolicyDecision,
-        ResolveFailureRequest, StartExecutionRequest, StepStatus, UpdatePolicyRequest,
-        WatchExecutionRequest, execution_service_server::ExecutionService,
+        DecideApprovalRequest, DeleteWorkspaceDataRequest, EventType, Execution, ExecutionStatus,
+        ExportWorkspaceDataRequest, FaultInjection, GetDeliveryStatsRequest, GetExecutionRequest,
+        GrantPermissionRequest, ListApprovalsRequest, ListEventsRequest, ListExecutionsRequest,
+        ListIdentitiesRequest, ListPoliciesRequest, PolicyDecision, ResolveFailureRequest,
+        StartExecutionRequest, StepStatus, UpdatePolicyRequest, WatchExecutionRequest,
+        execution_service_server::ExecutionService,
     },
 };
 use sqlx::PgPool;
@@ -19,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     adapters::{self, Adapter, Registry, RunContext, StepInput, StepOutcome},
     grpc::ExecutionGrpc,
+    identity::RecordingAudit,
     knowledge::RecordingPatternOutcomes,
     runner::Runtime,
 };
@@ -26,12 +29,37 @@ use crate::{
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(10);
 
+/// The two workspaces the tests play in. Every call carries one of them as
+/// metadata, the way the gateway forwards it (CONTRACT.md §18).
+const WS_A: &str = "00000000-0000-7000-8000-00000000000a";
+const WS_B: &str = "00000000-0000-7000-8000-00000000000b";
+
+fn principal(role: Role, workspace: &str) -> Principal {
+    Principal {
+        user_id: format!("user-{}", role.as_str()),
+        workspace_id: workspace.to_owned(),
+        role,
+    }
+}
+
+fn as_role<T>(role: Role, workspace: &str, message: T) -> Request<T> {
+    let mut request = Request::new(message);
+    principal(role, workspace).apply(&mut request);
+    request
+}
+
+/// The default caller: an admin of workspace A.
+fn req<T>(message: T) -> Request<T> {
+    as_role(Role::Admin, WS_A, message)
+}
+
 struct Harness {
     pool: PgPool,
     schema: String,
     rt: Arc<Runtime>,
     svc: ExecutionGrpc,
     outcomes: RecordingPatternOutcomes,
+    audit: RecordingAudit,
 }
 
 impl Harness {
@@ -65,11 +93,14 @@ impl Harness {
             .expect("migrations");
 
         let outcomes = RecordingPatternOutcomes::default();
+        let audit = RecordingAudit::default();
         let rt = Runtime::new(
             pool.clone(),
             registry,
             Arc::new(outcomes.clone()),
+            Arc::new(audit.clone()),
             Duration::ZERO,
+            false,
         );
         Some(Self {
             pool,
@@ -77,6 +108,7 @@ impl Harness {
             svc: ExecutionGrpc::new(Arc::clone(&rt)),
             rt,
             outcomes,
+            audit,
         })
     }
 
@@ -93,8 +125,16 @@ impl Harness {
     }
 
     async fn get(&self, id: &str) -> Execution {
+        self.get_as(Role::Admin, WS_A, id).await
+    }
+
+    async fn get_as(&self, role: Role, workspace: &str, id: &str) -> Execution {
         self.svc
-            .get_execution(Request::new(GetExecutionRequest { id: id.to_owned() }))
+            .get_execution(as_role(
+                role,
+                workspace,
+                GetExecutionRequest { id: id.to_owned() },
+            ))
             .await
             .expect("get execution")
             .into_inner()
@@ -121,7 +161,7 @@ impl Harness {
         loop {
             let approvals = self
                 .svc
-                .list_approvals(Request::new(ListApprovalsRequest {
+                .list_approvals(req(ListApprovalsRequest {
                     status: ApprovalStatus::Pending as i32,
                     execution_id: execution_id.to_owned(),
                 }))
@@ -142,7 +182,7 @@ impl Harness {
 
     async fn approve(&self, approval: &Approval) -> Approval {
         self.svc
-            .decide_approval(Request::new(DecideApprovalRequest {
+            .decide_approval(req(DecideApprovalRequest {
                 id: approval.id.clone(),
                 approve: true,
                 note: "looks good".into(),
@@ -162,7 +202,7 @@ impl Harness {
             .find(|o| o.recommended)
             .expect("a recommended option");
         self.svc
-            .resolve_failure(Request::new(ResolveFailureRequest {
+            .resolve_failure(req(ResolveFailureRequest {
                 execution_id: id.to_owned(),
                 option_id: option.id.clone(),
                 instruction: String::new(),
@@ -228,7 +268,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let created = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "proj-1".into(),
             proposal_id: "prop-1".into(),
             pattern_id: "pattern-aws".into(),
@@ -258,7 +298,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
     // Resolving before anything failed is a precondition error.
     let err = h
         .svc
-        .resolve_failure(Request::new(ResolveFailureRequest {
+        .resolve_failure(req(ResolveFailureRequest {
             execution_id: id.clone(),
             option_id: "retry".into(),
             instruction: String::new(),
@@ -270,7 +310,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
     // Watch from the beginning before starting so the replay/live seam is covered.
     let stream = h
         .svc
-        .watch_execution(Request::new(WatchExecutionRequest {
+        .watch_execution(req(WatchExecutionRequest {
             execution_id: id.clone(),
             after_seq: 0,
         }))
@@ -288,7 +328,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let started = h
         .svc
-        .start_execution(Request::new(StartExecutionRequest {
+        .start_execution(req(StartExecutionRequest {
             id: id.clone(),
             fault: Some(FaultInjection {
                 step_key: "env".into(),
@@ -304,7 +344,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
     assert!(started.started_at.is_some());
     let twice = h
         .svc
-        .start_execution(Request::new(StartExecutionRequest {
+        .start_execution(req(StartExecutionRequest {
             id: id.clone(),
             fault: None,
         }))
@@ -325,7 +365,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
     assert_eq!(decided.status, ApprovalStatus::Approved as i32);
     let again = h
         .svc
-        .decide_approval(Request::new(DecideApprovalRequest {
+        .decide_approval(req(DecideApprovalRequest {
             id: approval.id.clone(),
             approve: false,
             note: String::new(),
@@ -359,7 +399,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let bad = h
         .svc
-        .resolve_failure(Request::new(ResolveFailureRequest {
+        .resolve_failure(req(ResolveFailureRequest {
             execution_id: id.clone(),
             option_id: "teleport".into(),
             instruction: String::new(),
@@ -396,7 +436,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let identities = h
         .svc
-        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .list_identities(req(ListIdentitiesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -492,7 +532,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let listed = h
         .svc
-        .list_events(Request::new(ListEventsRequest {
+        .list_events(req(ListEventsRequest {
             execution_id: id.clone(),
             after_seq: 50,
             limit: 0,
@@ -506,7 +546,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
     // A watch opened after the end replays and closes on its own.
     let mut late = h
         .svc
-        .watch_execution(Request::new(WatchExecutionRequest {
+        .watch_execution(req(WatchExecutionRequest {
             execution_id: id.clone(),
             after_seq: events.len() as u64 - 2,
         }))
@@ -529,7 +569,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let stats = h
         .svc
-        .get_delivery_stats(Request::new(GetDeliveryStatsRequest {
+        .get_delivery_stats(req(GetDeliveryStatsRequest {
             project_id: "proj-1".into(),
         }))
         .await
@@ -546,12 +586,10 @@ async fn full_flight_with_approvals_fault_and_replan() {
 
     let listing = h
         .svc
-        .list_executions(Request::new(
-            sdi_proto::execution::v1::ListExecutionsRequest {
-                project_id: String::new(),
-                limit: 0,
-            },
-        ))
+        .list_executions(req(ListExecutionsRequest {
+            project_id: String::new(),
+            limit: 0,
+        }))
         .await
         .unwrap()
         .into_inner()
@@ -571,7 +609,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
 
     let cyclic = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             proposal_id: String::new(),
             pattern_id: String::new(),
@@ -588,7 +626,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
 
     let unknown = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             proposal_id: String::new(),
             pattern_id: String::new(),
@@ -602,7 +640,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
 
     let exec = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             proposal_id: String::new(),
             pattern_id: String::new(),
@@ -621,7 +659,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
 
     let cancelled = h
         .svc
-        .cancel_execution(Request::new(CancelExecutionRequest {
+        .cancel_execution(req(CancelExecutionRequest {
             id: exec.id.clone(),
             reason: "changed my mind".into(),
         }))
@@ -632,7 +670,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
     assert_eq!(status_of(&cancelled.steps[0]), StepStatus::Cancelled);
     let twice = h
         .svc
-        .cancel_execution(Request::new(CancelExecutionRequest {
+        .cancel_execution(req(CancelExecutionRequest {
             id: exec.id.clone(),
             reason: String::new(),
         }))
@@ -642,7 +680,7 @@ async fn invalid_plans_are_rejected_and_cancel_works_from_planning() {
 
     let events = h
         .svc
-        .list_events(Request::new(ListEventsRequest {
+        .list_events(req(ListEventsRequest {
             execution_id: exec.id.clone(),
             after_seq: 0,
             limit: 0,
@@ -665,7 +703,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let policies = h
         .svc
-        .list_policies(Request::new(ListPoliciesRequest {}))
+        .list_policies(req(ListPoliciesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -679,7 +717,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let locked = h
         .svc
-        .update_policy(Request::new(UpdatePolicyRequest {
+        .update_policy(req(UpdatePolicyRequest {
             action_type: "deploy.production".into(),
             decision: PolicyDecision::Auto as i32,
         }))
@@ -689,7 +727,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let blocked = h
         .svc
-        .update_policy(Request::new(UpdatePolicyRequest {
+        .update_policy(req(UpdatePolicyRequest {
             action_type: "container.run".into(),
             decision: PolicyDecision::Blocked as i32,
         }))
@@ -699,7 +737,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let relaxed = h
         .svc
-        .update_policy(Request::new(UpdatePolicyRequest {
+        .update_policy(req(UpdatePolicyRequest {
             action_type: "container.run".into(),
             decision: PolicyDecision::Auto as i32,
         }))
@@ -710,7 +748,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let missing = h
         .svc
-        .update_policy(Request::new(UpdatePolicyRequest {
+        .update_policy(req(UpdatePolicyRequest {
             action_type: "nope".into(),
             decision: PolicyDecision::Auto as i32,
         }))
@@ -720,7 +758,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let identities = h
         .svc
-        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .list_identities(req(ListIdentitiesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -754,7 +792,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let granted = h
         .svc
-        .grant_permission(Request::new(GrantPermissionRequest {
+        .grant_permission(req(GrantPermissionRequest {
             identity_id: simulated.id.clone(),
             permissions: vec!["cloud:write".into(), "repository:read".into()],
             ttl_minutes: 0,
@@ -777,7 +815,7 @@ async fn policies_and_grants_follow_the_contract() {
 
     let bad = h
         .svc
-        .grant_permission(Request::new(GrantPermissionRequest {
+        .grant_permission(req(GrantPermissionRequest {
             identity_id: simulated.id.clone(),
             permissions: vec!["admin".into()],
             ttl_minutes: 5,
@@ -797,7 +835,7 @@ async fn startup_recovery_pauses_executions_left_mid_step() {
 
     let exec = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             proposal_id: String::new(),
             pattern_id: String::new(),
@@ -930,7 +968,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
     };
     let created = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             title: "local build".into(),
             steps: docker_plan(),
@@ -944,7 +982,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
     assert_eq!(created.adapter, "docker");
     let identities = h
         .svc
-        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .list_identities(req(ListIdentitiesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -964,7 +1002,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
 
     let refused = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             title: "too much".into(),
             steps: vec![
@@ -986,7 +1024,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
 
     let reserved = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             steps: vec![step("a", "repo.read", "local", &[], &[])],
             adapter: "kubernetes".into(),
@@ -998,7 +1036,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
 
     let unknown = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             steps: vec![step("a", "repo.read", "local", &[], &[])],
             adapter: "mystery".into(),
@@ -1023,7 +1061,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
     };
     let no_token = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             steps: github_plan(),
             adapter: "github".into(),
@@ -1039,7 +1077,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
         .unwrap();
     let github = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             steps: github_plan(),
             adapter: "github".into(),
@@ -1051,7 +1089,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
     assert_eq!(github.adapter, "github");
     let identities = h
         .svc
-        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .list_identities(req(ListIdentitiesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -1067,7 +1105,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
     // A github run cannot build containers.
     let refused = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "p".into(),
             steps: vec![step("build", "container.build", "docker", &[], &[])],
             adapter: "github".into(),
@@ -1084,7 +1122,7 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
         .unwrap();
     let identities = h
         .svc
-        .list_identities(Request::new(ListIdentitiesRequest {}))
+        .list_identities(req(ListIdentitiesRequest {}))
         .await
         .unwrap()
         .into_inner()
@@ -1105,14 +1143,14 @@ async fn platform_events_report_executions_and_approvals() {
     };
     let mut feed = h
         .svc
-        .watch_events(Request::new(sdi_proto::common::v1::WatchEventsRequest {}))
+        .watch_events(req(sdi_proto::common::v1::WatchEventsRequest {}))
         .await
         .unwrap()
         .into_inner();
 
     let created = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "proj-live".into(),
             title: "live".into(),
             steps: vec![
@@ -1137,7 +1175,7 @@ async fn platform_events_report_executions_and_approvals() {
     assert_eq!(first.data["adapter"], "simulated");
 
     h.svc
-        .start_execution(Request::new(StartExecutionRequest {
+        .start_execution(req(StartExecutionRequest {
             id: created.id.clone(),
             fault: None,
         }))
@@ -1206,7 +1244,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
     };
     let created = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "proj-cap".into(),
             pattern_id: "pattern-flaky".into(),
             title: "never builds".into(),
@@ -1221,7 +1259,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
         .into_inner();
     let id = created.id.clone();
     h.svc
-        .start_execution(Request::new(StartExecutionRequest {
+        .start_execution(req(StartExecutionRequest {
             id: id.clone(),
             fault: None,
         }))
@@ -1239,7 +1277,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
         assert!(ids.contains(&"give_up"), "{ids:?}");
         let replanned = h
             .svc
-            .resolve_failure(Request::new(ResolveFailureRequest {
+            .resolve_failure(req(ResolveFailureRequest {
                 execution_id: id.clone(),
                 option_id: "retry".into(),
                 instruction: String::new(),
@@ -1258,7 +1296,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
     assert!(failure.diagnosis.contains("no longer offered"));
     let retry = h
         .svc
-        .resolve_failure(Request::new(ResolveFailureRequest {
+        .resolve_failure(req(ResolveFailureRequest {
             execution_id: id.clone(),
             option_id: "retry".into(),
             instruction: String::new(),
@@ -1269,7 +1307,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
 
     let failed = h
         .svc
-        .resolve_failure(Request::new(ResolveFailureRequest {
+        .resolve_failure(req(ResolveFailureRequest {
             execution_id: id.clone(),
             option_id: "give_up".into(),
             instruction: String::new(),
@@ -1288,7 +1326,7 @@ async fn the_retry_cap_forces_give_up_which_fails_the_run() {
     );
     let stats = h
         .svc
-        .get_delivery_stats(Request::new(GetDeliveryStatsRequest {
+        .get_delivery_stats(req(GetDeliveryStatsRequest {
             project_id: "proj-cap".into(),
         }))
         .await
@@ -1307,7 +1345,7 @@ async fn adapter_output_becomes_coalesced_log_events_and_outputs() {
     };
     let created = h
         .svc
-        .create_execution(Request::new(CreateExecutionRequest {
+        .create_execution(req(CreateExecutionRequest {
             project_id: "proj-logs".into(),
             title: "chatty".into(),
             steps: vec![step("build", "container.build", "docker", &[], &[])],
@@ -1317,7 +1355,7 @@ async fn adapter_output_becomes_coalesced_log_events_and_outputs() {
         .unwrap()
         .into_inner();
     h.svc
-        .start_execution(Request::new(StartExecutionRequest {
+        .start_execution(req(StartExecutionRequest {
             id: created.id.clone(),
             fault: None,
         }))
@@ -1328,7 +1366,7 @@ async fn adapter_output_becomes_coalesced_log_events_and_outputs() {
 
     let events = h
         .svc
-        .list_events(Request::new(ListEventsRequest {
+        .list_events(req(ListEventsRequest {
             execution_id: created.id.clone(),
             after_seq: 0,
             limit: 0,
@@ -1367,6 +1405,566 @@ async fn adapter_output_becomes_coalesced_log_events_and_outputs() {
         .unwrap();
     assert!(last_log < succeeded);
     assert_eq!(events[succeeded].data["output.image"], "sdi/build");
+
+    h.teardown().await;
+}
+
+/// Tenancy (CONTRACT.md §18): metadata is mandatory, roles gate writes by
+/// adapter, one workspace never sees another's runs, policies and
+/// identities are seeded per workspace on first use, peers get the caller
+/// (or the workspace's system principal) forwarded, events carry the
+/// workspace, actions are audited, and the export / delete RPCs are
+/// complete.
+#[tokio::test]
+async fn workspaces_are_isolated_and_roles_enforced() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let plan = || {
+        vec![
+            step("read", "repo.read", "github", &[], &[]),
+            step("stage", "deploy.staging", "cloud", &["read"], &[]),
+        ]
+    };
+    let create = |adapter: &str| CreateExecutionRequest {
+        project_id: "proj-t".into(),
+        pattern_id: "pattern-t".into(),
+        title: format!("{adapter} run"),
+        steps: plan(),
+        adapter: adapter.into(),
+        ..Default::default()
+    };
+
+    // No metadata: not even a list.
+    let err = h
+        .svc
+        .list_executions(Request::new(ListExecutionsRequest::default()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+
+    // Roles follow the adapter: dry runs are a member's, docker an approver's.
+    let err = h
+        .svc
+        .create_execution(as_role(Role::Viewer, WS_A, create("")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    let err = h
+        .svc
+        .create_execution(as_role(Role::Member, WS_A, create("docker")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    let docker = h
+        .svc
+        .create_execution(as_role(
+            Role::Approver,
+            WS_A,
+            CreateExecutionRequest {
+                steps: vec![step("checkout", "repo.checkout", "docker", &[], &[])],
+                ..create("docker")
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let err = h
+        .svc
+        .start_execution(as_role(
+            Role::Member,
+            WS_A,
+            StartExecutionRequest {
+                id: docker.id.clone(),
+                fault: None,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+
+    // A member of A creates a dry run; knowledge was asked as that member.
+    let created = h
+        .svc
+        .create_execution(as_role(Role::Member, WS_A, create("")))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        h.outcomes
+            .callers
+            .lock()
+            .unwrap()
+            .contains(&principal(Role::Member, WS_A))
+    );
+    let (created_by,): (String,) =
+        sqlx::query_as("SELECT created_by FROM executions WHERE id = $1")
+            .bind(Uuid::parse_str(&created.id).unwrap())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(created_by, "user-member");
+
+    // B cannot see it: the id alone is nothing.
+    let err = h
+        .svc
+        .get_execution(as_role(
+            Role::Admin,
+            WS_B,
+            GetExecutionRequest {
+                id: created.id.clone(),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = h
+        .svc
+        .start_execution(as_role(
+            Role::Admin,
+            WS_B,
+            StartExecutionRequest {
+                id: created.id.clone(),
+                fault: None,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = h
+        .svc
+        .cancel_execution(as_role(
+            Role::Admin,
+            WS_B,
+            CancelExecutionRequest {
+                id: created.id.clone(),
+                reason: String::new(),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = h
+        .svc
+        .watch_execution(as_role(
+            Role::Admin,
+            WS_B,
+            WatchExecutionRequest {
+                execution_id: created.id.clone(),
+                after_seq: 0,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let listed = h
+        .svc
+        .list_executions(as_role(
+            Role::Viewer,
+            WS_B,
+            ListExecutionsRequest::default(),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.executions.is_empty());
+    let events = h
+        .svc
+        .list_events(as_role(
+            Role::Viewer,
+            WS_B,
+            ListEventsRequest {
+                execution_id: created.id.clone(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(events.events.is_empty());
+
+    // Policies: B gets its own §5.2 copy on first use; A's edit stays in A.
+    let policies_b = h
+        .svc
+        .list_policies(as_role(Role::Viewer, WS_B, ListPoliciesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .policies;
+    assert_eq!(policies_b.len(), 22);
+    let err = h
+        .svc
+        .update_policy(as_role(
+            Role::Approver,
+            WS_A,
+            UpdatePolicyRequest {
+                action_type: "container.run".into(),
+                decision: PolicyDecision::Auto as i32,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    h.svc
+        .update_policy(req(UpdatePolicyRequest {
+            action_type: "container.run".into(),
+            decision: PolicyDecision::Auto as i32,
+        }))
+        .await
+        .unwrap();
+    let decision_in = |policies: &[sdi_proto::execution::v1::Policy]| {
+        policies
+            .iter()
+            .find(|p| p.action_type == "container.run")
+            .map(|p| p.decision)
+            .unwrap()
+    };
+    let policies_a = h
+        .svc
+        .list_policies(req(ListPoliciesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .policies;
+    let policies_b = h
+        .svc
+        .list_policies(as_role(Role::Viewer, WS_B, ListPoliciesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .policies;
+    assert_eq!(decision_in(&policies_a), PolicyDecision::Auto as i32);
+    assert_eq!(decision_in(&policies_b), PolicyDecision::Approval as i32);
+
+    // Identities: each workspace has its own two, with their own ids.
+    let identities_a = h
+        .svc
+        .list_identities(req(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    let identities_b = h
+        .svc
+        .list_identities(as_role(Role::Viewer, WS_B, ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    assert_eq!((identities_a.len(), identities_b.len()), (2, 2));
+    assert!(
+        identities_a
+            .iter()
+            .all(|a| identities_b.iter().all(|b| a.id != b.id))
+    );
+    let simulated_a = identities_a.iter().find(|i| i.name == "simulated").unwrap();
+    assert_eq!(created.identity_id, simulated_a.id);
+    let err = h
+        .svc
+        .grant_permission(as_role(
+            Role::Admin,
+            WS_B,
+            GrantPermissionRequest {
+                identity_id: simulated_a.id.clone(),
+                permissions: vec!["cloud:write".into()],
+                ttl_minutes: 0,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound, "A's identity is invisible in B");
+    let err = h
+        .svc
+        .grant_permission(as_role(
+            Role::Member,
+            WS_A,
+            GrantPermissionRequest {
+                identity_id: simulated_a.id.clone(),
+                permissions: vec!["cloud:write".into()],
+                ttl_minutes: 0,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    h.svc
+        .grant_permission(as_role(
+            Role::Approver,
+            WS_A,
+            GrantPermissionRequest {
+                identity_id: simulated_a.id.clone(),
+                permissions: vec!["cloud:write".into()],
+                ttl_minutes: 0,
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Events are scoped: B's feed stays silent while A runs.
+    let mut feed_a = h
+        .svc
+        .watch_events(as_role(Role::Viewer, WS_A, WatchEventsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut feed_b = h
+        .svc
+        .watch_events(as_role(Role::Viewer, WS_B, WatchEventsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // The member starts the dry run; deploy.staging asks a human, who must
+    // be an approver; the outcome goes to knowledge as the system principal.
+    h.svc
+        .start_execution(as_role(
+            Role::Member,
+            WS_A,
+            StartExecutionRequest {
+                id: created.id.clone(),
+                fault: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let approval = h.wait_pending_approval(&created.id).await;
+    let err = h
+        .svc
+        .decide_approval(as_role(
+            Role::Member,
+            WS_A,
+            DecideApprovalRequest {
+                id: approval.id.clone(),
+                approve: true,
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    let err = h
+        .svc
+        .decide_approval(as_role(
+            Role::Approver,
+            WS_B,
+            DecideApprovalRequest {
+                id: approval.id.clone(),
+                approve: true,
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let decided = h
+        .svc
+        .decide_approval(as_role(
+            Role::Approver,
+            WS_A,
+            DecideApprovalRequest {
+                id: approval.id.clone(),
+                approve: true,
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        decided.decided_by, "user-approver",
+        "defaults to the caller"
+    );
+    h.wait_status(&created.id, ExecutionStatus::Succeeded).await;
+    assert_eq!(
+        h.outcomes.callers.lock().unwrap().last(),
+        Some(&Principal::system(WS_A))
+    );
+    let event = tokio::time::timeout(WAIT, feed_a.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event.data.get("workspace_id").map(String::as_str),
+        Some(WS_A)
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), feed_b.next())
+            .await
+            .is_err(),
+        "B saw A's event"
+    );
+
+    // Everything that matters was audited, as the caller, in the workspace.
+    let actions = h.audit.actions();
+    for expected in [
+        "policy.update",
+        "identity.grant",
+        "execution.start",
+        "approval.decide",
+    ] {
+        assert!(actions.contains(&expected.to_owned()), "{actions:?}");
+    }
+    {
+        let entries = h.audit.entries.lock().unwrap();
+        assert!(entries.iter().all(|(p, e)| p.workspace_id == WS_A
+            && e.workspace_id == WS_A
+            && e.user_id == p.user_id
+            && e.at.is_some()));
+        let (p, start) = entries
+            .iter()
+            .find(|(_, e)| e.action == "execution.start")
+            .unwrap();
+        assert_eq!(p.user_id, "user-member");
+        assert_eq!(
+            (start.entity.as_str(), start.entity_id.as_str()),
+            ("execution", created.id.as_str())
+        );
+        let (_, decide) = entries
+            .iter()
+            .find(|(_, e)| e.action == "approval.decide")
+            .unwrap();
+        assert_eq!(decide.entity_id, approval.id);
+        assert!(decide.detail.starts_with("approved"));
+    }
+
+    // Export is complete and scoped.
+    let export = |role: Role, workspace: &str| {
+        as_role(
+            role,
+            WS_A,
+            ExportWorkspaceDataRequest {
+                workspace_id: workspace.to_owned(),
+            },
+        )
+    };
+    assert_eq!(
+        h.svc
+            .export_workspace_data(export(Role::Admin, WS_B))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        h.svc
+            .export_workspace_data(export(Role::Approver, WS_A))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let mut stream = h
+        .svc
+        .export_workspace_data(export(Role::Admin, WS_A))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut records = Vec::new();
+    while let Some(record) = stream.next().await {
+        records.push(record.unwrap());
+    }
+    let count = |entity: &str| records.iter().filter(|r| r.entity == entity).count();
+    assert_eq!(count("execution"), 2);
+    assert_eq!(count("step"), 3);
+    assert_eq!(count("approval"), 1);
+    assert_eq!(count("policy"), 22);
+    assert_eq!(count("identity"), 2);
+    assert!(count("grant") >= 8);
+    assert!(count("event") > 5);
+    for record in &records {
+        let json: serde_json::Value = serde_json::from_str(&record.json).unwrap();
+        assert_eq!(json["workspace_id"], WS_A, "{}", record.entity);
+    }
+
+    // Delete cancels what is live, then removes everything; B is untouched.
+    let live = h
+        .svc
+        .create_execution(as_role(Role::Member, WS_A, create("")))
+        .await
+        .unwrap()
+        .into_inner();
+    h.svc
+        .start_execution(as_role(
+            Role::Member,
+            WS_A,
+            StartExecutionRequest {
+                id: live.id.clone(),
+                fault: None,
+            },
+        ))
+        .await
+        .unwrap();
+    h.wait_pending_approval(&live.id).await;
+    let other = h
+        .svc
+        .create_execution(as_role(Role::Member, WS_B, create("")))
+        .await
+        .unwrap()
+        .into_inner();
+    let delete = |role: Role, workspace: &str| {
+        as_role(
+            role,
+            WS_A,
+            DeleteWorkspaceDataRequest {
+                workspace_id: workspace.to_owned(),
+            },
+        )
+    };
+    assert_eq!(
+        h.svc
+            .delete_workspace_data(delete(Role::Admin, WS_A))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        h.svc
+            .delete_workspace_data(delete(Role::Owner, WS_B))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let deleted = h
+        .svc
+        .delete_workspace_data(delete(Role::Owner, WS_A))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        deleted.cancelled, 2,
+        "the docker run in PLANNING and the waiting one"
+    );
+    assert_eq!(deleted.deleted["execution"], 3);
+    assert_eq!(deleted.deleted["policy"], 22);
+    assert_eq!(deleted.deleted["identity"], 2);
+    assert!(deleted.deleted["approval"] >= 2);
+    let listed = h
+        .svc
+        .list_executions(req(ListExecutionsRequest::default()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.executions.is_empty());
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM steps WHERE workspace_id = $1")
+        .bind(Uuid::parse_str(WS_A).unwrap())
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert_eq!(h.get_as(Role::Member, WS_B, &other.id).await.id, other.id);
+    // A is seeded again on its next use.
+    let policies_a = h
+        .svc
+        .list_policies(req(ListPoliciesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .policies;
+    assert_eq!(policies_a.len(), 22);
+    assert_eq!(decision_in(&policies_a), PolicyDecision::Approval as i32);
 
     h.teardown().await;
 }

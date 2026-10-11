@@ -9,6 +9,7 @@ use super::Tx;
 #[derive(Debug, Clone, FromRow)]
 pub struct ApprovalRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub execution_id: Uuid,
     pub step_key: String,
     pub reason: String,
@@ -28,16 +29,18 @@ pub struct ApprovalRow {
     pub required_permissions: Vec<String>,
 }
 
-const SELECT: &str = "SELECT a.id, a.execution_id, a.step_key, a.reason, a.status, a.decided_by, a.note, \
-     a.requested_at, a.decided_at, e.number AS execution_number, e.title AS execution_title, \
+const SELECT: &str = "SELECT a.id, a.workspace_id, a.execution_id, a.step_key, a.reason, a.status, a.decided_by, \
+     a.note, a.requested_at, a.decided_at, e.number AS execution_number, e.title AS execution_title, \
      e.project_id, e.project_name, s.title AS step_title, s.action_type, s.risk, s.policy_decision, \
      s.required_permissions \
      FROM approvals a \
      JOIN executions e ON e.id = a.execution_id \
      JOIN steps s ON s.execution_id = a.execution_id AND s.key = a.step_key";
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     execution_id: Uuid,
     revision: i32,
@@ -45,10 +48,11 @@ pub async fn insert(
     reason: &str,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO approvals (id, execution_id, revision, step_key, reason, status) \
-         VALUES ($1, $2, $3, $4, $5, 'PENDING')",
+        "INSERT INTO approvals (id, workspace_id, execution_id, revision, step_key, reason, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')",
     )
     .bind(id)
+    .bind(workspace_id)
     .bind(execution_id)
     .bind(revision)
     .bind(step_key)
@@ -58,23 +62,33 @@ pub async fn insert(
     .map(|_| ())
 }
 
-pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<ApprovalRow> {
-    sqlx::query_as(sqlx::AssertSqlSafe(format!("{SELECT} WHERE a.id = $1")))
-        .bind(id)
-        .fetch_one(exec)
-        .await
+pub async fn get<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<ApprovalRow> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{SELECT} WHERE a.workspace_id = $1 AND a.id = $2"
+    )))
+    .bind(workspace_id)
+    .bind(id)
+    .fetch_one(exec)
+    .await
 }
 
 /// `status` empty lists every status; `execution_id` None lists every execution.
 pub async fn list<'e>(
     exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
     status: &str,
     execution_id: Option<Uuid>,
 ) -> sqlx::Result<Vec<ApprovalRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{SELECT} WHERE ($1 = '' OR a.status = $1) AND ($2::uuid IS NULL OR a.execution_id = $2) \
+        "{SELECT} WHERE a.workspace_id = $1 AND ($2 = '' OR a.status = $2) \
+           AND ($3::uuid IS NULL OR a.execution_id = $3) \
          ORDER BY a.requested_at DESC"
     )))
+    .bind(workspace_id)
     .bind(status)
     .bind(execution_id)
     .fetch_all(exec)
@@ -85,6 +99,7 @@ pub async fn list<'e>(
 /// or expired, so the caller can answer FAILED_PRECONDITION.
 pub async fn decide(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     approve: bool,
     decided_by: &str,
@@ -92,9 +107,10 @@ pub async fn decide(
 ) -> sqlx::Result<bool> {
     let status = if approve { "APPROVED" } else { "REJECTED" };
     let result = sqlx::query(
-        "UPDATE approvals SET status = $2, decided_by = $3, note = $4, decided_at = now() \
-         WHERE id = $1 AND status = 'PENDING'",
+        "UPDATE approvals SET status = $3, decided_by = $4, note = $5, decided_at = now() \
+         WHERE workspace_id = $1 AND id = $2 AND status = 'PENDING'",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(status)
     .bind(decided_by)
@@ -104,11 +120,16 @@ pub async fn decide(
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn expire_pending(tx: &mut Tx, execution_id: Uuid) -> sqlx::Result<u64> {
+pub async fn expire_pending(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    execution_id: Uuid,
+) -> sqlx::Result<u64> {
     sqlx::query(
         "UPDATE approvals SET status = 'EXPIRED', decided_at = now() \
-         WHERE execution_id = $1 AND status = 'PENDING'",
+         WHERE workspace_id = $1 AND execution_id = $2 AND status = 'PENDING'",
     )
+    .bind(workspace_id)
     .bind(execution_id)
     .execute(&mut **tx)
     .await

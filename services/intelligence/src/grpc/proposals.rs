@@ -13,7 +13,7 @@ use sqlx::types::Json;
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{IntelligenceGrpc, parse_id, require};
+use super::{Caller, IntelligenceGrpc, parse_id, require};
 use crate::{
     convert,
     db::{
@@ -33,6 +33,7 @@ const SIMILAR_PROJECTS: u32 = 5;
 /// Broadcasts a proposal change with its status and revision.
 pub(super) fn emit_proposal(svc: &IntelligenceGrpc, row: &ProposalRow, action: &str) {
     svc.events.emit(
+        row.workspace_id,
         "proposal",
         &row.id.to_string(),
         &row.project_id,
@@ -48,6 +49,7 @@ pub(super) fn emit_proposal(svc: &IntelligenceGrpc, row: &ProposalRow, action: &
 
 pub(super) fn emit_decision(svc: &IntelligenceGrpc, row: &DecisionRow, action: &str) {
     svc.events.emit(
+        row.workspace_id,
         "decision",
         &row.id.to_string(),
         &row.project_id,
@@ -57,11 +59,36 @@ pub(super) fn emit_decision(svc: &IntelligenceGrpc, row: &DecisionRow, action: &
     );
 }
 
+/// Stores a decision, indexes it as memory, broadcasts and audits it.
+pub(super) async fn record_decision(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    decision: &DecisionRow,
+) -> Result<(), Status> {
+    crate::db::decisions::insert(&svc.pool, decision)
+        .await
+        .map_err(db_status)?;
+    index_decision(svc, caller, decision).await;
+    emit_decision(svc, decision, "created");
+    svc.audit(
+        caller,
+        "decision.create",
+        "decision",
+        &decision.id.to_string(),
+        format!(
+            "{} ({}, {})",
+            decision.title, decision.scope, decision.source
+        ),
+    );
+    Ok(())
+}
+
 /// Context and candidates from knowledge, decisions from our own schema, then
 /// the pure ranker. Similar projects are evidence only, so their failure is
 /// logged and ignored.
 pub(super) async fn rank_for(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     project_id: &str,
     kind: ProposalKind,
     constraints: &[ConstraintData],
@@ -70,16 +97,26 @@ pub(super) async fn rank_for(
 ) -> Result<(ProjectContext, Vec<RankedOption>), Status> {
     let context = svc
         .knowledge
-        .project_context(project_id)
+        .project_context(&caller.principal, project_id)
         .await
         .map_err(|e| e.into_status())?;
-    let options = rank_with(svc, &context, kind, constraints, weights, cost_ceiling).await?;
+    let options = rank_with(
+        svc,
+        caller,
+        &context,
+        kind,
+        constraints,
+        weights,
+        cost_ceiling,
+    )
+    .await?;
     Ok((context, options))
 }
 
 /// `rank_for` with a context the caller already holds.
 pub(super) async fn rank_with(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     context: &ProjectContext,
     kind: ProposalKind,
     constraints: &[ConstraintData],
@@ -95,18 +132,19 @@ pub(super) async fn rank_with(
         .unwrap_or_default();
     let patterns = svc
         .knowledge
-        .list_patterns(category)
+        .list_patterns(&caller.principal, category)
         .await
         .map_err(|e| e.into_status())?;
-    let decisions: Vec<_> = crate::db::decisions::active_for_project(&svc.pool, project_id)
-        .await
-        .map_err(db_status)?
-        .iter()
-        .map(convert::decision)
-        .collect();
+    let decisions: Vec<_> =
+        crate::db::decisions::active_for_project(&svc.pool, caller.workspace, project_id)
+            .await
+            .map_err(db_status)?
+            .iter()
+            .map(convert::decision)
+            .collect();
     let similar = match svc
         .knowledge
-        .similar_projects(project_id, SIMILAR_PROJECTS)
+        .similar_projects(&caller.principal, project_id, SIMILAR_PROJECTS)
         .await
     {
         Ok(similar) => similar,
@@ -141,13 +179,20 @@ fn initial_constraints(request_budget: f64, context: &ProjectContext) -> Vec<Con
     budget.map(ConstraintData::budget).into_iter().collect()
 }
 
-pub(super) async fn load(svc: &IntelligenceGrpc, id: &str) -> Result<ProposalRow, Status> {
+pub(super) async fn load(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    id: &str,
+) -> Result<ProposalRow, Status> {
     let id = parse_id("id", id)?;
-    repo::get(&svc.pool, id).await.map_err(db_status)
+    repo::get(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)
 }
 
 pub(super) async fn generate(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GenerateProposalRequest,
 ) -> Result<Proposal, Status> {
     let project_id = require("project_id", &request.project_id)?;
@@ -161,12 +206,13 @@ pub(super) async fn generate(
             "budget_monthly_usd must be positive",
         ));
     }
-    let settings = svc.settings().await?;
+    let settings = svc.settings(caller).await?;
     let weights = settings.default_weights.0.clone();
     // The budget can only be known once the context (with `.sdi.yml`) is
     // loaded, so a budgeted proposal ranks twice: the first pass is cheap.
     let (context, options) = rank_for(
         svc,
+        caller,
         &project_id,
         kind,
         &[],
@@ -180,6 +226,7 @@ pub(super) async fn generate(
     } else {
         rank_for(
             svc,
+            caller,
             &project_id,
             kind,
             &constraints,
@@ -200,9 +247,11 @@ pub(super) async fn generate(
         &options,
     );
 
+    let access = svc.reasoner_access(caller).await;
     let now = Utc::now();
     let row = ProposalRow {
         id: Uuid::now_v7(),
+        workspace_id: caller.workspace,
         project_id: project_id.clone(),
         kind: convert::kind_to_str(kind),
         status: "proposed".to_owned(),
@@ -216,17 +265,19 @@ pub(super) async fn generate(
         constraints: Json(constraints),
         weights: Json(weights),
         revision: 1,
-        reasoner: svc.reasoner_for(&settings).name().to_owned(),
+        reasoner: svc.reasoner_for(&settings, &access).name().to_owned(),
         created_at: now,
         updated_at: now,
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
-    let superseded = repo::supersede_open(&svc.pool, &project_id, &row.kind, row.id)
-        .await
-        .map_err(db_status)?;
+    let superseded =
+        repo::supersede_open(&svc.pool, caller.workspace, &project_id, &row.kind, row.id)
+            .await
+            .map_err(db_status)?;
     emit_proposal(svc, &row, "created");
     for id in superseded {
         svc.events.emit(
+            caller.workspace,
             "proposal",
             &id.to_string(),
             &project_id,
@@ -237,6 +288,7 @@ pub(super) async fn generate(
     }
 
     let opening = MessageRow::new(
+        caller.workspace,
         row.id,
         "system",
         narrative::opening_message(&row.options.0, &row.weights.0),
@@ -251,7 +303,14 @@ pub(super) async fn generate(
         .await
         .map_err(db_status)?;
     if !row.prompt.is_empty() {
-        let prompt = MessageRow::new(row.id, "user", row.prompt.clone(), false, Vec::new());
+        let prompt = MessageRow::new(
+            caller.workspace,
+            row.id,
+            "user",
+            row.prompt.clone(),
+            false,
+            Vec::new(),
+        );
         crate::db::messages::insert(&svc.pool, &prompt)
             .await
             .map_err(db_status)?;
@@ -262,9 +321,10 @@ pub(super) async fn generate(
 
 pub(super) async fn list(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: ListProposalsRequest,
 ) -> Result<ListProposalsResponse, Status> {
-    let rows = repo::list(&svc.pool, request.project_id.trim())
+    let rows = repo::list(&svc.pool, caller.workspace, request.project_id.trim())
         .await
         .map_err(db_status)?;
     Ok(ListProposalsResponse {
@@ -274,18 +334,20 @@ pub(super) async fn list(
 
 pub(super) async fn get(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GetProposalRequest,
 ) -> Result<Proposal, Status> {
-    load(svc, &request.id)
+    load(svc, caller, &request.id)
         .await
         .map(|row| convert::proposal(&row))
 }
 
 pub(super) async fn accept(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: AcceptProposalRequest,
 ) -> Result<Proposal, Status> {
-    let row = load(svc, &request.id).await?;
+    let row = load(svc, caller, &request.id).await?;
     if !row.is_open() {
         return Err(Status::failed_precondition(format!(
             "proposal is {}",
@@ -315,7 +377,7 @@ pub(super) async fn accept(
             "docker" => {
                 let context = svc
                     .knowledge
-                    .project_context(&row.project_id)
+                    .project_context(&caller.principal, &row.project_id)
                     .await
                     .map_err(|e| e.into_status())?;
                 let input =
@@ -336,7 +398,7 @@ pub(super) async fn accept(
                 }
                 let context = svc
                     .knowledge
-                    .project_context(&row.project_id)
+                    .project_context(&caller.principal, &row.project_id)
                     .await
                     .map_err(|e| e.into_status())?;
                 (
@@ -347,17 +409,22 @@ pub(super) async fn accept(
             }
             _ => (option.title.clone(), option.plan.clone(), Vec::new()),
         };
+        // The execution service applies its own role check for the adapter
+        // (docker/github need APPROVER) with the forwarded principal.
         let execution = svc
             .execution
-            .create_execution(CreateExecutionRequest {
-                project_id: row.project_id.clone(),
-                proposal_id: row.id.to_string(),
-                pattern_id: option.pattern_id.clone(),
-                title,
-                steps: steps.iter().map(convert::plan_step).collect(),
-                adapter: adapter.clone(),
-                artifacts: plans::artifact_map(&artifacts),
-            })
+            .create_execution(
+                &caller.principal,
+                CreateExecutionRequest {
+                    project_id: row.project_id.clone(),
+                    proposal_id: row.id.to_string(),
+                    pattern_id: option.pattern_id.clone(),
+                    title,
+                    steps: steps.iter().map(convert::plan_step).collect(),
+                    adapter: adapter.clone(),
+                    artifacts: plans::artifact_map(&artifacts),
+                },
+            )
             .await
             .map_err(|e| e.into_status())?;
         execution.id
@@ -367,6 +434,7 @@ pub(super) async fn accept(
 
     let decision = DecisionRow {
         id: Uuid::now_v7(),
+        workspace_id: caller.workspace,
         project_id: row.project_id.clone(),
         scope: convert::scope_to_str(DecisionScope::Project),
         status: "active".to_owned(),
@@ -388,7 +456,7 @@ pub(super) async fn accept(
                 .filter(|reason| seen.insert(reason.clone()))
                 .collect()
         },
-        approved_by: String::new(),
+        approved_by: caller.principal.user_id.clone(),
         proposal_id: row.id.to_string(),
         tags: option
             .tags
@@ -400,16 +468,19 @@ pub(super) async fn accept(
         superseded_at: None,
         superseded_by: String::new(),
     };
-    crate::db::decisions::insert(&svc.pool, &decision)
-        .await
-        .map_err(db_status)?;
-    index_decision(svc, &decision).await;
-    emit_decision(svc, &decision, "created");
+    record_decision(svc, caller, &decision).await?;
 
-    repo::accept(&svc.pool, row.id, &option_id, &execution_id)
-        .await
-        .map_err(db_status)?;
+    repo::accept(
+        &svc.pool,
+        caller.workspace,
+        row.id,
+        &option_id,
+        &execution_id,
+    )
+    .await
+    .map_err(db_status)?;
     let note = MessageRow::new(
+        caller.workspace,
         row.id,
         "system",
         if execution_id.is_empty() {
@@ -429,28 +500,44 @@ pub(super) async fn accept(
     crate::db::messages::insert(&svc.pool, &note)
         .await
         .map_err(db_status)?;
+    svc.audit(
+        caller,
+        "proposal.accept",
+        "proposal",
+        &row.id.to_string(),
+        if execution_id.is_empty() {
+            format!("option {option_id} ({})", option.title)
+        } else {
+            format!(
+                "option {option_id} ({}); execution {execution_id} via {adapter}",
+                option.title
+            )
+        },
+    );
 
-    let row = load(svc, &request.id).await?;
+    let row = load(svc, caller, &request.id).await?;
     emit_proposal(svc, &row, "updated");
     Ok(convert::proposal(&row))
 }
 
 pub(super) async fn reject(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: RejectProposalRequest,
 ) -> Result<Proposal, Status> {
-    let row = load(svc, &request.id).await?;
+    let row = load(svc, caller, &request.id).await?;
     if !row.is_open() {
         return Err(Status::failed_precondition(format!(
             "proposal is {}",
             row.status
         )));
     }
-    repo::set_status(&svc.pool, row.id, "rejected")
+    repo::set_status(&svc.pool, caller.workspace, row.id, "rejected")
         .await
         .map_err(db_status)?;
     let reason = request.reason.trim();
     let note = MessageRow::new(
+        caller.workspace,
         row.id,
         "system",
         if reason.is_empty() {
@@ -464,13 +551,17 @@ pub(super) async fn reject(
     crate::db::messages::insert(&svc.pool, &note)
         .await
         .map_err(db_status)?;
-    let row = load(svc, &request.id).await?;
+    let row = load(svc, caller, &request.id).await?;
     emit_proposal(svc, &row, "updated");
     Ok(convert::proposal(&row))
 }
 
 /// Decisions become semantic memory; losing the index entry is not fatal.
-pub(super) async fn index_decision(svc: &IntelligenceGrpc, decision: &DecisionRow) {
+pub(super) async fn index_decision(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    decision: &DecisionRow,
+) {
     let content = format!(
         "{}\n{}\nReasons: {}\nTags: {}",
         decision.title,
@@ -480,14 +571,17 @@ pub(super) async fn index_decision(svc: &IntelligenceGrpc, decision: &DecisionRo
     );
     if let Err(error) = svc
         .knowledge
-        .index_knowledge(IndexKnowledgeRequest {
-            kind: KnowledgeKind::Decision as i32,
-            project_id: decision.project_id.clone(),
-            ref_id: decision.id.to_string(),
-            title: decision.title.clone(),
-            content,
-            path: String::new(),
-        })
+        .index_knowledge(
+            &caller.principal,
+            IndexKnowledgeRequest {
+                kind: KnowledgeKind::Decision as i32,
+                project_id: decision.project_id.clone(),
+                ref_id: decision.id.to_string(),
+                title: decision.title.clone(),
+                content,
+                path: String::new(),
+            },
+        )
         .await
     {
         tracing::warn!(%error, decision = %decision.id, "could not index decision");

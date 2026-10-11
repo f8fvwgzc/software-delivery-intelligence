@@ -1,7 +1,7 @@
 //! Proposals, their negotiation threads, the generated files behind each
 //! option and the shortcut that turns an option into a pull request.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::intelligence::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -16,7 +16,7 @@ use crate::{
         },
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -39,7 +39,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Proposal>), ErrorResponses),
 )]
 async fn list_proposals(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListProposalsQuery>,
 ) -> ApiResult<Json<Vec<Proposal>>> {
     let response = state
@@ -62,7 +62,7 @@ async fn list_proposals(
     responses((status = 201, body = Proposal), ErrorResponses),
 )]
 async fn generate_proposal(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiJson(body): ApiJson<GenerateProposalRequest>,
 ) -> ApiResult<(StatusCode, Json<Proposal>)> {
     let budget = body.budget_monthly_usd.unwrap_or(0.0);
@@ -93,10 +93,7 @@ async fn generate_proposal(
     params(("id" = String, Path, description = "Proposal id")),
     responses((status = 200, body = Proposal), ErrorResponses),
 )]
-async fn get_proposal(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Proposal>> {
+async fn get_proposal(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Proposal>> {
     let proposal = state
         .intelligence()
         .get_proposal(proto::GetProposalRequest { id })
@@ -116,7 +113,7 @@ async fn get_proposal(
     responses((status = 200, body = Proposal), ErrorResponses),
 )]
 async fn accept_proposal(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<AcceptProposalRequest>,
 ) -> ApiResult<Json<Proposal>> {
@@ -143,7 +140,7 @@ async fn accept_proposal(
     responses((status = 200, body = Proposal), ErrorResponses),
 )]
 async fn reject_proposal(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<RejectProposalRequest>,
 ) -> ApiResult<Json<Proposal>> {
@@ -167,7 +164,7 @@ async fn reject_proposal(
     responses((status = 200, body = Vec<Message>), ErrorResponses),
 )]
 async fn list_messages(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Vec<Message>>> {
     let response = state
@@ -188,7 +185,7 @@ async fn list_messages(
     responses((status = 201, body = NegotiateResponse), ErrorResponses),
 )]
 async fn negotiate(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<NegotiateRequest>,
 ) -> ApiResult<(StatusCode, Json<NegotiateResponse>)> {
@@ -216,7 +213,7 @@ async fn negotiate(
     responses((status = 200, body = Vec<Artifact>), ErrorResponses),
 )]
 async fn list_option_artifacts(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath((id, option_id)): ApiPath<(String, String)>,
 ) -> ApiResult<Json<Vec<Artifact>>> {
     let proposal = state
@@ -246,7 +243,7 @@ async fn list_option_artifacts(
     responses((status = 201, body = Proposal), ErrorResponses),
 )]
 async fn open_pull_request(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     body: Option<ApiJson<OpenPullRequestRequest>>,
 ) -> ApiResult<(StatusCode, Json<Proposal>)> {

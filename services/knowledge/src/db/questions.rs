@@ -6,6 +6,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, FromRow)]
 pub struct QuestionRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub key: String,
     pub prompt: String,
@@ -28,34 +29,39 @@ pub struct QuestionRow {
 /// answering keeps a user's answer and reopens a config one.
 pub async fn sync(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     questions: &[QuestionDraft],
 ) -> sqlx::Result<()> {
     let keys: Vec<&str> = questions.iter().map(|q| q.key.as_str()).collect();
-    sqlx::query("DELETE FROM questions WHERE project_id = $1 AND answered_at IS NULL AND NOT (key = ANY($2))")
-        .bind(project_id)
-        .bind(&keys)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "DELETE FROM questions WHERE workspace_id = $1 AND project_id = $2 AND answered_at IS NULL AND NOT (key = ANY($3))",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(&keys)
+    .execute(&mut *conn)
+    .await?;
     for question in questions {
         let configured = question.answered_by == "config" && !question.answer.trim().is_empty();
         sqlx::query(
-            "INSERT INTO questions (id, project_id, key, prompt, reason, options, allow_free_text, answer, answered_at, answered_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 THEN now() END, CASE WHEN $9 THEN 'config' ELSE '' END)
+            "INSERT INTO questions (id, workspace_id, project_id, key, prompt, reason, options, allow_free_text, answer, answered_at, answered_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10 THEN now() END, CASE WHEN $10 THEN 'config' ELSE '' END)
              ON CONFLICT (project_id, key) DO UPDATE
                SET prompt = EXCLUDED.prompt, reason = EXCLUDED.reason,
                    options = EXCLUDED.options, allow_free_text = EXCLUDED.allow_free_text,
-                   answer = CASE WHEN $9 THEN EXCLUDED.answer
+                   answer = CASE WHEN $10 THEN EXCLUDED.answer
                                  WHEN questions.answered_by = 'config' THEN ''
                                  ELSE questions.answer END,
-                   answered_at = CASE WHEN $9 THEN now()
+                   answered_at = CASE WHEN $10 THEN now()
                                       WHEN questions.answered_by = 'config' THEN NULL
                                       ELSE questions.answered_at END,
-                   answered_by = CASE WHEN $9 THEN 'config'
+                   answered_by = CASE WHEN $10 THEN 'config'
                                       WHEN questions.answered_by = 'config' THEN ''
                                       ELSE questions.answered_by END",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(&question.key)
         .bind(&question.prompt)
@@ -72,20 +78,27 @@ pub async fn sync(
 
 pub async fn list(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     only_open: bool,
 ) -> sqlx::Result<Vec<QuestionRow>> {
     sqlx::query_as::<_, QuestionRow>(
-        "SELECT * FROM questions WHERE project_id = $1 AND (NOT $2 OR answered_at IS NULL) ORDER BY created_at, key",
+        "SELECT * FROM questions WHERE workspace_id = $1 AND project_id = $2 AND (NOT $3 OR answered_at IS NULL) ORDER BY created_at, key",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(only_open)
     .fetch_all(exec)
     .await
 }
 
-pub async fn get(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<QuestionRow> {
-    sqlx::query_as::<_, QuestionRow>("SELECT * FROM questions WHERE id = $1")
+pub async fn get(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<QuestionRow> {
+    sqlx::query_as::<_, QuestionRow>("SELECT * FROM questions WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .fetch_one(exec)
         .await
@@ -93,12 +106,14 @@ pub async fn get(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<QuestionRo
 
 pub async fn answer(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     id: Uuid,
     answer: &str,
 ) -> sqlx::Result<QuestionRow> {
     sqlx::query_as::<_, QuestionRow>(
-        "UPDATE questions SET answer = $2, answered_at = now(), answered_by = 'user' WHERE id = $1 RETURNING *",
+        "UPDATE questions SET answer = $3, answered_at = now(), answered_by = 'user' WHERE workspace_id = $1 AND id = $2 RETURNING *",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(answer)
     .fetch_one(exec)

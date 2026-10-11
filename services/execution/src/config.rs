@@ -9,11 +9,13 @@ use crate::adapters::{github::DEFAULT_API, simulated::DEFAULT_DELAY_MS};
 
 pub const SCHEMA: &str = "execution";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Settings {
     pub listen: SocketAddr,
     pub database_url: String,
     pub knowledge_url: String,
+    /// The identity service, for the audit log (`IDENTITY_GRPC_URL`).
+    pub identity_url: String,
     /// Floor of the simulated adapter's per-step delay. Tests set it to 1.
     pub sim_delay_ms: u64,
     /// Where the docker adapter keeps one workdir per execution (`SDI_RUN_DIR`).
@@ -31,6 +33,7 @@ impl Settings {
             listen: config::listen_addr("EXECUTION_LISTEN", "0.0.0.0:50053")?,
             database_url: config::database_url(),
             knowledge_url: config::knowledge_url(),
+            identity_url: config::identity_url(),
             sim_delay_ms: config::env_parse("EXECUTION_SIM_DELAY_MS", DEFAULT_DELAY_MS)?,
             run_dir: PathBuf::from(config::env_or("SDI_RUN_DIR", ".run")),
             github_token: config::env_opt("GITHUB_TOKEN").map(|t| t.trim().to_owned()),

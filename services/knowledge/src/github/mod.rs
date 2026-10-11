@@ -1,15 +1,17 @@
 //! Read-only GitHub REST client. Only what the scanner and the delivery
 //! observer need; every call is a GET and failures are typed so the gRPC
 //! layer can answer with the right status.
+//!
+//! Access is per workspace (CONTRACT.md §18): [`Github`] is the process-wide
+//! hub (HTTP client, ETag cache, token provider) and hands out a
+//! [`GithubClient`] bound to one workspace's token and API base.
 
 pub mod cache;
+pub mod token;
 pub mod types;
 
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -21,9 +23,12 @@ use reqwest::{
 use serde::de::DeserializeOwned;
 
 use cache::EtagCache;
+pub use token::{AccessKind, GithubAccess, TokenProvider};
 pub use types::*;
+use uuid::Uuid;
 
-const API: &str = "https://api.github.com";
+use crate::auth::Caller;
+
 const USER_AGENT: &str = "sdi-knowledge";
 const MAX_ATTEMPTS: u32 = 3;
 /// Longest secondary-rate-limit pause we honour inline; beyond it the caller gets the error.
@@ -34,8 +39,8 @@ const TARBALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
-    #[error("GITHUB_TOKEN is not configured")]
-    NoToken,
+    #[error("GitHub access is not configured: {0}")]
+    NoToken(String),
     #[error("GitHub rejected the token")]
     Unauthorized,
     #[error("GitHub forbade the request: {0}")]
@@ -63,23 +68,31 @@ pub struct RawFile {
     pub content_length: Option<u64>,
 }
 
-/// Shared between clones so the scanner, the delivery refresh and the
-/// account box all hit one cache and one switch.
+/// Shared by every client the hub hands out: one HTTP client and one ETag
+/// cache (entries are keyed by workspace, so tenants never share a body).
 struct Shared {
-    cache_enabled: AtomicBool,
+    http: reqwest::Client,
     cache: Mutex<EtagCache>,
 }
 
-#[derive(Clone)]
-pub struct GithubClient {
-    http: reqwest::Client,
-    token: Option<String>,
-    base: String,
-    shared: Arc<Shared>,
+impl Shared {
+    fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache> {
+        // A poisoned cache only means a panic mid-insert; the data is still a cache.
+        self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
-impl GithubClient {
-    pub fn new(token: Option<String>) -> anyhow::Result<Self> {
+/// The process-wide hub. Resolves a workspace's token through the
+/// [`TokenProvider`] and binds a [`GithubClient`] to it.
+pub struct Github {
+    shared: Arc<Shared>,
+    tokens: TokenProvider,
+}
+
+impl Github {
+    pub fn new(tokens: TokenProvider) -> anyhow::Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(
             ACCEPT,
@@ -98,43 +111,96 @@ impl GithubClient {
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {
-            http,
-            token,
-            base: API.to_owned(),
             shared: Arc::new(Shared {
-                cache_enabled: AtomicBool::new(true),
+                http,
                 cache: Mutex::new(EtagCache::default()),
             }),
+            tokens,
         })
     }
 
-    pub fn token_configured(&self) -> bool {
-        self.token.is_some()
+    /// Whether the dev-mode `GITHUB_TOKEN` fallback exists.
+    pub fn dev_token_configured(&self) -> bool {
+        self.tokens.dev_token_configured()
     }
 
-    /// Mirrors `settings.cache_github`; turning it off also forgets what was cached.
-    pub fn set_cache_enabled(&self, enabled: bool) {
-        self.shared.cache_enabled.store(enabled, Ordering::Relaxed);
-        if !enabled {
-            self.cache().clear();
+    /// A client for the caller's workspace. `cache` mirrors the workspace's
+    /// `settings.cache_github`; turning it off also forgets what that
+    /// workspace had cached.
+    pub async fn client(&self, caller: &Caller, cache: bool) -> Result<GithubClient> {
+        let access = self.tokens.access(caller).await?;
+        Ok(self.bind(caller.workspace_id, access, cache))
+    }
+
+    /// A client bound to a known token, bypassing identity (tests, tools).
+    pub fn bind(&self, workspace_id: Uuid, access: GithubAccess, cache: bool) -> GithubClient {
+        if !cache {
+            self.forget_cache(workspace_id);
+        }
+        GithubClient {
+            shared: Arc::clone(&self.shared),
+            access: Arc::new(access),
+            workspace_id,
+            cache_enabled: cache,
         }
     }
 
-    pub fn cache_enabled(&self) -> bool {
-        self.shared.cache_enabled.load(Ordering::Relaxed)
+    /// Drops the workspace's cached token (GitHub rejected it).
+    pub fn forget_token(&self, workspace_id: Uuid) {
+        self.tokens.forget(workspace_id);
     }
 
-    /// Entries currently cached; for diagnostics.
+    /// Drops the workspace's ETag entries.
+    pub fn forget_cache(&self, workspace_id: Uuid) {
+        self.shared
+            .cache()
+            .remove_prefix(&cache_prefix(workspace_id));
+    }
+
+    /// Entries currently cached across workspaces; for diagnostics.
     pub fn cached_entries(&self) -> usize {
-        self.cache().len()
+        self.shared.cache().len()
+    }
+}
+
+fn cache_prefix(workspace_id: Uuid) -> String {
+    format!("{}|", workspace_id.simple())
+}
+
+/// One workspace's view of GitHub: its token, its API base (github.com or
+/// a GHES host) and its slice of the ETag cache.
+#[derive(Clone)]
+pub struct GithubClient {
+    shared: Arc<Shared>,
+    access: Arc<GithubAccess>,
+    workspace_id: Uuid,
+    cache_enabled: bool,
+}
+
+impl GithubClient {
+    pub fn workspace_id(&self) -> Uuid {
+        self.workspace_id
+    }
+
+    pub fn access(&self) -> &GithubAccess {
+        &self.access
+    }
+
+    pub fn cache_enabled(&self) -> bool {
+        self.cache_enabled
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache> {
-        // A poisoned cache only means a panic mid-insert; the data is still a cache.
-        self.shared
-            .cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.shared.cache()
+    }
+
+    fn cache_key(&self, path: &str, query: &[(&str, String)]) -> String {
+        format!(
+            "{}{}{}",
+            cache_prefix(self.workspace_id),
+            encode_path(path),
+            query_string(query)
+        )
     }
 
     /// One GET with the retry loop for rate limits. `etag` turns the call into
@@ -160,10 +226,20 @@ impl GithubClient {
         timeout: Duration,
         accept: Option<&'static str>,
     ) -> Result<Response> {
-        let token = self.token.as_ref().ok_or(GithubError::NoToken)?;
-        let url = format!("{}{}{}", self.base, encode_path(path), query_string(query));
+        let token = &self.access.token;
+        let url = format!(
+            "{}{}{}",
+            self.access.api_base_url,
+            encode_path(path),
+            query_string(query)
+        );
         for attempt in 1..=MAX_ATTEMPTS {
-            let mut builder = self.http.get(&url).bearer_auth(token).timeout(timeout);
+            let mut builder = self
+                .shared
+                .http
+                .get(&url)
+                .bearer_auth(token)
+                .timeout(timeout);
             if let Some(etag) = etag {
                 builder = builder.header(IF_NONE_MATCH, etag);
             }
@@ -217,7 +293,7 @@ impl GithubClient {
     /// fetched once per scan and would only fill the cache.
     async fn get_bytes(&self, path: &str, query: &[(&str, String)]) -> Result<Vec<u8>> {
         let use_cache = self.cache_enabled();
-        let key = format!("{}{}", encode_path(path), query_string(query));
+        let key = self.cache_key(path, query);
         let etag = if use_cache {
             self.cache().etag(&key)
         } else {
@@ -304,6 +380,7 @@ impl GithubClient {
         Ok((decode(response).await?, scopes))
     }
 
+    /// The repositories a user token can see.
     pub async fn repos(&self) -> Result<Vec<Repo>> {
         self.get_paginated(
             "/user/repos",
@@ -313,6 +390,34 @@ impl GithubClient {
             ],
         )
         .await
+    }
+
+    /// The repositories an installation grants (`all` or the selection).
+    pub async fn installation_repos(&self) -> Result<Vec<Repo>> {
+        let mut repos = Vec::new();
+        for page in 1..=20_u32 {
+            let batch: InstallationRepos = self
+                .get_json_cached(
+                    "/installation/repositories",
+                    &[("per_page", "100".to_owned()), ("page", page.to_string())],
+                )
+                .await?;
+            let last = batch.repositories.len() < 100;
+            repos.extend(batch.repositories);
+            if last {
+                break;
+            }
+        }
+        Ok(repos)
+    }
+
+    /// Whatever the workspace's token grants: the installation's
+    /// repositories for an organisation, the user's for a personal one.
+    pub async fn accessible_repos(&self) -> Result<Vec<Repo>> {
+        match self.access.kind {
+            AccessKind::Installation => self.installation_repos().await,
+            AccessKind::User => self.repos().await,
+        }
     }
 
     pub async fn repo(&self, owner: &str, name: &str) -> Result<Repo> {
@@ -631,15 +736,28 @@ mod tests {
     }
 
     #[test]
-    fn cache_switch_clears_entries() {
-        let client = GithubClient::new(None).unwrap();
-        assert!(client.cache_enabled());
-        client.cache().insert("/x", "\"e\"", b"{}".to_vec());
-        assert_eq!(client.cached_entries(), 1);
-        client.set_cache_enabled(false);
-        assert!(!client.cache_enabled());
-        assert_eq!(client.cached_entries(), 0);
-        client.set_cache_enabled(true);
-        assert!(client.cache_enabled());
+    fn cache_entries_are_per_workspace_and_cleared_by_the_switch() {
+        let hub = Github::new(TokenProvider::new(
+            crate::identity::Identity::disabled(),
+            None,
+        ))
+        .unwrap();
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        let client_a = hub.bind(a, GithubAccess::dev("ta"), true);
+        let client_b = hub.bind(b, GithubAccess::dev("tb"), true);
+        assert_ne!(client_a.cache_key("/x", &[]), client_b.cache_key("/x", &[]));
+        let key_a = client_a.cache_key("/x", &[]);
+        let key_b = client_b.cache_key("/x", &[]);
+        client_a.cache().insert(&key_a, "\"e\"", b"{}".to_vec());
+        client_b.cache().insert(&key_b, "\"e\"", b"{}".to_vec());
+        assert_eq!(hub.cached_entries(), 2);
+
+        // Turning the cache off for one workspace forgets only its entries.
+        let client_a = hub.bind(a, GithubAccess::dev("ta"), false);
+        assert!(!client_a.cache_enabled());
+        assert_eq!(hub.cached_entries(), 1);
+        assert!(client_b.cache().get(&key_b).is_some());
+        assert_eq!(client_a.access().api_base_url, token::PUBLIC_API);
     }
 }

@@ -7,6 +7,7 @@ use crate::domain::model::EvidenceItem;
 #[derive(Debug, Clone, FromRow)]
 pub struct MessageRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub proposal_id: Uuid,
     pub role: String,
     pub content: String,
@@ -17,6 +18,7 @@ pub struct MessageRow {
 
 impl MessageRow {
     pub fn new(
+        workspace_id: Uuid,
         proposal_id: Uuid,
         role: &str,
         content: String,
@@ -25,6 +27,7 @@ impl MessageRow {
     ) -> Self {
         Self {
             id: Uuid::now_v7(),
+            workspace_id,
             proposal_id,
             role: role.to_owned(),
             content,
@@ -35,15 +38,15 @@ impl MessageRow {
     }
 }
 
-const COLUMNS: &str =
-    "id, proposal_id, role, content, changed_recommendation, \"references\", created_at";
+const COLUMNS: &str = "id, workspace_id, proposal_id, role, content, changed_recommendation, \"references\", created_at";
 
 pub async fn insert(pool: &PgPool, row: &MessageRow) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO messages (id, proposal_id, role, content, changed_recommendation, \"references\", created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO messages (id, workspace_id, proposal_id, role, content, changed_recommendation, \"references\", created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(row.id)
+    .bind(row.workspace_id)
     .bind(row.proposal_id)
     .bind(&row.role)
     .bind(&row.content)
@@ -55,10 +58,15 @@ pub async fn insert(pool: &PgPool, row: &MessageRow) -> sqlx::Result<()> {
     Ok(())
 }
 
-pub async fn list(pool: &PgPool, proposal_id: Uuid) -> sqlx::Result<Vec<MessageRow>> {
+pub async fn list(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    proposal_id: Uuid,
+) -> sqlx::Result<Vec<MessageRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM messages WHERE proposal_id = $1 ORDER BY created_at, id"
+        "SELECT {COLUMNS} FROM messages WHERE workspace_id = $1 AND proposal_id = $2 ORDER BY created_at, id"
     )))
+    .bind(workspace_id)
     .bind(proposal_id)
     .fetch_all(pool)
     .await

@@ -1,7 +1,7 @@
 use std::future::ready;
 
 use futures::{StreamExt, stream};
-use sdi_common::grpc::db_status;
+use sdi_common::{grpc::db_status, principal::Role};
 use sdi_proto::knowledge::v1::*;
 use sqlx::PgPool;
 use tokio_stream::wrappers::BroadcastStream;
@@ -9,19 +9,16 @@ use tonic::Status;
 use uuid::Uuid;
 
 use super::{KnowledgeState, ResponseStream, limit, parse_id};
-use crate::{convert, db, scanner};
+use crate::{auth::Caller, convert, db, scanner};
 
 pub(super) async fn start_scan(
     state: &KnowledgeState,
+    caller: &Caller,
     req: StartScanRequest,
 ) -> Result<Scan, Status> {
-    let project = state.project(&req.project_id).await?;
-    if !state.github.token_configured() {
-        return Err(Status::failed_precondition(
-            "GITHUB_TOKEN is not configured",
-        ));
-    }
-    if db::scans::active_exists(&state.pool, project.id)
+    caller.require(Role::Member)?;
+    let project = state.project(caller, &req.project_id).await?;
+    if db::scans::active_exists(&state.pool, caller.workspace_id, project.id)
         .await
         .map_err(db_status)?
     {
@@ -29,15 +26,29 @@ pub(super) async fn start_scan(
             "a scan is already running for this project",
         ));
     }
-    let scan = scanner::start(&state.pool, &state.github, &state.events, project)
+    // Resolving the token first turns "no GitHub access" into
+    // FAILED_PRECONDITION before any row is written.
+    let inputs = state.scan_inputs(caller).await?;
+    state.identity.audit(
+        caller,
+        "scan.start",
+        "project",
+        &project.id.to_string(),
+        &project.repo_full_name,
+    );
+    let scan = scanner::start(&state.pool, &state.events, inputs, project)
         .await
         .map_err(db_status)?;
     Ok(convert::scan(scan))
 }
 
-pub(super) async fn get_scan(state: &KnowledgeState, req: GetScanRequest) -> Result<Scan, Status> {
+pub(super) async fn get_scan(
+    state: &KnowledgeState,
+    caller: &Caller,
+    req: GetScanRequest,
+) -> Result<Scan, Status> {
     let id = parse_id(&req.id, "scan id")?;
-    db::scans::get(&state.pool, id)
+    db::scans::get(&state.pool, caller.workspace_id, id)
         .await
         .map(convert::scan)
         .map_err(|e| match e {
@@ -48,12 +59,18 @@ pub(super) async fn get_scan(state: &KnowledgeState, req: GetScanRequest) -> Res
 
 pub(super) async fn list_scans(
     state: &KnowledgeState,
+    caller: &Caller,
     req: ListScansRequest,
 ) -> Result<ListScansResponse, Status> {
     let project_id = parse_id(&req.project_id, "project id")?;
-    let scans = db::scans::list(&state.pool, project_id, limit(req.limit, 20, 200))
-        .await
-        .map_err(db_status)?;
+    let scans = db::scans::list(
+        &state.pool,
+        caller.workspace_id,
+        project_id,
+        limit(req.limit, 20, 200),
+    )
+    .await
+    .map_err(db_status)?;
     Ok(ListScansResponse {
         scans: scans.into_iter().map(convert::scan).collect(),
     })
@@ -70,14 +87,18 @@ fn is_terminal(status: &str) -> bool {
 /// subscriber re-reads the scan instead of trusting what it missed.
 pub(super) async fn watch_scan(
     state: &KnowledgeState,
+    caller: &Caller,
     req: WatchScanRequest,
 ) -> Result<ResponseStream<Scan>, Status> {
+    let ws = caller.workspace_id;
     let id = parse_id(&req.id, "scan id")?;
     let receiver = state.events.subscribe();
-    let current = db::scans::get(&state.pool, id).await.map_err(|e| match e {
-        sqlx::Error::RowNotFound => Status::not_found("scan not found"),
-        other => db_status(other),
-    })?;
+    let current = db::scans::get(&state.pool, ws, id)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => Status::not_found("scan not found"),
+            other => db_status(other),
+        })?;
     let terminal = is_terminal(&current.status);
     let first = stream::once(ready(Ok(convert::scan(current))));
     if terminal {
@@ -106,7 +127,7 @@ pub(super) async fn watch_scan(
                             tracing::warn!(%error, scan = %id_text, "WatchScan lagged, re-reading");
                         }
                     }
-                    return Some(match fetch(&pool, id).await {
+                    return Some(match fetch(&pool, ws, id).await {
                         Ok(row) => {
                             let terminal = is_terminal(&row.status);
                             (Ok(convert::scan(row)), (events, pool, terminal))
@@ -120,8 +141,8 @@ pub(super) async fn watch_scan(
     Ok(Box::pin(first.chain(updates)))
 }
 
-async fn fetch(pool: &PgPool, id: Uuid) -> Result<db::scans::ScanRow, Status> {
-    db::scans::get(pool, id).await.map_err(|e| match e {
+async fn fetch(pool: &PgPool, ws: Uuid, id: Uuid) -> Result<db::scans::ScanRow, Status> {
+    db::scans::get(pool, ws, id).await.map_err(|e| match e {
         // Deleted mid-watch (project removed): the stream ends with the reason.
         sqlx::Error::RowNotFound => Status::not_found("scan no longer exists"),
         other => db_status(other),

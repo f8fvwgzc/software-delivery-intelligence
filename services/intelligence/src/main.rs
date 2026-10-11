@@ -34,15 +34,21 @@ async fn main() -> Result<()> {
     let execution = Arc::new(gateway::GrpcExecution::new(sdi_common::grpc::lazy_channel(
         &settings.execution_url,
     )?));
+    let identity = Arc::new(gateway::GrpcIdentity::new(sdi_common::grpc::lazy_channel(
+        &settings.identity_url,
+    )?));
     if settings.anthropic_api_key.is_some() {
-        tracing::info!(model = %settings.anthropic_model, "claude reasoner available");
+        tracing::info!(
+            model = %settings.anthropic_model,
+            "ANTHROPIC_API_KEY set: dev fallback for workspaces that allow the reasoner but hold no key"
+        );
     }
     let reasoner = grpc::ReasonerConfig {
         anthropic_api_key: settings.anthropic_api_key.clone(),
         anthropic_model: settings.anthropic_model.clone(),
     };
 
-    let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, reasoner);
+    let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, identity, reasoner);
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<IntelligenceServiceServer<grpc::IntelligenceGrpc>>()

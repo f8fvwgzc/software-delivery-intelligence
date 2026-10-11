@@ -10,15 +10,18 @@ publish.workspace = true
 sdi-common.workspace = true
 sdi-proto.workspace = true
 
+aes-gcm.workspace = true
 anyhow.workspace = true
-async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
-futures.workspace = true
+hex.workspace = true
+hmac.workspace = true
+jsonwebtoken.workspace = true
 prost-types.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -26,3 +29,7 @@ tonic.workspace = true
 tonic-health.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# Fake GitHub API for the OAuth and membership tests (a plain axum server on a random port).
+axum.workspace = true

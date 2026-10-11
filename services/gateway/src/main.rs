@@ -2,6 +2,7 @@
 //! the platform (CONTRACT.md §2 and §8).
 
 mod app;
+mod auth;
 mod dto;
 mod error;
 #[cfg(test)]

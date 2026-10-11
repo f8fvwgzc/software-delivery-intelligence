@@ -7,7 +7,7 @@ use sdi_proto::intelligence::v1::{
 use tonic::Status;
 use uuid::Uuid;
 
-use super::{IntelligenceGrpc, parse_id, require};
+use super::{Caller, IntelligenceGrpc, parse_id, require};
 use crate::{
     convert,
     db::{
@@ -21,6 +21,7 @@ const PIPELINE_RUNS: u32 = 50;
 
 pub(super) async fn generate(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GenerateDocumentRequest,
 ) -> Result<Document, Status> {
     let project_id = require("project_id", &request.project_id)?;
@@ -28,21 +29,23 @@ pub(super) async fn generate(
     if kind == DocumentKind::Unspecified {
         return Err(Status::invalid_argument("kind is required"));
     }
+    let principal = &caller.principal;
 
     let context = svc
         .knowledge
-        .project_context(&project_id)
+        .project_context(principal, &project_id)
         .await
         .map_err(|e| e.into_status())?;
-    let decisions: Vec<_> = crate::db::decisions::active_for_project(&svc.pool, &project_id)
-        .await
-        .map_err(db_status)?
-        .iter()
-        .map(convert::decision)
-        .collect();
+    let decisions: Vec<_> =
+        crate::db::decisions::active_for_project(&svc.pool, caller.workspace, &project_id)
+            .await
+            .map_err(db_status)?
+            .iter()
+            .map(convert::decision)
+            .collect();
 
     // The accepted deployment wins; otherwise the newest open deployment proposal's recommendation.
-    let proposals = proposals_repo::list(&svc.pool, &project_id)
+    let proposals = proposals_repo::list(&svc.pool, caller.workspace, &project_id)
         .await
         .map_err(db_status)?;
     let deployment = proposals.iter().filter(|p| p.kind == "deployment");
@@ -58,7 +61,7 @@ pub(super) async fn generate(
 
     let pipeline_runs = match svc
         .knowledge
-        .pipeline_runs(&project_id, PIPELINE_RUNS)
+        .pipeline_runs(principal, &project_id, PIPELINE_RUNS)
         .await
     {
         Ok(runs) => runs,
@@ -67,7 +70,7 @@ pub(super) async fn generate(
             Vec::new()
         }
     };
-    let delivery = match svc.execution.delivery_stats(&project_id).await {
+    let delivery = match svc.execution.delivery_stats(principal, &project_id).await {
         Ok(stats) => Some(stats),
         Err(error) => {
             tracing::warn!(%error, "delivery stats unavailable for document");
@@ -78,7 +81,7 @@ pub(super) async fn generate(
         .map(|p| p.execution_id.as_str())
         .filter(|id| !id.is_empty())
     {
-        Some(id) => match svc.execution.get_execution(id).await {
+        Some(id) => match svc.execution.get_execution(principal, id).await {
             Ok(execution) => Some(execution),
             Err(error) => {
                 tracing::warn!(%error, execution = id, "execution unavailable for document");
@@ -111,6 +114,7 @@ pub(super) async fn generate(
 
     let row = DocumentRow {
         id: Uuid::now_v7(),
+        workspace_id: caller.workspace,
         project_id,
         kind: convert::document_kind_to_str(kind),
         title: generated.title,
@@ -125,6 +129,7 @@ pub(super) async fn generate(
     };
     repo::insert(&svc.pool, &row).await.map_err(db_status)?;
     svc.events.emit(
+        caller.workspace,
         "document",
         &row.id.to_string(),
         &row.project_id,
@@ -137,10 +142,11 @@ pub(super) async fn generate(
 
 pub(super) async fn list(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: ListDocumentsRequest,
 ) -> Result<ListDocumentsResponse, Status> {
     let project_id = require("project_id", &request.project_id)?;
-    let rows = repo::list(&svc.pool, &project_id)
+    let rows = repo::list(&svc.pool, caller.workspace, &project_id)
         .await
         .map_err(db_status)?;
     Ok(ListDocumentsResponse {
@@ -150,9 +156,12 @@ pub(super) async fn list(
 
 pub(super) async fn get(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: GetDocumentRequest,
 ) -> Result<Document, Status> {
     let id = parse_id("id", &request.id)?;
-    let row = repo::get(&svc.pool, id).await.map_err(db_status)?;
+    let row = repo::get(&svc.pool, caller.workspace, id)
+        .await
+        .map_err(db_status)?;
     Ok(convert::document(&row))
 }

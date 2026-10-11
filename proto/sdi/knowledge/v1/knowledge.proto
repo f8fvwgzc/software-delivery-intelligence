@@ -70,6 +70,16 @@ service KnowledgeService {
   rpc UpdateSettings(UpdateSettingsRequest) returns (KnowledgeSettings);
   // Project, scan and pattern changes as they happen. Never ends.
   rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
+
+  // --- Data controls (CONTRACT.md §19) ---------------------------------------
+  // Drops every cached file (and tree) of the caller's workspace, or of one
+  // project. ADMIN.
+  rpc PurgeCodeCache(PurgeCodeCacheRequest) returns (PurgeCodeCacheResponse);
+  // Deletes everything the knowledge schema holds for the workspace: projects
+  // and all their rows, learned patterns, settings. OWNER. Real deletion.
+  rpc DeleteWorkspaceData(DeleteWorkspaceDataRequest) returns (DeleteWorkspaceDataResponse);
+  // Streams every stored row of the workspace as JSON lines. ADMIN.
+  rpc ExportWorkspaceData(ExportWorkspaceDataRequest) returns (stream ExportRecord);
 }
 
 // ---------------------------------------------------------------------------
@@ -946,4 +956,41 @@ message KnowledgeStats {
   uint32 patterns = 5;
   uint32 chunks = 6;
   uint32 open_questions = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Data controls (CONTRACT.md §19)
+// ---------------------------------------------------------------------------
+
+// The workspace always comes from the caller's principal (gRPC metadata);
+// `workspace_id` in these requests is optional and, when set, must equal it.
+message PurgeCodeCacheRequest {
+  string workspace_id = 1;
+  // Empty purges every project of the workspace.
+  string project_id = 2;
+}
+
+message PurgeCodeCacheResponse {
+  uint64 files_deleted = 1;
+  uint64 trees_deleted = 2;
+}
+
+message DeleteWorkspaceDataRequest {
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceDataResponse {
+  // Rows removed per table, e.g. {"projects": 3, "facts": 120}.
+  map<string, uint64> deleted = 1;
+}
+
+message ExportWorkspaceDataRequest {
+  string workspace_id = 1;
+}
+
+// One exported row. `entity` is the table name; `record` is the row as a
+// JSON object (embeddings omitted: they are derived, not user data).
+message ExportRecord {
+  string entity = 1;
+  string record = 2;
 }

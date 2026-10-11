@@ -1,6 +1,6 @@
 //! Human approvals requested before a step runs.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::execution::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -8,7 +8,7 @@ use super::map_all;
 use crate::{
     dto::execution::{Approval, DecideApprovalRequest, ListApprovalsQuery},
     error::{ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -26,7 +26,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Approval>), ErrorResponses),
 )]
 async fn list_approvals(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListApprovalsQuery>,
 ) -> ApiResult<Json<Vec<Approval>>> {
     let response = state
@@ -50,7 +50,7 @@ async fn list_approvals(
     responses((status = 200, body = Approval), ErrorResponses),
 )]
 async fn decide_approval(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<DecideApprovalRequest>,
 ) -> ApiResult<Json<Approval>> {

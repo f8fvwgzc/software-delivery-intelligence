@@ -5,6 +5,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, FromRow)]
 pub struct DocumentRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: String,
     pub kind: String,
     pub title: String,
@@ -16,10 +17,11 @@ pub struct DocumentRow {
 
 pub async fn insert(pool: &PgPool, row: &DocumentRow) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO documents (id, project_id, kind, title, markdown, commit_sha, facts_used, generated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO documents (id, workspace_id, project_id, kind, title, markdown, commit_sha, facts_used, generated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(row.id)
+    .bind(row.workspace_id)
     .bind(&row.project_id)
     .bind(&row.kind)
     .bind(&row.title)
@@ -32,21 +34,28 @@ pub async fn insert(pool: &PgPool, row: &DocumentRow) -> sqlx::Result<()> {
     Ok(())
 }
 
-pub async fn get(pool: &PgPool, id: Uuid) -> sqlx::Result<DocumentRow> {
+pub async fn get(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> sqlx::Result<DocumentRow> {
     sqlx::query_as(
-        "SELECT id, project_id, kind, title, markdown, commit_sha, facts_used, generated_at FROM documents WHERE id = $1",
+        "SELECT id, workspace_id, project_id, kind, title, markdown, commit_sha, facts_used, generated_at \
+         FROM documents WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .fetch_one(pool)
     .await
 }
 
 /// Markdown bodies are left out: list responses omit them (proto contract).
-pub async fn list(pool: &PgPool, project_id: &str) -> sqlx::Result<Vec<DocumentRow>> {
+pub async fn list(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    project_id: &str,
+) -> sqlx::Result<Vec<DocumentRow>> {
     sqlx::query_as(
-        "SELECT id, project_id, kind, title, '' AS markdown, commit_sha, facts_used, generated_at \
-         FROM documents WHERE project_id = $1 ORDER BY generated_at DESC",
+        "SELECT id, workspace_id, project_id, kind, title, '' AS markdown, commit_sha, facts_used, generated_at \
+         FROM documents WHERE workspace_id = $1 AND project_id = $2 ORDER BY generated_at DESC",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_all(pool)
     .await

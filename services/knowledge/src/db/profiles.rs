@@ -29,6 +29,7 @@ const SELECT: &str = "SELECT project_id, embedding::text AS embedding, profile_t
 
 pub async fn upsert(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     profile_text: &str,
     technologies: &[String],
@@ -36,12 +37,13 @@ pub async fn upsert(
     embedding: &[f32],
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO project_profiles (project_id, embedding, profile_text, technologies, capabilities, updated_at)
-         VALUES ($1, $2::vector, $3, $4, $5, now())
+        "INSERT INTO project_profiles (workspace_id, project_id, embedding, profile_text, technologies, capabilities, updated_at)
+         VALUES ($1, $2, $3::vector, $4, $5, $6, now())
          ON CONFLICT (project_id) DO UPDATE SET
            embedding = EXCLUDED.embedding, profile_text = EXCLUDED.profile_text,
            technologies = EXCLUDED.technologies, capabilities = EXCLUDED.capabilities, updated_at = now()",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(to_pgvector(embedding))
     .bind(profile_text)
@@ -52,17 +54,26 @@ pub async fn upsert(
     Ok(())
 }
 
-pub async fn get(exec: impl PgExecutor<'_>, project_id: Uuid) -> sqlx::Result<Option<ProfileRow>> {
+pub async fn get(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+) -> sqlx::Result<Option<ProfileRow>> {
     sqlx::query_as::<_, ProfileRow>(sqlx::AssertSqlSafe(format!(
-        "{SELECT} WHERE project_id = $1"
+        "{SELECT} WHERE workspace_id = $1 AND project_id = $2"
     )))
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_optional(exec)
     .await
 }
 
-pub async fn list(exec: impl PgExecutor<'_>) -> sqlx::Result<Vec<ProfileRow>> {
-    sqlx::query_as::<_, ProfileRow>(SELECT)
-        .fetch_all(exec)
-        .await
+/// Every profile of the workspace: similarity never looks across tenants.
+pub async fn list(exec: impl PgExecutor<'_>, workspace_id: Uuid) -> sqlx::Result<Vec<ProfileRow>> {
+    sqlx::query_as::<_, ProfileRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT} WHERE workspace_id = $1"
+    )))
+    .bind(workspace_id)
+    .fetch_all(exec)
+    .await
 }

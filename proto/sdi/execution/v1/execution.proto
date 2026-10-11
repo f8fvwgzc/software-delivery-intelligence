@@ -43,6 +43,14 @@ service ExecutionService {
 
   // Execution and approval changes as they happen (not the per-step log). Never ends.
   rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
+
+  // --- Workspace data (CONTRACT.md §19) ---------------------------------------
+  // Cancels the workspace's live executions, removes their workdirs and
+  // containers, then deletes every row this service stores for it (owner only).
+  rpc DeleteWorkspaceData(DeleteWorkspaceDataRequest) returns (DeleteWorkspaceDataResponse);
+  // Streams every row this service stores for the workspace, one JSON object
+  // per record, for the data export archive (admin).
+  rpc ExportWorkspaceData(ExportWorkspaceDataRequest) returns (stream WorkspaceDataRecord);
 }
 
 // ---------------------------------------------------------------------------
@@ -402,4 +410,32 @@ message DeliveryStats {
   uint32 approvals_pending = 8;
   uint32 steps_executed = 9;
   uint32 failures_recovered = 10;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace data
+// ---------------------------------------------------------------------------
+
+message DeleteWorkspaceDataRequest {
+  // Must match the caller's workspace (x-sdi-workspace).
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceDataResponse {
+  // Rows removed per entity ("execution", "step", "event", "approval", "policy", "identity", "grant").
+  map<string, uint64> deleted = 1;
+  // Live executions that were cancelled first.
+  uint32 cancelled = 2;
+}
+
+message ExportWorkspaceDataRequest {
+  // Must match the caller's workspace (x-sdi-workspace).
+  string workspace_id = 1;
+}
+
+message WorkspaceDataRecord {
+  // "execution" | "step" | "event" | "approval" | "policy" | "identity" | "grant"
+  string entity = 1;
+  // The full row as one JSON object.
+  string json = 2;
 }

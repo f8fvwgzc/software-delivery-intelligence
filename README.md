@@ -1,6 +1,9 @@
 # Software Delivery Intelligence
 
-An engineering control plane for one GitHub account. It connects a repository,
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[Trust](TRUST.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md) · [Self-hosting](docs/self-hosting.md) · [GitHub App](docs/github-app.md)
+
+An engineering control plane for your GitHub repositories. It connects a repository,
 understands the system (facts first, inference second), stores what it learned
 as a temporal graph and pattern memory, scores the repository's delivery
 maturity, proposes the next best delivery action with evidence and generated
@@ -10,6 +13,26 @@ local Docker daemon, or as a pull request. When a step fails the run stops,
 the failure is diagnosed, a human picks the remediation and the plan is
 rebuilt from the last checkpoint. The rules every component follows live in
 [`CONTRACT.md`](CONTRACT.md); this file is the tour.
+
+## Who is it for
+
+Identity is GitHub: there are no SDI passwords, and nobody gets more than
+GitHub already grants them (`CONTRACT.md` §18).
+
+- **Individuals** sign in with GitHub. Your account is a personal
+  workspace; connect the repositories you own and run the loop on them.
+- **Organisations** install the [SDI GitHub App](docs/github-app.md) on
+  the organisation and pick the repositories it may see. One installation
+  is one workspace; roles come from org ownership and the `sdi-admins` /
+  `sdi-approvers` teams and can only be narrowed, never widened.
+- **Self-host for full control.** The whole stack is one compose file
+  ([`docs/self-hosting.md`](docs/self-hosting.md)); it talks to GitHub and,
+  only if you turn the reasoner on with your own key, to a model API, and
+  to nothing else. No telemetry, no training, no code kept beyond the
+  cache mode you choose: [`TRUST.md`](TRUST.md) says exactly what is stored
+  and points at the code that enforces it; [`PRIVACY.md`](PRIVACY.md) is
+  the notice an operator publishes; [`SECURITY.md`](SECURITY.md) is how to
+  report a problem. Apache-2.0 ([`LICENSE`](LICENSE)).
 
 ## Architecture
 
@@ -26,6 +49,11 @@ rebuilt from the last checkpoint. The rules every component follows live in
               │ gateway-1  │  │ gateway-2  │   axum REST + OpenAPI  :8080
               └─────┬──────┘  └─────┬──────┘   /api/v1, /api/docs, 3 SSE streams
                     └───────┬───────┘
+                            │ Identity.Authorize (cookie → principal)
+                   ┌────────▼───────┐
+                   │   identity     │  GitHub OAuth · GitHub App · workspaces · roles · audit
+                   │    :50054      │  x-sdi-user / x-sdi-workspace / x-sdi-role → gRPC metadata
+                   └────────┬───────┘
              gRPC           │ gRPC            gRPC
      ┌──────────────────────┼──────────────────────────┐
      ▼                      ▼                          ▼
@@ -36,17 +64,22 @@ rebuilt from the last checkpoint. The rules every component follows live in
       │ GitHub API            │ Anthropic API (optional)    │ Docker daemon (opt-in) · GitHub API
       ▼                       ▼                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ postgres (pgvector/pg16)  schemas: knowledge · intelligence ·    │
-│                                    execution                     │
+│ postgres (pgvector/pg16)  schemas: identity · knowledge ·        │
+│                                    intelligence · execution      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 - **web** React 19 + Vite + shadcn/ui + TanStack Query, served by an
   unprivileged nginx that also fronts the API. Opens one live event stream
   per tab and refreshes what changed.
-- **gateway** the only HTTP surface. Translates JSON into gRPC, publishes
+- **gateway** the only HTTP surface. Resolves the session cookie and the
+  workspace header through identity, translates JSON into gRPC, publishes
   `GET /api/openapi.json` (rendered at `/api/docs`) and streams execution
   events, scan progress and platform events as SSE.
+- **identity** GitHub OAuth sessions, GitHub App installations,
+  workspaces, membership synced from org roles and teams, audit trail,
+  per-workspace data controls (cache mode, reasoner, retention). Every
+  tenant row in every schema carries the workspace it belongs to.
 - **knowledge** GitHub connector, scanner, facts (detected, inferred,
   configured from `.sdi.yml`), open questions, temporal graph, pattern
   memory, semantic retrieval (256-dim local embeddings), delivery maturity.
@@ -83,9 +116,13 @@ make up-local-exec              # same, plus the docker adapter (read "Adapters"
 ```
 
 `make dev` exports `GITHUB_TOKEN` from `gh auth token` when `.env` does not
-set it. `make up` builds four Rust images from one Dockerfile
-(`deploy/docker/rust.Dockerfile`, cargo-chef cached) and the web image, then
-waits for every healthcheck. `protoc` must ship its include directory
+set it, turns on the dev login (`SDI_DEV_LOGIN=1`: `/auth/login` signs you
+in as that account without registering an OAuth app) and generates a
+session secret into `.run/session-secret`. `make up` builds five Rust
+images from one Dockerfile (`deploy/docker/rust.Dockerfile`, cargo-chef
+cached) and the web image, then waits for every healthcheck; it needs
+`SDI_SESSION_SECRET` in `.env` and either the GitHub variables from
+[`docs/github-app.md`](docs/github-app.md) or `SDI_DEV_LOGIN=1`. `protoc` must ship its include directory
 (`google/protobuf/timestamp.proto`): Homebrew's `protobuf` does.
 
 The whole loop (connect → scan → propose → negotiate → accept → dry run with
@@ -102,8 +139,13 @@ because the default thread count exhausts memory on a 16 GB machine.
 | `GITHUB_TOKEN` | — | knowledge (read); execution (`github` adapter, needs `repo` write) |
 | `ANTHROPIC_API_KEY` | — | intelligence (optional; enables the `claude` reasoner) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
-| `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution |
-| `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` | `0.0.0.0:<port>` | each service |
+| `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge |
+| `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` | `0.0.0.0:<port>` | each service |
+| `SDI_SESSION_SECRET` | — (required; `scripts/dev.sh` generates one into `.run/session-secret`) | identity: signs sessions, encrypts stored tokens and keys |
+| `SDI_PUBLIC_URL` | `http://127.0.0.1:5173` (dev) · `http://localhost` (compose) | identity, gateway: OAuth callback origin, cookie host |
+| `SDI_DEV_LOGIN` | `1` under `make dev`, unset otherwise | identity: local session for the `GITHUB_TOKEN` account when no OAuth app is configured |
+| `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | — | identity: sign-in for individuals ([`docs/github-app.md`](docs/github-app.md)) |
+| `GITHUB_APP_ID` / `GITHUB_APP_SLUG` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_WEBHOOK_SECRET` | — | identity: organisation installations and webhook verification |
 | `LOG_FORMAT` | text · `json` in containers | all |
 | `RUST_LOG` | `info,sqlx=warn` | all |
 | `SDI_RUN_DIR` | `.run` (host, made absolute by `scripts/dev.sh`) · `/var/lib/sdi/run` named volume (compose) | execution (`docker` adapter workdirs) |
@@ -125,6 +167,7 @@ crates/proto           generated clients and servers, never hand-edited
 crates/common          config, telemetry, db pool per schema, gRPC channels, embeddings
 crates/analyzer        pure repository analysis: wanted_files(tree), analyze(snapshot), EOL table
 services/gateway       axum REST + OpenAPI, SSE for executions, scans and platform events
+services/identity      GitHub OAuth + App, sessions, workspaces, roles, audit, data controls
 services/knowledge     GitHub, scans, facts, graph, patterns, retrieval, maturity, .sdi.yml
 services/intelligence  proposals, ranking, budget, negotiation, decisions, generators, documents
 services/execution     policies, permissions, approvals, DAG runner, diagnosis, adapters
@@ -134,7 +177,9 @@ deploy/docker          rust.Dockerfile (ARG SERVICE, Docker CLI in execution onl
 deploy/nginx           edge config: SPA, /api proxy, rate limits, SSE (snippets/sse.conf), JSON logs
 docker-compose.yml     production-shaped stack (+ profile local-exec); docker-compose.dev.yml is Postgres only
 scripts/               dev.sh (everything on the host), api-contract.sh, loadcheck.sh
-docs/                  architecture.md, configuration.md (.sdi.yml), adapters.md, e2e.md
+docs/                  architecture.md, configuration.md (.sdi.yml), adapters.md, e2e.md,
+                       github-app.md, self-hosting.md
+TRUST.md · PRIVACY.md · SECURITY.md · LICENSE (Apache-2.0)
 .github/               CI (rust, web, edge, images, Playwright), nightly, Dependabot
 ```
 
@@ -350,7 +395,7 @@ rebuilds only the failed branch from the last checkpoint. Full tables:
 
 ## Deployment shape
 
-`docker compose up` (project `sdi`) starts Postgres, the three gRPC
+`docker compose up` (project `sdi`) starts Postgres, the four gRPC
 services, two gateway replicas and the nginx edge on private networks; only
 the edge publishes a port. The edge (`deploy/nginx`):
 
@@ -362,6 +407,10 @@ the edge publishes a port. The edge (`deploy/nginx`):
 - rate limits `/api/` at 20 r/s (burst 40) per address, mutations at 5 r/s,
   32 connections per address, answering `429 {"code":"rate_limited",…}`;
   when no replica answers it returns `502`/`504` in the same JSON shape;
+- gives `/api/v1/webhooks/github` its own 10 r/s budget instead of the
+  mutation one, caps its body at 1 MB and forwards `X-Hub-Signature-256`
+  unchanged for the gateway's HMAC check; `/api/v1/auth/*` is ordinary
+  traffic;
 - keeps the three SSE routes (`/api/v1/events/stream`,
   `/api/v1/scans/*/stream`, `/api/v1/executions/*/events/stream`)
   unbuffered for an hour and outside the request rate limit, so one
@@ -370,7 +419,7 @@ the edge publishes a port. The edge (`deploy/nginx`):
 - logs JSON lines, sends security headers, hides server tokens.
 
 Rust images are built from `deploy/docker/rust.Dockerfile` with
-`--build-arg SERVICE=<gateway|knowledge|intelligence|execution>`
+`--build-arg SERVICE=<gateway|identity|knowledge|intelligence|execution>`
 (cargo-chef dependency cache, `debian:bookworm-slim`, non-root, read-only
 root filesystem, bash `/dev/tcp` healthcheck). Only the execution image adds
 the Docker CLI and buildx, for the `docker` adapter. The web image builds
@@ -412,3 +461,8 @@ named `GITHUB_*`); otherwise the job passes `SDI_E2E_GITHUB=0`.
 demand. Dependabot groups weekly updates for Cargo, npm, GitHub Actions and
 base images. When code and `CONTRACT.md` disagree, the contract wins and the
 code is wrong; change them together.
+
+## License
+
+Apache License 2.0, copyright 2026 f8fvwgzc. See [`LICENSE`](LICENSE).
+Contributions are accepted under the same terms (Apache-2.0 §5).

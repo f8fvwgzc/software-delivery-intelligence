@@ -1,6 +1,13 @@
 use anyhow::{Context, Result};
 use sdi_knowledge::{
-    catalog, config::Settings, db, events::EventBus, github::GithubClient, grpc::KnowledgeState,
+    auth, catalog,
+    config::Settings,
+    db,
+    events::EventBus,
+    github::{Github, TokenProvider},
+    grpc::KnowledgeState,
+    identity::Identity,
+    sweeper,
 };
 use sdi_proto::knowledge::v1::knowledge_service_server::KnowledgeServiceServer;
 use tonic::transport::Server;
@@ -25,21 +32,33 @@ async fn main() -> Result<()> {
     let seeded = catalog::seed(&pool).await?;
     tracing::info!(seeded, "catalog patterns seeded");
 
-    let github = GithubClient::new(settings.github_token.clone())?;
-    // The cache switch is the one setting that applies outside a scan.
-    let stored = db::settings::get(&pool).await?;
-    github.set_cache_enabled(stored.cache_github);
-    let state = KnowledgeState::new(pool, github, EventBus::new());
+    // GitHub access comes from identity per workspace; GITHUB_TOKEN is the
+    // dev-mode fallback when identity cannot be reached.
+    let identity = Identity::connect(&settings.identity_url)?;
+    let github = Github::new(TokenProvider::new(
+        identity.clone(),
+        settings.github_token.clone(),
+    ))?;
+    if github.dev_token_configured() {
+        tracing::info!("GITHUB_TOKEN set: used for every workspace while identity is unreachable");
+    }
+    let state = KnowledgeState::new(pool.clone(), github, EventBus::new(), identity);
+
+    // Session code caches expire; reclaim them in the background.
+    let _sweeper = sweeper::spawn(pool);
 
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<KnowledgeServiceServer<KnowledgeState>>()
         .await;
 
-    tracing::info!(listen = %settings.listen, "knowledge service listening");
+    tracing::info!(listen = %settings.listen, identity = %settings.identity_url, "knowledge service listening");
     Server::builder()
         .add_service(health)
-        .add_service(KnowledgeServiceServer::new(state))
+        .add_service(KnowledgeServiceServer::with_interceptor(
+            state,
+            auth::interceptor,
+        ))
         .serve_with_shutdown(settings.listen, sdi_common::shutdown::signal())
         .await
         .context("gRPC server failed")?;

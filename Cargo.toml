@@ -5,7 +5,7 @@ members = ["crates/*", "services/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
@@ -54,6 +54,13 @@ base64 = "0.22"
 # Repository tarballs (knowledge scanner downloads one archive instead of one request per file)
 tar = "0.4"
 flate2 = "1"
+
+# Identity: GitHub App JWTs (RS256), HMAC state/webhook signatures, AES-GCM at rest
+jsonwebtoken = "9"
+aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 # Utilities
 anyhow = "1"

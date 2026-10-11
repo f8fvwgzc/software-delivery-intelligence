@@ -4,15 +4,17 @@ use sdi_common::grpc::db_status;
 use sdi_proto::execution::v1::{GrantPermissionRequest, Identity, ListIdentitiesResponse};
 use tonic::Status;
 
-use super::parse_id;
+use super::{Caller, parse_id};
 use crate::{
     convert, db,
     runner::{GRANT_TTL_MINUTES, Runtime},
 };
 
-pub async fn list(rt: &Arc<Runtime>) -> Result<ListIdentitiesResponse, Status> {
-    let identities = db::identities::list(&rt.pool).await.map_err(db_status)?;
-    let grants = db::identities::all_grants(&rt.pool)
+pub async fn list(rt: &Arc<Runtime>, caller: &Caller) -> Result<ListIdentitiesResponse, Status> {
+    let identities = db::identities::list(&rt.pool, caller.workspace)
+        .await
+        .map_err(db_status)?;
+    let grants = db::identities::all_grants(&rt.pool, caller.workspace)
         .await
         .map_err(db_status)?;
     Ok(ListIdentitiesResponse {
@@ -20,7 +22,12 @@ pub async fn list(rt: &Arc<Runtime>) -> Result<ListIdentitiesResponse, Status> {
     })
 }
 
-pub async fn grant(rt: &Arc<Runtime>, req: GrantPermissionRequest) -> Result<Identity, Status> {
+pub async fn grant(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: GrantPermissionRequest,
+) -> Result<Identity, Status> {
+    let workspace = caller.workspace;
     let id = parse_id(&req.identity_id, "identity_id")?;
     let permissions: Vec<String> = req
         .permissions
@@ -40,15 +47,28 @@ pub async fn grant(rt: &Arc<Runtime>, req: GrantPermissionRequest) -> Result<Ide
         0 => GRANT_TTL_MINUTES,
         n => i64::from(n),
     };
-    let identity = db::identities::get(&rt.pool, id).await.map_err(db_status)?;
+    let identity = db::identities::get(&rt.pool, workspace, id)
+        .await
+        .map_err(db_status)?;
 
     let mut tx = rt.pool.begin().await.map_err(db_status)?;
-    db::identities::grant(&mut tx, id, &permissions, ttl)
+    db::identities::grant(&mut tx, workspace, id, &permissions, ttl)
         .await
         .map_err(db_status)?;
     tx.commit().await.map_err(db_status)?;
+    caller.audit(
+        rt,
+        "identity.grant",
+        "identity",
+        &id.to_string(),
+        format!(
+            "{} granted {} for {ttl} minutes",
+            identity.name,
+            permissions.join(", ")
+        ),
+    );
 
-    let grants = db::identities::grants_for(&rt.pool, id)
+    let grants = db::identities::grants_for(&rt.pool, identity.workspace_id, id)
         .await
         .map_err(db_status)?;
     Ok(convert::identity_to_proto(identity, grants))

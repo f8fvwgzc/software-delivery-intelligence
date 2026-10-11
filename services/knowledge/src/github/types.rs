@@ -59,6 +59,15 @@ pub struct Repo {
     pub topics: Vec<String>,
 }
 
+/// `/installation/repositories`: the selection an installation grants.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstallationRepos {
+    #[serde(default)]
+    pub total_count: u64,
+    #[serde(default)]
+    pub repositories: Vec<Repo>,
+}
+
 fn default_branch() -> String {
     "main".to_owned()
 }

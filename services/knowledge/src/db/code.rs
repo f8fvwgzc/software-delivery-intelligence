@@ -2,6 +2,11 @@
 //! files at the scanned commit. Rows are keyed by `(project, commit)` so a
 //! rescan at a new commit never serves stale content, and [`prune`] keeps
 //! only the latest commit's rows once that scan succeeded.
+//!
+//! Data controls (§19): a file row may carry `expires_at` (`code_cache =
+//! session`); [`get_file`] treats an expired row as a miss and
+//! [`sweep_expired`] deletes them in the background. `code_cache = none`
+//! never writes a file row at all; [`purge`] drops the caches on demand.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +24,7 @@ pub struct TreeEntryRecord {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct TreeRow {
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub commit_sha: String,
     pub entries: Json<Vec<TreeEntryRecord>>,
@@ -28,6 +34,7 @@ pub struct TreeRow {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct FileRow {
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub commit_sha: String,
     pub path: String,
@@ -37,6 +44,8 @@ pub struct FileRow {
     pub size: i64,
     pub language: String,
     pub fetched_at: DateTime<Utc>,
+    /// `None` keeps the row until the next scan or a purge.
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,14 +59,23 @@ pub struct NewFile<'a> {
     pub language: &'a str,
 }
 
+/// What [`purge`] removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Purged {
+    pub files: u64,
+    pub trees: u64,
+}
+
 pub async fn get_tree(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     commit_sha: &str,
 ) -> sqlx::Result<Option<TreeRow>> {
     sqlx::query_as::<_, TreeRow>(
-        "SELECT * FROM repo_trees WHERE project_id = $1 AND commit_sha = $2",
+        "SELECT * FROM repo_trees WHERE workspace_id = $1 AND project_id = $2 AND commit_sha = $3",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(commit_sha)
     .fetch_optional(exec)
@@ -66,17 +84,19 @@ pub async fn get_tree(
 
 pub async fn upsert_tree(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     commit_sha: &str,
     entries: &[TreeEntryRecord],
     truncated: bool,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO repo_trees (project_id, commit_sha, entries, truncated, fetched_at)
-         VALUES ($1, $2, $3, $4, now())
+        "INSERT INTO repo_trees (workspace_id, project_id, commit_sha, entries, truncated, fetched_at)
+         VALUES ($1, $2, $3, $4, $5, now())
          ON CONFLICT (project_id, commit_sha) DO UPDATE SET
            entries = EXCLUDED.entries, truncated = EXCLUDED.truncated, fetched_at = now()",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(commit_sha)
     .bind(Json(entries))
@@ -91,6 +111,7 @@ pub async fn upsert_tree(
 /// truncated file.
 pub async fn tree_entry_size(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     commit_sha: &str,
     path: &str,
@@ -98,9 +119,10 @@ pub async fn tree_entry_size(
     sqlx::query_scalar::<_, i64>(
         "SELECT (e->>'size')::bigint
            FROM repo_trees t, jsonb_array_elements(t.entries) e
-          WHERE t.project_id = $1 AND t.commit_sha = $2 AND e->>'path' = $3
+          WHERE t.workspace_id = $1 AND t.project_id = $2 AND t.commit_sha = $3 AND e->>'path' = $4
           LIMIT 1",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(commit_sha)
     .bind(path)
@@ -108,15 +130,21 @@ pub async fn tree_entry_size(
     .await
 }
 
+/// A cached file that has not expired. An expired row the sweeper has not
+/// reached yet is a miss, never served.
 pub async fn get_file(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     commit_sha: &str,
     path: &str,
 ) -> sqlx::Result<Option<FileRow>> {
     sqlx::query_as::<_, FileRow>(
-        "SELECT * FROM repo_files WHERE project_id = $1 AND commit_sha = $2 AND path = $3",
+        "SELECT * FROM repo_files
+          WHERE workspace_id = $1 AND project_id = $2 AND commit_sha = $3 AND path = $4
+            AND (expires_at IS NULL OR expires_at > now())",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(commit_sha)
     .bind(path)
@@ -124,19 +152,23 @@ pub async fn get_file(
     .await
 }
 
+/// Stores a file; `expires_at` is `None` for a persistent cache.
 pub async fn upsert_file(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     file: &NewFile<'_>,
+    expires_at: Option<DateTime<Utc>>,
 ) -> sqlx::Result<FileRow> {
     sqlx::query_as::<_, FileRow>(
-        "INSERT INTO repo_files (project_id, commit_sha, path, content, \"binary\", truncated, size, language, fetched_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+        "INSERT INTO repo_files (workspace_id, project_id, commit_sha, path, content, \"binary\", truncated, size, language, fetched_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10)
          ON CONFLICT (project_id, commit_sha, path) DO UPDATE SET
            content = EXCLUDED.content, \"binary\" = EXCLUDED.\"binary\", truncated = EXCLUDED.truncated,
-           size = EXCLUDED.size, language = EXCLUDED.language, fetched_at = now()
+           size = EXCLUDED.size, language = EXCLUDED.language, fetched_at = now(), expires_at = EXCLUDED.expires_at
          RETURNING *",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(file.commit_sha)
     .bind(file.path)
@@ -145,6 +177,7 @@ pub async fn upsert_file(
     .bind(file.truncated)
     .bind(i64::try_from(file.size).unwrap_or(i64::MAX))
     .bind(file.language)
+    .bind(expires_at)
     .fetch_one(exec)
     .await
 }
@@ -153,20 +186,63 @@ pub async fn upsert_file(
 /// the caches hold at most the latest scanned commit. Returns rows removed.
 pub async fn prune(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     commit_sha: &str,
 ) -> sqlx::Result<u64> {
-    let trees = sqlx::query("DELETE FROM repo_trees WHERE project_id = $1 AND commit_sha <> $2")
-        .bind(project_id)
-        .bind(commit_sha)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
-    let files = sqlx::query("DELETE FROM repo_files WHERE project_id = $1 AND commit_sha <> $2")
-        .bind(project_id)
-        .bind(commit_sha)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
+    let trees = sqlx::query(
+        "DELETE FROM repo_trees WHERE workspace_id = $1 AND project_id = $2 AND commit_sha <> $3",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(commit_sha)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    let files = sqlx::query(
+        "DELETE FROM repo_files WHERE workspace_id = $1 AND project_id = $2 AND commit_sha <> $3",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(commit_sha)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
     Ok(trees + files)
+}
+
+/// Drops the file cache (and the trees) of one project, or of the whole
+/// workspace when `project_id` is `None`.
+pub async fn purge(
+    conn: &mut PgConnection,
+    workspace_id: Uuid,
+    project_id: Option<Uuid>,
+) -> sqlx::Result<Purged> {
+    let files = sqlx::query(
+        "DELETE FROM repo_files WHERE workspace_id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    let trees = sqlx::query(
+        "DELETE FROM repo_trees WHERE workspace_id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    Ok(Purged { files, trees })
+}
+
+/// Deletes every expired file row of every workspace; the background
+/// sweeper's job, so it is the one code-cache function without a workspace.
+pub async fn sweep_expired(exec: impl PgExecutor<'_>) -> sqlx::Result<u64> {
+    let result =
+        sqlx::query("DELETE FROM repo_files WHERE expires_at IS NOT NULL AND expires_at <= now()")
+            .execute(exec)
+            .await?;
+    Ok(result.rows_affected())
 }

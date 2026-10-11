@@ -1,6 +1,10 @@
 //! Code browser (CONTRACT.md §15): the repository tree and single files at
 //! the scanned commit, served from the `repo_trees` / `repo_files` caches
 //! and fetched from GitHub on a miss.
+//!
+//! Data controls (§19) decide what a miss leaves behind: `none` returns the
+//! file without storing it, `session` stores it with an expiry, `persistent`
+//! stores it for good. Every file read is audited (`file.read`).
 
 use sdi_common::grpc::db_status;
 use sdi_proto::knowledge::v1::*;
@@ -8,6 +12,7 @@ use tonic::Status;
 
 use super::{KnowledgeState, github_status};
 use crate::{
+    auth::Caller,
     db::{
         self,
         code::{FileRow, NewFile, TreeEntryRecord},
@@ -22,20 +27,22 @@ pub const MAX_FILE_BYTES: usize = 1 << 20;
 
 pub(super) async fn get_repo_tree(
     state: &KnowledgeState,
+    caller: &Caller,
     req: GetRepoTreeRequest,
 ) -> Result<RepoTree, Status> {
-    let project = state.project(&req.project_id).await?;
-    let commit_sha = scanned_commit(state, &project).await?;
+    let ws = caller.workspace_id;
+    let project = state.project(caller, &req.project_id).await?;
+    let commit_sha = scanned_commit(state, caller, &project).await?;
 
-    let cached = db::code::get_tree(&state.pool, project.id, &commit_sha)
+    let cached = db::code::get_tree(&state.pool, ws, project.id, &commit_sha)
         .await
         .map_err(db_status)?;
     let (mut entries, truncated) = match cached {
         Some(row) => (row.entries.0, row.truncated),
         None => {
             let (owner, name) = repo_parts(&project)?;
-            let tree = state
-                .github
+            let github = state.github(caller).await?;
+            let tree = github
                 .tree(owner, name, &commit_sha)
                 .await
                 .map_err(github_status)?;
@@ -52,6 +59,7 @@ pub(super) async fn get_repo_tree(
                 .collect();
             db::code::upsert_tree(
                 &state.pool,
+                ws,
                 project.id,
                 &commit_sha,
                 &entries,
@@ -74,32 +82,43 @@ pub(super) async fn get_repo_tree(
 
 pub(super) async fn get_repo_file(
     state: &KnowledgeState,
+    caller: &Caller,
     req: GetRepoFileRequest,
 ) -> Result<RepoFile, Status> {
+    let ws = caller.workspace_id;
     let path = validate_path(&req.path)?;
     if looks_secret(path) {
         return Err(Status::permission_denied(
             "this file looks like a secret and is never displayed",
         ));
     }
-    let project = state.project(&req.project_id).await?;
-    let commit_sha = scanned_commit(state, &project).await?;
+    let project = state.project(caller, &req.project_id).await?;
+    let commit_sha = scanned_commit(state, caller, &project).await?;
 
-    let cached = db::code::get_file(&state.pool, project.id, &commit_sha, path)
+    let cached = db::code::get_file(&state.pool, ws, project.id, &commit_sha, path)
         .await
         .map_err(db_status)?;
     let row = match cached {
         Some(row) => row,
-        None => fetch_and_store(state, &project, &commit_sha, path).await?,
+        None => fetch_and_maybe_store(state, caller, &project, &commit_sha, path).await?,
     };
-    let fact_ids = db::facts::ids_for_path(&state.pool, project.id, path)
+    let fact_ids = db::facts::ids_for_path(&state.pool, ws, project.id, path)
         .await
         .map_err(db_status)?;
+    state.identity.audit_file_read(
+        caller,
+        &project.id.to_string(),
+        &project.repo_full_name,
+        &row.commit_sha,
+        &row.path,
+    );
 
     Ok(RepoFile {
         html_url: format!(
-            "https://github.com/{}/blob/{}/{}",
-            project.repo_full_name, row.commit_sha, row.path
+            "{}/blob/{}/{}",
+            project.repo_url.trim_end_matches('/'),
+            row.commit_sha,
+            row.path
         ),
         path: row.path,
         commit_sha: row.commit_sha,
@@ -112,15 +131,19 @@ pub(super) async fn get_repo_file(
     })
 }
 
-async fn fetch_and_store(
+/// Fetches the file and, depending on the workspace's `code_cache`, stores
+/// it with or without an expiry, or not at all.
+async fn fetch_and_maybe_store(
     state: &KnowledgeState,
+    caller: &Caller,
     project: &ProjectRow,
     commit_sha: &str,
     path: &str,
 ) -> Result<FileRow, Status> {
+    let ws = caller.workspace_id;
     let (owner, name) = repo_parts(project)?;
-    let raw = state
-        .github
+    let github = state.github(caller).await?;
+    let raw = github
         .file_raw(owner, name, path, commit_sha, MAX_FILE_BYTES)
         .await
         .map_err(github_status)?;
@@ -130,38 +153,67 @@ async fn fetch_and_store(
     let size = match (raw.truncated, raw.content_length) {
         (false, _) => raw.bytes.len() as u64,
         (true, Some(len)) => len,
-        (true, None) => db::code::tree_entry_size(&state.pool, project.id, commit_sha, path)
+        (true, None) => db::code::tree_entry_size(&state.pool, ws, project.id, commit_sha, path)
             .await
             .map_err(db_status)?
             .and_then(|size| u64::try_from(size).ok())
             .unwrap_or(raw.bytes.len() as u64),
     };
+    let file = NewFile {
+        commit_sha,
+        path,
+        content: &classified.content,
+        binary: classified.binary,
+        truncated: classified.truncated,
+        size,
+        language: sdi_analyzer::language_for_path(path),
+    };
+    let controls = state.controls.get(caller).await;
+    if !controls.stores_files() {
+        return Ok(unstored(ws, project.id, &file));
+    }
     db::code::upsert_file(
         &state.pool,
+        ws,
         project.id,
-        &NewFile {
-            commit_sha,
-            path,
-            content: &classified.content,
-            binary: classified.binary,
-            truncated: classified.truncated,
-            size,
-            language: sdi_analyzer::language_for_path(path),
-        },
+        &file,
+        controls.file_expiry(chrono::Utc::now()),
     )
     .await
     .map_err(db_status)
 }
 
+/// The row a `code_cache = none` workspace would have stored, kept only for
+/// the answer.
+fn unstored(workspace_id: uuid::Uuid, project_id: uuid::Uuid, file: &NewFile<'_>) -> FileRow {
+    FileRow {
+        workspace_id,
+        project_id,
+        commit_sha: file.commit_sha.to_owned(),
+        path: file.path.to_owned(),
+        content: file.content.to_owned(),
+        binary: file.binary,
+        truncated: file.truncated,
+        size: i64::try_from(file.size).unwrap_or(i64::MAX),
+        language: file.language.to_owned(),
+        fetched_at: chrono::Utc::now(),
+        expires_at: None,
+    }
+}
+
 /// The commit the project's last successful scan analysed; the browser
 /// always shows that snapshot so facts and diagrams line up with the code.
-async fn scanned_commit(state: &KnowledgeState, project: &ProjectRow) -> Result<String, Status> {
+async fn scanned_commit(
+    state: &KnowledgeState,
+    caller: &Caller,
+    project: &ProjectRow,
+) -> Result<String, Status> {
     let Some(scan_id) = project.last_scan_id else {
         return Err(Status::failed_precondition(
             "project has not been scanned yet",
         ));
     };
-    let scan = db::scans::get(&state.pool, scan_id)
+    let scan = db::scans::get(&state.pool, caller.workspace_id, scan_id)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => {

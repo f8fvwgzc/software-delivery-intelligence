@@ -4,14 +4,19 @@ use sdi_common::grpc::db_status;
 use sdi_proto::execution::v1::{DeliveryStats, GetDeliveryStatsRequest};
 use tonic::Status;
 
+use super::Caller;
 use crate::{db, runner::Runtime};
 
 fn count(value: i64) -> u32 {
     u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
-pub async fn get(rt: &Arc<Runtime>, req: GetDeliveryStatsRequest) -> Result<DeliveryStats, Status> {
-    let row = db::executions::stats(&rt.pool, req.project_id.trim())
+pub async fn get(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: GetDeliveryStatsRequest,
+) -> Result<DeliveryStats, Status> {
+    let row = db::executions::stats(&rt.pool, caller.workspace, req.project_id.trim())
         .await
         .map_err(db_status)?;
     let finished = row.succeeded + row.failed;

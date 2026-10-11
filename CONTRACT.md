@@ -60,10 +60,11 @@ Shared crates:
 | Variable | Default | Used by |
 |---|---|---|
 | `DATABASE_URL` | `postgres://sdi:sdi@127.0.0.1:5440/sdi` | all services |
-| `GITHUB_TOKEN` | — | knowledge (read-only; `scripts/dev.sh` exports `gh auth token`) |
+| `GITHUB_TOKEN` | — | knowledge (dev fallback only: used for every workspace while `IDENTITY_GRPC_URL` is unreachable, logged once; `scripts/dev.sh` exports `gh auth token`) |
 | `ANTHROPIC_API_KEY` | — | intelligence (optional; enables the `claude` reasoner) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
 | `KNOWLEDGE_GRPC_URL` | `http://127.0.0.1:50051` | gateway, intelligence, execution |
+| `IDENTITY_GRPC_URL` | `http://127.0.0.1:50054` | gateway, knowledge (tokens, data controls, audit), intelligence, execution |
 | `INTELLIGENCE_GRPC_URL` | `http://127.0.0.1:50052` | gateway |
 | `EXECUTION_GRPC_URL` | `http://127.0.0.1:50053` | gateway, intelligence |
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` | `0.0.0.0:<port>` | each service |
@@ -560,6 +561,17 @@ validated (no `..`, no leading `/`). Secret-looking files (`.env`,
 `*.pem`, `*.key`, `id_rsa*`) are refused with `PERMISSION_DENIED` — the
 platform never displays secrets even when the repository contains them.
 
+What a cache miss leaves behind follows the workspace's data controls
+(§19, read from `Identity.GetDataControls`, cached 60 s): `code_cache=none`
+fetches and answers without writing `repo_files`; `session` writes the row
+with `expires_at = now + code_cache_ttl_hours` (default 24 h) — reads treat
+an expired row as a miss and a background sweeper deletes expired rows
+every 10 minutes; `persistent` writes it without expiry. Trees are always
+cached (the browser needs them). Every `GetRepoFile` is audited through
+`Identity.RecordAudit` (`action=file.read`, `entity=file`, `entity_id=<path>`,
+fire-and-forget). `html_url` derives from the project's `repo_url`, so GHES
+links work.
+
 Routes: `GET /projects/{id}/tree`, `GET /projects/{id}/file?path=<path>`.
 Web: `/projects/:id/code` and `/projects/:id/code/*path` — a GitHub-like
 tree (directories first, lazy-expanded, keyboard navigable) and a file view
@@ -741,6 +753,78 @@ directory and no way to grant someone more than GitHub already grants them.
 - **Service-to-service** calls (intelligence → knowledge/execution,
   execution → knowledge) forward the same metadata unchanged. Internal
   jobs (webhook-triggered rescans) run with `x-sdi-user: system`.
+- **Knowledge tenancy** (migration `0004_tenancy`): `x-sdi-workspace` must
+  be a uuid (anything else is `UNAUTHENTICATED`). Rows that existed before
+  tenancy belong to the **bootstrap workspace
+  `00000000-0000-7000-8000-00000000dead`**; dev mode's personal workspace
+  maps to it. `projects` are unique per `(workspace_id, repo_full_name)`,
+  so one repository may be connected in a personal and in an organisation
+  workspace. Catalog patterns are global (`workspace_id IS NULL`,
+  `scope=public_template`); learned patterns carry the workspace and are
+  ids `learned:<workspace>:<key>` (the bootstrap workspace keeps its
+  pre-tenancy `learned:<key>` rows). `ListPatterns`/`GetPattern` return the
+  catalog plus the caller's learned patterns, and usage roll-ups
+  (`used_by`, deployments, success rate) only count the caller's projects.
+  Settings are per workspace, seeded lazily with the defaults on first
+  read. `SearchKnowledge`, `ListSimilarProjects`, `GetKnowledgeStats` and
+  `WatchEvents` are workspace-scoped; every `PlatformEvent` carries
+  `data["workspace_id"]`. Knowledge role checks: reads VIEWER;
+  `ConnectProject`, `StartScan`, `AnswerQuestion`, `SetProjectMode`,
+  `DeleteProject`, `RecordPatternOutcome`, `IndexKnowledge` MEMBER;
+  `UpdateSettings`, `PurgeCodeCache`, `ExportWorkspaceData` ADMIN;
+  `DeleteWorkspaceData` OWNER. A project of another workspace is
+  `NOT_FOUND`, never `PERMISSION_DENIED`.
+- **Intelligence tenancy** (migration `0004_workspaces`): `proposals`,
+  `messages`, `decisions`, `documents`, `diagrams` and `settings` carry
+  `workspace_id` (pre-tenancy rows → bootstrap workspace); settings are one
+  row per workspace (the old single row is the bootstrap workspace's), read
+  with defaults when missing. Role checks: reads VIEWER; `GenerateProposal`,
+  `Negotiate`, `AcceptProposal`, `RejectProposal`, `GenerateDocument`,
+  `GenerateDiagram`, `UpdateDiagram`, `DeleteDiagram`, `CreateDecision`,
+  `SupersedeDecision` MEMBER; `UpdateSettings`, `ExportWorkspaceData` ADMIN;
+  `DeleteWorkspaceData` OWNER. Outgoing knowledge/execution calls forward
+  the caller's principal; a decision's `approved_by` defaults to the caller.
+  **BYOK reasoner**: per call, intelligence resolves the reasoner from
+  `Identity.GetDataControls` (`reasoner` must be `claude`) and the
+  workspace's own key from the internal `Identity.GetReasonerKey`
+  (`workspace_id → api_key, model`; `NOT_FOUND` = no key; never exposed
+  through the gateway, never logged). `ANTHROPIC_API_KEY` is the dev
+  fallback only when the workspace allows the reasoner and holds no key;
+  with the controls `off` (default) even an environment key does nothing.
+  The model is the settings row's, else the key's, else `ANTHROPIC_MODEL`.
+  `IntelligenceSettings.api_key_configured` means "this workspace can reach
+  Claude". When identity is unreachable the reasoner stays off.
+- **Execution tenancy** (migration `0003_workspaces`): every table carries
+  `workspace_id` (pre-tenancy rows → bootstrap workspace); `executions`
+  also store `created_by` (`x-sdi-user`). **Policies and identities are
+  per workspace**: on a workspace's first RPC the §5.2 table and the §5.3
+  identities (`simulated`, `local-docker`, and `github-token` while
+  `GITHUB_TOKEN` is set) are seeded for it (`PRIMARY KEY (workspace_id,
+  action_type)`, `UNIQUE (workspace_id, name)`; identity ids are fresh
+  uuids outside bootstrap). Role checks: reads VIEWER; `CreateExecution`,
+  `StartExecution`, `ResolveFailure`, `CancelExecution` MEMBER for the
+  `simulated` adapter and APPROVER for `docker`/`github`; `DecideApproval`
+  and `GrantPermission` APPROVER (`decided_by` defaults to the caller);
+  `UpdatePolicy`, `ExportWorkspaceData` ADMIN; `DeleteWorkspaceData` OWNER.
+  An execution of another workspace is `NOT_FOUND`. Runner tasks are
+  background work: they continue as `Principal::system(workspace)` (the
+  `RecordPatternOutcome` call carries `x-sdi-user: system`). Every
+  `PlatformEvent` carries `data["workspace_id"]` and `WatchEvents` is
+  filtered to the caller's workspace. Startup recovery resumes executions
+  across workspaces; `GITHUB_TOKEN` (re)seeds or withdraws `github-token`
+  in every workspace that has identities.
+- **GitHub access in knowledge**: there is no process-wide token. Per
+  workspace, knowledge calls `Identity.GetInstallationToken` (installation
+  token for an organisation; the user's OAuth token for a personal
+  workspace, both with their host's `api_base_url`) and
+  `Identity.GetWorkspace` (to know whether the token is an installation),
+  caches the result in memory until 5 minutes before `expires_at`, and
+  keys its GitHub ETag cache by workspace. `ListGithubRepos` lists
+  `/installation/repositories` for an installation and `/user/repos` for a
+  user token; `GetGithubAccount` describes the installation (slug, grants)
+  or the user. When identity is unreachable and `GITHUB_TOKEN` is set, that
+  token is used for every workspace (dev mode, warned once); otherwise
+  GitHub-backed RPCs answer `FAILED_PRECONDITION`.
 - Routes: `GET /auth/login?returnTo=` (302 to GitHub), `GET /auth/callback`
   (sets the cookie, 302 to `returnTo`), `POST /auth/logout`, `GET /auth/me`
   (`{user, workspaces}` or 401), `GET /workspaces`, `GET /workspaces/{id}`,
@@ -781,6 +865,42 @@ choose". The architecture has to make that checkable:
 | LLM requests | none stored; sent only when `reasoner=claude` with the workspace's own key; payload = structured context (facts, options, spec), never raw files | — | yes (default off) |
 | Audit entries | `identity.audit` | `audit_retention_days` (default 365) | no |
 | GitHub tokens | installation tokens are minted per request and cached ≤ 55 min in memory; OAuth tokens encrypted at rest with `SDI_SESSION_SECRET` | session lifetime | — |
+
+Knowledge RPCs behind the data controls (all take the workspace from the
+principal; a `workspace_id` in the body is optional and must match):
+`PurgeCodeCache(workspace_id?, project_id?)` → files and trees deleted
+(ADMIN, audited `data.purge`); `DeleteWorkspaceData(workspace_id?)` →
+rows deleted per table, in one transaction, including learned patterns and
+settings (OWNER, audited `data.delete`); `ExportWorkspaceData(workspace_id?)`
+→ a stream of `ExportRecord{entity=<table>, record=<row as JSON>}` over
+every tenant table, embeddings omitted as derived data (ADMIN, audited
+`data.export`). `DeleteProject` purges the project's code caches.
+`minimal_chunks` cuts chunk content to 400 characters before it is embedded
+and stored (scans and `IndexKnowledge` alike). When identity cannot answer,
+the defaults apply (`session`, 24 h, whole chunks) and are cached a minute.
+
+Intelligence and execution expose the same pair (workspace from the
+principal; the body's `workspace_id` is required and must match, otherwise
+`PERMISSION_DENIED`): `DeleteWorkspaceData(workspace_id)` → `{deleted:
+map<entity, rows>}` over every tenant table in one transaction (intelligence:
+`settings`, `proposal`, `message`, `decision`, `document`, `diagram`;
+execution: `policy`, `identity`, `grant`, `execution`, `step`, `event`,
+`approval`, plus `cancelled`: execution first cancels the workspace's live
+runs through their runners and removes every real run's workdir and
+containers, and forgets the seed so the next use re-seeds);
+`ExportWorkspaceData(workspace_id)` → a stream of
+`WorkspaceDataRecord{entity, json}` with every row encoded by Postgres
+(`row_to_json`, read through a cursor, parents before children). Neither
+RPC writes an audit entry of its own: the `data.delete`/`data.export`
+entry belongs to the workspace-level request that fans out to the services.
+Audit entries written by the services themselves (`Identity.RecordAudit`,
+fire-and-forget with the caller's principal, never blocking the action):
+intelligence `proposal.accept` (entity `proposal`, detail: option and
+execution) and `decision.create` (every decision: manual, negotiated,
+accepted); execution `execution.start`, `execution.resolve` (entity
+`execution`), `approval.decide` (entity `approval`, detail starts with
+`approved`/`rejected`), `policy.update` (entity `policy`, entity_id =
+action type, detail `OLD -> NEW`), `identity.grant` (entity `identity`).
 
 Guarantees enforced in code: secrets-looking paths are never read (§15);
 no third-party telemetry; exports are complete (`data/export`) and deletes

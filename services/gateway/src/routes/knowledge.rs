@@ -1,6 +1,6 @@
 //! Pattern memory, semantic search and knowledge counters.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::knowledge::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -10,7 +10,7 @@ use crate::{
         KnowledgeHit, KnowledgeStats, ListPatternsQuery, Pattern, SearchKnowledgeQuery,
     },
     error::{ApiError, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -30,7 +30,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Pattern>), ErrorResponses),
 )]
 async fn list_patterns(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListPatternsQuery>,
 ) -> ApiResult<Json<Vec<Pattern>>> {
     let response = state
@@ -52,10 +52,7 @@ async fn list_patterns(
     params(("id" = String, Path, description = "Pattern id")),
     responses((status = 200, body = Pattern), ErrorResponses),
 )]
-async fn get_pattern(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Pattern>> {
+async fn get_pattern(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Pattern>> {
     let pattern = state
         .knowledge()
         .get_pattern(proto::GetPatternRequest { id })
@@ -73,7 +70,7 @@ async fn get_pattern(
     responses((status = 200, body = Vec<KnowledgeHit>), ErrorResponses),
 )]
 async fn search_knowledge(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<SearchKnowledgeQuery>,
 ) -> ApiResult<Json<Vec<KnowledgeHit>>> {
     let kinds = query.kinds().map_err(ApiError::bad_request)?;
@@ -97,7 +94,7 @@ async fn search_knowledge(
     tag = "knowledge",
     responses((status = 200, body = KnowledgeStats), ErrorResponses),
 )]
-async fn knowledge_stats(State(state): State<AppState>) -> ApiResult<Json<KnowledgeStats>> {
+async fn knowledge_stats(state: Scoped) -> ApiResult<Json<KnowledgeStats>> {
     let stats = state
         .knowledge()
         .get_knowledge_stats(proto::GetKnowledgeStatsRequest {})

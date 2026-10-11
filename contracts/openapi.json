@@ -65,6 +65,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -158,6 +178,457 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Where GitHub sends the user back. Exchanges the code for a session,\nsets the `sdi_session` cookie and redirects to where sign-in started.",
+        "operationId": "callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "Authorisation code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Signed state from `/auth/login`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTo",
+            "in": "query",
+            "description": "Dev mode only: where to go afterwards.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "GitHub's own error code when the user cancelled.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Session cookie set; redirect to `returnTo`"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts sign-in: redirects to GitHub (or, in dev mode, straight to the\ncallback). `returnTo` must be a path or a URL on the app origin.",
+        "operationId": "login",
+        "parameters": [
+          {
+            "name": "returnTo",
+            "in": "query",
+            "description": "Where to send the user after sign-in: a path, or a URL on the app origin.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to GitHub's authorize page"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revokes the session and clears the cookie.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Signed out"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "The signed-in user and their workspaces, or 401.",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -269,6 +740,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -349,6 +840,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -458,6 +969,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -541,6 +1072,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -640,6 +1191,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -715,6 +1286,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -822,6 +1413,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -913,6 +1524,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -971,7 +1602,7 @@
         "tags": [
           "system"
         ],
-        "summary": "Every change on the platform as it happens, merged from the three\nservices (CONTRACT.md §8, \"Live events\"). Each `data:` line is a\n`PlatformEvent`. The stream never ends: a service that goes away is\nreconnected with backoff while the others keep flowing, so the web app\nopens it once per tab and invalidates its caches by `entity`.",
+        "summary": "Every change in the caller's workspace as it happens, merged from the\nthree services (CONTRACT.md §8, \"Live events\"). Each `data:` line is a\n`PlatformEvent`. The stream never ends: a service that goes away is\nreconnected with backoff while the others keep flowing, so the web app\nopens it once per tab and invalidates its caches by `entity`. Events\nof other workspaces (or without one) are dropped here (§18).",
         "operationId": "watch_platform_events",
         "responses": {
           "200": {
@@ -1031,6 +1662,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1127,6 +1778,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -1210,6 +1881,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1311,6 +2002,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1435,6 +2146,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -1530,6 +2261,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1639,6 +2390,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -1740,6 +2511,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -1812,6 +2603,241 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/github/app/install-url": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Where an organisation owner installs the SDI GitHub App.",
+        "operationId": "install_url",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallUrl"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/github/app/setup": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "GitHub's post-install redirect: records the installation as a workspace\nof the signed-in user and sends them to it.",
+        "operationId": "setup",
+        "parameters": [
+          {
+            "name": "installation_id",
+            "in": "query",
+            "description": "The new installation.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "setup_action",
+            "in": "query",
+            "description": "`install` or `update`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the new workspace"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1906,6 +2932,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2017,6 +3063,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2118,6 +3184,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2190,6 +3276,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2321,6 +3427,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2393,6 +3519,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2504,6 +3650,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2595,6 +3761,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2670,6 +3856,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2779,6 +3985,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -2854,6 +4080,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2942,6 +4188,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3041,6 +4307,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -3116,6 +4402,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3215,6 +4521,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -3298,6 +4624,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3417,6 +4763,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -3503,6 +4869,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3610,6 +4996,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -3696,6 +5102,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3795,6 +5221,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3915,6 +5361,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -4016,8 +5482,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "The file looks like a secret and is never displayed",
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4118,6 +5594,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4227,6 +5723,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -4310,6 +5826,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4411,6 +5947,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4530,6 +6086,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -4616,6 +6192,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4719,6 +6315,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4832,6 +6448,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -4913,6 +6549,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5026,6 +6682,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -5118,6 +6794,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -5201,6 +6897,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5303,6 +7019,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -5383,6 +7119,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5474,6 +7230,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5583,6 +7359,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -5669,6 +7465,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5768,6 +7584,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5879,6 +7715,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -5972,6 +7828,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6081,6 +7957,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -6182,6 +8078,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -6265,6 +8181,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6365,6 +8301,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -6437,6 +8393,26 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6533,6 +8509,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The resource does not exist.",
             "content": {
@@ -6591,7 +8587,7 @@
         "tags": [
           "system"
         ],
-        "summary": "gRPC health of every backing service, checked concurrently.",
+        "summary": "gRPC health of every backing service (identity included), checked concurrently.",
         "operationId": "system_status",
         "responses": {
           "200": {
@@ -6599,6 +8595,1508 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SystemStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/github": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Receives GitHub App events. Verified with `GITHUB_WEBHOOK_SECRET`; the\ngateway answers 412 when none is configured.",
+        "operationId": "github",
+        "requestBody": {
+          "description": "GitHub webhook payload",
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Every workspace the signed-in user can open, personal first.",
+        "operationId": "list_workspaces",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Workspace"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "One workspace the user can open (403 otherwise).",
+        "operationId": "get_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Deletes everything the platform stores for the workspace (owner):\nevery knowledge, intelligence and execution row, then the GitHub App\ninstallation record. The deletion itself is audited.",
+        "operationId": "delete_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/audit": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Audit entries, newest first (admin). Page with `before`.",
+        "operationId": "list_audit",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actionPrefix",
+            "in": "query",
+            "description": "Only actions starting with this, e.g. `execution.`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: entries strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 100, max 1000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEntry"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/data-controls": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "What the workspace lets SDI store (CONTRACT.md §19).",
+        "operationId": "get_data_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataControls"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Changes the data controls (admin). Omitted fields keep their value.",
+        "operationId": "update_data_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDataControlsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataControls"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/data-controls/reasoner-key": {
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Stores the workspace's own model API key, encrypted at rest (admin).\nAn empty key removes it. The key is never returned.",
+        "operationId": "set_reasoner_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReasonerKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataControls"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/data/export": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Everything stored for the workspace as one JSON document (admin),\nstreamed: workspace, members, data controls, every knowledge,\nintelligence and execution row by entity, and the audit trail.",
+        "operationId": "export_data",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive, streamed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataExport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/data/purge-code-cache": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Drops every cached file content and tree of the workspace (admin).",
+        "operationId": "purge_code_cache",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/members": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Members synced from GitHub with their derived and effective roles.",
+        "operationId": "list_members",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/members/sync": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Re-reads organisation members and teams from GitHub (admin).",
+        "operationId": "sync_members",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/members/{userId}": {
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Narrows a member's role below what GitHub grants (admin). Null clears the override.",
+        "operationId": "update_member_role",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "description": "User id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -6846,6 +10344,65 @@
           }
         }
       },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One audited action.",
+        "required": [
+          "id",
+          "userId",
+          "userLogin",
+          "action",
+          "entity",
+          "entityId",
+          "detail",
+          "requestId",
+          "ip",
+          "at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Dotted action key, e.g. `project.connect`, `approval.decide`, `data.export`."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it happened."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Free-text detail."
+          },
+          "entity": {
+            "type": "string",
+            "description": "Entity type the action touched."
+          },
+          "entityId": {
+            "type": "string",
+            "description": "Entity id, when known."
+          },
+          "id": {
+            "type": "string",
+            "description": "Entry id."
+          },
+          "ip": {
+            "type": "string",
+            "description": "Client address as seen by the gateway."
+          },
+          "requestId": {
+            "type": "string",
+            "description": "`x-request-id` of the request."
+          },
+          "userId": {
+            "type": "string",
+            "description": "Acting user id, or `system`."
+          },
+          "userLogin": {
+            "type": "string",
+            "description": "Acting user's login at the time."
+          }
+        }
+      },
       "CancelExecutionRequest": {
         "type": "object",
         "description": "Body of `POST /executions/{id}/cancel`.",
@@ -7031,6 +10588,154 @@
           "title": {
             "type": "string",
             "description": "Title."
+          }
+        }
+      },
+      "DataControls": {
+        "type": "object",
+        "description": "Per-workspace data handling (CONTRACT.md §19). Defaults are the most private.",
+        "required": [
+          "codeCache",
+          "codeCacheTtlHours",
+          "minimalChunks",
+          "reasoner",
+          "reasonerKeyConfigured",
+          "auditRetentionDays",
+          "updatedAt"
+        ],
+        "properties": {
+          "auditRetentionDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days audit entries are kept; 0 keeps forever.",
+            "minimum": 0
+          },
+          "codeCache": {
+            "type": "string",
+            "description": "`none` (never stored), `session` (per commit, purged after the TTL or on disconnect) or `persistent`."
+          },
+          "codeCacheTtlHours": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Hours a `session` cache entry lives.",
+            "minimum": 0
+          },
+          "minimalChunks": {
+            "type": "boolean",
+            "description": "Semantic chunks keep only short excerpts when true."
+          },
+          "reasoner": {
+            "type": "string",
+            "description": "`off` or `claude`. Only `claude` with a workspace key sends structured context to the model API."
+          },
+          "reasonerKeyConfigured": {
+            "type": "boolean",
+            "description": "True when a workspace-owned model key is stored."
+          },
+          "reasonerKeyHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last characters of the stored key, for recognition."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last change."
+          }
+        }
+      },
+      "DataExport": {
+        "type": "object",
+        "description": "Shape of the `POST /workspaces/{id}/data/export` body (documented; the\nresponse is streamed as one JSON object of this form).",
+        "required": [
+          "workspace",
+          "exportedAt",
+          "members",
+          "knowledge",
+          "intelligence",
+          "execution",
+          "audit",
+          "errors"
+        ],
+        "properties": {
+          "audit": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            },
+            "description": "Every audit entry."
+          },
+          "dataControls": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DataControls",
+                "description": "Data controls at export time."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "type": "object",
+            "description": "Services that could not contribute, by name.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "execution": {
+            "type": "object",
+            "description": "Execution rows by entity (executions, steps, approvals, ...).",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "exportedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the export was produced."
+          },
+          "intelligence": {
+            "type": "object",
+            "description": "Intelligence rows by entity (proposals, decisions, documents, diagrams, ...).",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "knowledge": {
+            "type": "object",
+            "description": "Knowledge rows by entity (projects, facts, graph, ...).",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            },
+            "description": "Members at export time."
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/Workspace",
+            "description": "The workspace."
           }
         }
       },
@@ -8800,6 +12505,19 @@
           }
         }
       },
+      "InstallUrl": {
+        "type": "object",
+        "description": "Response of `GET /github/app/install-url`.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Where to send an organisation owner to install the SDI GitHub App."
+          }
+        }
+      },
       "IntelligenceSettings": {
         "type": "object",
         "description": "Ranking defaults and the reasoner, changed from the settings page.",
@@ -9239,6 +12957,109 @@
           "stage": {
             "type": "string",
             "description": "`legacy` (< 35), `transitional` (35–69) or `modern` (≥ 70)."
+          }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "description": "Response of `GET /auth/me`.",
+        "required": [
+          "user",
+          "workspaces",
+          "currentWorkspaceId"
+        ],
+        "properties": {
+          "currentWorkspaceId": {
+            "type": "string",
+            "description": "The workspace this request was resolved in."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User",
+            "description": "The signed-in user."
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
+            },
+            "description": "Every workspace the user can open, personal first."
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "description": "A workspace member as synced from GitHub.",
+        "required": [
+          "user",
+          "githubRole",
+          "teams",
+          "derivedRole",
+          "effectiveRole",
+          "syncedAt"
+        ],
+        "properties": {
+          "derivedRole": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Role implied by GitHub."
+          },
+          "effectiveRole": {
+            "$ref": "#/components/schemas/Role",
+            "description": "What applies."
+          },
+          "githubRole": {
+            "type": "string",
+            "description": "GitHub's view: `owner`, `member` or `outside_collaborator`."
+          },
+          "overrideRole": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "Admin override, never above `derivedRole`; null when none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "syncedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last sync from GitHub."
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SDI teams the member is on (`sdi-admins`, `sdi-approvers`)."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User",
+            "description": "The member."
+          }
+        }
+      },
+      "MembersResponse": {
+        "type": "object",
+        "description": "Response of `GET /workspaces/{id}/members`.",
+        "required": [
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            },
+            "description": "Members, by login."
+          },
+          "syncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When GitHub was last read; null before the first sync."
           }
         }
       },
@@ -10520,6 +14341,28 @@
           "superseded"
         ]
       },
+      "PurgeResult": {
+        "type": "object",
+        "description": "Response of `POST /workspaces/{id}/data/purge-code-cache`.",
+        "required": [
+          "filesDeleted",
+          "treesDeleted"
+        ],
+        "properties": {
+          "filesDeleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cached file contents removed.",
+            "minimum": 0
+          },
+          "treesDeleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cached repository trees removed.",
+            "minimum": 0
+          }
+        }
+      },
       "Question": {
         "type": "object",
         "description": "Something the scan could not know. Asked once, remembered afterwards.",
@@ -10802,6 +14645,18 @@
           "medium",
           "high",
           "blocked"
+        ]
+      },
+      "Role": {
+        "type": "string",
+        "description": "Ordered: each role includes the ones below it (CONTRACT.md §18).",
+        "enum": [
+          "unspecified",
+          "viewer",
+          "member",
+          "approver",
+          "admin",
+          "owner"
         ]
       },
       "RunFailure": {
@@ -11140,6 +14995,19 @@
           "mode": {
             "$ref": "#/components/schemas/ProjectMode",
             "description": "Mode to switch to."
+          }
+        }
+      },
+      "SetReasonerKeyRequest": {
+        "type": "object",
+        "description": "Body of `PUT /workspaces/{id}/data-controls/reasoner-key`.",
+        "required": [
+          "apiKey"
+        ],
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "description": "The workspace's own model API key; empty removes it. Never returned."
           }
         }
       },
@@ -11573,6 +15441,51 @@
           }
         }
       },
+      "UpdateDataControlsRequest": {
+        "type": "object",
+        "description": "Body of `PATCH /workspaces/{id}/data-controls`. Omitted fields keep their value.",
+        "properties": {
+          "auditRetentionDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "0–3650; 0 keeps forever.",
+            "minimum": 0
+          },
+          "codeCache": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`none`, `session` or `persistent`."
+          },
+          "codeCacheTtlHours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1–8760.",
+            "minimum": 0
+          },
+          "minimalChunks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Keep only short excerpts in semantic chunks."
+          },
+          "reasoner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off` or `claude`."
+          }
+        }
+      },
       "UpdateDiagramRequest": {
         "type": "object",
         "description": "Body of `PATCH /diagrams/{id}`: every field is optional, at least one must be set.",
@@ -11601,6 +15514,23 @@
               "null"
             ],
             "description": "New title."
+          }
+        }
+      },
+      "UpdateMemberRoleRequest": {
+        "type": "object",
+        "description": "Body of `PATCH /workspaces/{id}/members/{userId}`.",
+        "properties": {
+          "overrideRole": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "New override, strictly lower than the derived role; null clears it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -11644,13 +15574,227 @@
             ]
           }
         }
+      },
+      "User": {
+        "type": "object",
+        "description": "A signed-in GitHub account.",
+        "required": [
+          "id",
+          "githubId",
+          "login",
+          "name",
+          "avatarUrl",
+          "githubHost",
+          "createdAt"
+        ],
+        "properties": {
+          "avatarUrl": {
+            "type": "string",
+            "description": "Avatar image URL."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First sign-in."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Primary verified email, when the OAuth grant allowed reading it."
+          },
+          "githubHost": {
+            "type": "string",
+            "description": "GitHub host the user signed in to (`github.com` or a GHES host)."
+          },
+          "githubId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub numeric id."
+          },
+          "id": {
+            "type": "string",
+            "description": "User id."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub login."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name, when set on the profile."
+          }
+        }
+      },
+      "WebhookAck": {
+        "type": "object",
+        "description": "Response of `POST /webhooks/github`.",
+        "required": [
+          "event",
+          "outcome"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "The `X-GitHub-Event` that was delivered."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "What the gateway did with it: `recorded`, `removed`, `synced`, `scan_started`, `ignored`."
+          }
+        }
+      },
+      "Workspace": {
+        "type": "object",
+        "description": "One tenant: a personal account or an organisation installation.",
+        "required": [
+          "id",
+          "kind",
+          "slug",
+          "name",
+          "avatarUrl",
+          "githubHost",
+          "myRole",
+          "memberCount",
+          "projectCount",
+          "createdAt"
+        ],
+        "properties": {
+          "avatarUrl": {
+            "type": "string",
+            "description": "Avatar image URL."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the workspace was created."
+          },
+          "githubHost": {
+            "type": "string",
+            "description": "GitHub host."
+          },
+          "id": {
+            "type": "string",
+            "description": "Workspace id; send it as `X-Sdi-Workspace` (or `?workspace=`)."
+          },
+          "installationId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "GitHub App installation id; null for personal workspaces."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorkspaceKind",
+            "description": "Personal or organisation."
+          },
+          "memberCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of synced members (1 for personal workspaces).",
+            "minimum": 0
+          },
+          "myRole": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The caller's effective role."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "projectCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of connected projects.",
+            "minimum": 0
+          },
+          "repositorySelection": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repositories the installation grants: `all` or `selected`; null for personal workspaces."
+          },
+          "slug": {
+            "type": "string",
+            "description": "GitHub login of the org or user."
+          }
+        }
+      },
+      "WorkspaceDeleted": {
+        "type": "object",
+        "description": "Response of `DELETE /workspaces/{id}`.",
+        "required": [
+          "workspaceId",
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "object",
+            "description": "Rows removed per service and entity.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "workspaceId": {
+            "type": "string",
+            "description": "The deleted workspace."
+          }
+        }
+      },
+      "WorkspaceKind": {
+        "type": "string",
+        "description": "A user's own account, or a GitHub organisation with the app installed.",
+        "enum": [
+          "unspecified",
+          "personal",
+          "organization"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "sdi_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sdi_session",
+        "description": "Opaque session token set by GET /api/v1/auth/callback. Pick the workspace with the X-Sdi-Workspace header or ?workspace=; routes under /workspaces/{id} use the path."
       }
     }
   },
+  "security": [
+    {
+      "sdi_session": []
+    }
+  ],
   "tags": [
     {
       "name": "system",
       "description": "Gateway liveness and service health"
+    },
+    {
+      "name": "auth",
+      "description": "GitHub sign-in and the session cookie (CONTRACT.md §18)"
+    },
+    {
+      "name": "workspaces",
+      "description": "Tenants: members and roles, audit trail, data controls, export and deletion (§18, §19)"
+    },
+    {
+      "name": "webhooks",
+      "description": "GitHub App event delivery"
     },
     {
       "name": "github",

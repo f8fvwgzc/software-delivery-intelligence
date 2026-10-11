@@ -1,14 +1,14 @@
 //! Code browser (CONTRACT.md §15): the repository tree and single files at
 //! the scanned commit, both served by the knowledge service.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::knowledge::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     dto::code::{GetRepoFileQuery, RepoFile, RepoTree},
     error::{ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -27,10 +27,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     params(("id" = String, Path, description = "Project id")),
     responses((status = 200, body = RepoTree), ErrorResponses),
 )]
-async fn get_repo_tree(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<RepoTree>> {
+async fn get_repo_tree(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<RepoTree>> {
     let tree = state
         .knowledge()
         .get_repo_tree(proto::GetRepoTreeRequest { project_id: id })
@@ -56,7 +53,7 @@ async fn get_repo_tree(
     ),
 )]
 async fn get_repo_file(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<GetRepoFileQuery>,
 ) -> ApiResult<Json<RepoFile>> {
@@ -87,14 +84,30 @@ mod tests {
     const DEAD: &str = "http://127.0.0.1:1";
 
     async fn app_with_fake_knowledge() -> Router {
-        let addr = fakes::knowledge::serve().await;
-        app::router(AppState::with_urls(&format!("http://{addr}"), DEAD, DEAD).unwrap())
+        let (addr, (identity, _)) =
+            tokio::join!(fakes::knowledge::serve(), fakes::identity::serve());
+        app::router(
+            AppState::with_urls(
+                &format!("http://{addr}"),
+                DEAD,
+                DEAD,
+                &format!("http://{identity}"),
+                Default::default(),
+            )
+            .unwrap(),
+        )
     }
 
     async fn get(uri: &str) -> (StatusCode, Value) {
         let response = app_with_fake_knowledge()
             .await
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("cookie", "sdi_session=t-viewer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = response.status();

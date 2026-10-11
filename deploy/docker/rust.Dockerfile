@@ -1,5 +1,5 @@
 # One image recipe for every Rust service. `--build-arg SERVICE=<name>` picks
-# the binary; the dependency layers are identical for all four, so they are
+# the binary; the dependency layers are identical for all five, so they are
 # compiled once and shared.
 #
 #   planner  -> cargo-chef recipe (what to compile, without the sources)
@@ -66,6 +66,7 @@ FROM debian:${DEBIAN_RELEASE}-slim AS extras-none
 RUN mkdir -p /out
 
 FROM extras-none AS extras-gateway
+FROM extras-none AS extras-identity
 FROM extras-none AS extras-knowledge
 FROM extras-none AS extras-intelligence
 
@@ -80,8 +81,8 @@ FROM extras-${SERVICE} AS extras
 # ---------------------------------------------------------------- runtime
 FROM debian:${DEBIAN_RELEASE}-slim AS runtime
 ARG SERVICE
-# ca-certificates: knowledge talks to api.github.com and intelligence to the
-# Anthropic API over TLS (rustls, no OpenSSL needed). bash is already in slim
+# ca-certificates: knowledge and identity talk to github.com and intelligence
+# to the Anthropic API over TLS (rustls, no OpenSSL needed). bash is already in slim
 # and gives us /dev/tcp for the healthcheck.
 # /var/lib/sdi/run is SDI_RUN_DIR in compose (the docker adapter's checkouts
 # and build contexts); created here, owned by the service user, so the named
@@ -106,8 +107,9 @@ ENV SDI_SERVICE=${SERVICE} \
 
 # Numeric so orchestrators can verify runAsNonRoot without the image's passwd.
 USER 10001:10001
-# gateway 8080, knowledge 50051, intelligence 50052, execution 50053
-EXPOSE 8080 50051 50052 50053
+# gateway 8080, knowledge 50051, intelligence 50052, execution 50053,
+# identity 50054
+EXPOSE 8080 50051 50052 50053 50054
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
   CMD ["healthcheck"]
 STOPSIGNAL SIGTERM

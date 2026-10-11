@@ -6,6 +6,12 @@
 //! Every stage update is also broadcast on the event bus, which is what
 //! `WatchScan` and `WatchEvents` forward, so the UI learns about progress
 //! the moment it is written instead of on its next poll.
+//!
+//! Data controls (CONTRACT.md §19): the scanner only ever holds file
+//! contents in memory, whatever `code_cache` says; nothing it stores is a
+//! raw file (facts carry short evidence, chunks carry what `minimal_chunks`
+//! allows). The caller resolves the workspace's GitHub client, settings and
+//! controls so the scan itself never talks to identity.
 
 pub mod delivery;
 pub mod tarball;
@@ -21,11 +27,12 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
+    controls::Controls,
     convert::{chunk_kind, knowledge_kind_to_db, scan_chunk_kinds, stage_status_to_db},
     db::{
         self,
         chunks::NewChunk,
-        patterns::PatternUpsert,
+        patterns::{PatternUpsert, learned_id},
         projects::{ProjectRow, ScanOutcome},
         scans::{ScanRow, Stage},
         settings::SettingsRow,
@@ -57,6 +64,15 @@ pub fn initial_stages() -> Vec<Stage> {
         .collect()
 }
 
+/// Everything a scan needs that the caller resolved per workspace: the
+/// GitHub client bound to the workspace's token, the settings read once (a
+/// change applies to the next scan) and the data controls.
+pub struct ScanInputs {
+    pub github: GithubClient,
+    pub settings: SettingsRow,
+    pub controls: Controls,
+}
+
 /// Creates the scan row and spawns the worker. The caller has already
 /// checked that no scan is active for the project.
 ///
@@ -65,47 +81,39 @@ pub fn initial_stages() -> Vec<Stage> {
 /// the scan (v1 flipped the status first and lost that race).
 pub async fn start(
     pool: &PgPool,
-    github: &GithubClient,
     events: &EventBus,
+    inputs: ScanInputs,
     project: ProjectRow,
 ) -> sqlx::Result<ScanRow> {
-    // Settings are read once per scan: a change applies to the next scan.
-    let settings = match db::settings::get(pool).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            tracing::warn!(%error, "settings unreadable, scanning with defaults");
-            SettingsRow::default()
-        }
-    };
-    github.set_cache_enabled(settings.cache_github);
-
+    let ws = project.workspace_id;
     let mut tx = pool.begin().await?;
-    let scan = db::scans::insert(&mut *tx, project.id, &initial_stages()).await?;
-    db::projects::set_status(&mut *tx, project.id, "scanning").await?;
+    let scan = db::scans::insert(&mut *tx, ws, project.id, &initial_stages()).await?;
+    db::projects::set_status(&mut *tx, ws, project.id, "scanning").await?;
     tx.commit().await?;
-    events.project(project.id, "updated", "scanning");
-    events.scan(scan.id, project.id, "created", "queued", HashMap::new());
+    events.project(ws, project.id, "updated", "scanning");
+    events.scan(ws, scan.id, project.id, "created", "queued", HashMap::new());
 
     let pool = pool.clone();
-    let github = github.clone();
     let events = events.clone();
     let scan_id = scan.id;
-    let span = tracing::info_span!("scan", %scan_id, project = %project.repo_full_name);
-    tokio::spawn(run(pool, github, events, settings, project, scan_id).instrument(span));
+    let span =
+        tracing::info_span!("scan", %scan_id, workspace = %ws, project = %project.repo_full_name);
+    tokio::spawn(run(pool, events, inputs, project, scan_id).instrument(span));
     Ok(scan)
 }
 
 async fn run(
     pool: PgPool,
-    github: GithubClient,
     events: EventBus,
-    settings: SettingsRow,
+    inputs: ScanInputs,
     project: ProjectRow,
     scan_id: Uuid,
 ) {
+    let ws = project.workspace_id;
     let mut tracker = Tracker {
         pool: pool.clone(),
         events: events.clone(),
+        workspace_id: ws,
         scan_id,
         project_id: project.id,
         stages: initial_stages(),
@@ -113,13 +121,14 @@ async fn run(
         files_total: 0,
         files_analyzed: 0,
     };
-    match pipeline(&pool, &github, &settings, &project, scan_id, &mut tracker).await {
+    match pipeline(&pool, &inputs, &project, scan_id, &mut tracker).await {
         Ok(()) => {
-            if let Err(error) = db::scans::set_succeeded(&pool, scan_id, &tracker.stages).await {
+            if let Err(error) = db::scans::set_succeeded(&pool, ws, scan_id, &tracker.stages).await
+            {
                 tracing::error!(%error, "could not mark scan succeeded");
             }
             tracker.emit("updated", "succeeded");
-            events.project(project.id, "updated", "ready");
+            events.project(ws, project.id, "updated", "ready");
             tracing::info!("scan succeeded");
         }
         Err(error) => {
@@ -127,15 +136,15 @@ async fn run(
             tracing::warn!(error = %message, "scan failed");
             tracker.fail(&message).await;
             if let Err(error) =
-                db::scans::set_failed(&pool, scan_id, &message, &tracker.stages).await
+                db::scans::set_failed(&pool, ws, scan_id, &message, &tracker.stages).await
             {
                 tracing::error!(%error, "could not mark scan failed");
             }
-            if let Err(error) = db::projects::set_status(&pool, project.id, "failed").await {
+            if let Err(error) = db::projects::set_status(&pool, ws, project.id, "failed").await {
                 tracing::error!(%error, "could not mark project failed");
             }
             tracker.emit("updated", "failed");
-            events.project(project.id, "updated", "failed");
+            events.project(ws, project.id, "updated", "failed");
         }
     }
 }
@@ -143,6 +152,7 @@ async fn run(
 struct Tracker {
     pool: PgPool,
     events: EventBus,
+    workspace_id: Uuid,
     scan_id: Uuid,
     project_id: Uuid,
     stages: Vec<Stage>,
@@ -184,7 +194,7 @@ impl Tracker {
     }
 
     async fn flush(&self) -> Result<()> {
-        db::scans::set_stages(&self.pool, self.scan_id, &self.stages)
+        db::scans::set_stages(&self.pool, self.workspace_id, self.scan_id, &self.stages)
             .await
             .context("could not record scan progress")?;
         self.emit("progress", "running");
@@ -209,22 +219,33 @@ impl Tracker {
             ("files".to_owned(), self.files_analyzed.to_string()),
             ("files_total".to_owned(), self.files_total.to_string()),
         ]);
-        self.events
-            .scan(self.scan_id, self.project_id, action, status, data);
+        self.events.scan(
+            self.workspace_id,
+            self.scan_id,
+            self.project_id,
+            action,
+            status,
+            data,
+        );
     }
 }
 
 async fn pipeline(
     pool: &PgPool,
-    github: &GithubClient,
-    settings: &SettingsRow,
+    inputs: &ScanInputs,
     project: &ProjectRow,
     scan_id: Uuid,
     tracker: &mut Tracker,
 ) -> Result<()> {
+    let ScanInputs {
+        github,
+        settings,
+        controls,
+    } = inputs;
+    let ws = project.workspace_id;
     let (owner, name) = split_full_name(&project.repo_full_name)
         .ok_or_else(|| anyhow!("invalid repository name {}", project.repo_full_name))?;
-    db::scans::set_running(pool, scan_id).await?;
+    db::scans::set_running(pool, ws, scan_id).await?;
 
     // metadata
     tracker.start("metadata").await?;
@@ -239,6 +260,7 @@ async fn pipeline(
         .with_context(|| format!("head of {}", repo.default_branch))?;
     db::projects::set_metadata(
         pool,
+        ws,
         project.id,
         repo.description.as_deref().unwrap_or_default(),
         &repo.default_branch,
@@ -246,7 +268,7 @@ async fn pipeline(
         repo.private,
     )
     .await?;
-    db::scans::set_commit(pool, scan_id, &commit_sha).await?;
+    db::scans::set_commit(pool, ws, scan_id, &commit_sha).await?;
     tracker
         .done(format!(
             "{} @ {}",
@@ -286,7 +308,7 @@ async fn pipeline(
     let (files, wanted, how) =
         fetch_files(github, owner, name, &commit_sha, &entries, settings).await;
     tracker.files_analyzed = files.len();
-    db::scans::set_files(pool, scan_id, files_total as i32, files.len() as i32).await?;
+    db::scans::set_files(pool, ws, scan_id, files_total as i32, files.len() as i32).await?;
     tracker
         .done(format!("{} of {wanted} wanted files ({how})", files.len()))
         .await?;
@@ -337,16 +359,16 @@ async fn pipeline(
         }
     };
     let (facts, nodes, edges) =
-        store_knowledge(pool, project.id, &analysis, &commit_sha, dependabot_prs).await?;
-    db::scans::set_counts(pool, scan_id, facts as i32, nodes as i32, edges as i32).await?;
+        store_knowledge(pool, ws, project.id, &analysis, &commit_sha, dependabot_prs).await?;
+    db::scans::set_counts(pool, ws, scan_id, facts as i32, nodes as i32, edges as i32).await?;
     tracker
         .done(format!("{facts} facts, {nodes} nodes, {edges} edges"))
         .await?;
 
     // embeddings
     tracker.start("embeddings").await?;
-    let chunks = store_embeddings(pool, project.id, &analysis).await?;
-    let learned = store_learned_patterns(pool, &tracker.events, project.id, &analysis).await?;
+    let chunks = store_embeddings(pool, ws, project.id, &analysis, controls).await?;
+    let learned = store_learned_patterns(pool, &tracker.events, ws, project.id, &analysis).await?;
     tracker
         .done(format!("{chunks} chunks, {learned} learned patterns"))
         .await?;
@@ -373,6 +395,7 @@ async fn pipeline(
 
     db::projects::finish_scan(
         pool,
+        ws,
         project.id,
         scan_id,
         &ScanOutcome {
@@ -383,16 +406,16 @@ async fn pipeline(
         },
     )
     .await?;
-    prune_code_caches(pool, project.id, &commit_sha).await;
+    prune_code_caches(pool, ws, project.id, &commit_sha).await;
     Ok(())
 }
 
 /// The code browser caches (§15) only ever hold the latest scanned commit;
 /// rows of older commits go once this scan is the latest. Housekeeping: a
 /// failure here is logged, not a failed scan.
-async fn prune_code_caches(pool: &PgPool, project_id: Uuid, commit_sha: &str) {
+async fn prune_code_caches(pool: &PgPool, workspace_id: Uuid, project_id: Uuid, commit_sha: &str) {
     let pruned = match pool.acquire().await {
-        Ok(mut conn) => db::code::prune(&mut conn, project_id, commit_sha).await,
+        Ok(mut conn) => db::code::prune(&mut conn, workspace_id, project_id, commit_sha).await,
         Err(error) => Err(error),
     };
     match pruned {
@@ -541,42 +564,68 @@ async fn download(
 /// Returns `(facts, nodes, edges)` stored.
 async fn store_knowledge(
     pool: &PgPool,
+    ws: Uuid,
     project_id: Uuid,
     analysis: &Analysis,
     commit_sha: &str,
     dependabot_prs: i32,
 ) -> Result<(usize, usize, usize)> {
     let mut tx = pool.begin().await?;
-    let facts = db::facts::replace(&mut tx, project_id, &analysis.facts).await?;
-    db::questions::sync(&mut tx, project_id, &analysis.questions).await?;
-    db::understanding::upsert(&mut *tx, project_id, &analysis.understanding, commit_sha).await?;
-    db::maturity::upsert(&mut *tx, project_id, &analysis.maturity).await?;
-    db::config::upsert(&mut *tx, project_id, &analysis.config).await?;
+    let facts = db::facts::replace(&mut tx, ws, project_id, &analysis.facts).await?;
+    db::questions::sync(&mut tx, ws, project_id, &analysis.questions).await?;
+    db::understanding::upsert(
+        &mut *tx,
+        ws,
+        project_id,
+        &analysis.understanding,
+        commit_sha,
+    )
+    .await?;
+    db::maturity::upsert(&mut *tx, ws, project_id, &analysis.maturity).await?;
+    db::config::upsert(&mut *tx, ws, project_id, &analysis.config).await?;
     let (nodes, edges) =
-        db::graph::sync(&mut tx, project_id, &analysis.nodes, &analysis.edges).await?;
-    db::dependencies::replace(&mut tx, project_id, &analysis.dependencies).await?;
-    db::dependencies::upsert_dependabot(&mut *tx, project_id, &analysis.dependabot, dependabot_prs)
-        .await?;
-    db::pipelines::replace(&mut tx, project_id, &analysis.pipelines).await?;
+        db::graph::sync(&mut tx, ws, project_id, &analysis.nodes, &analysis.edges).await?;
+    db::dependencies::replace(&mut tx, ws, project_id, &analysis.dependencies).await?;
+    db::dependencies::upsert_dependabot(
+        &mut *tx,
+        ws,
+        project_id,
+        &analysis.dependabot,
+        dependabot_prs,
+    )
+    .await?;
+    db::pipelines::replace(&mut tx, ws, project_id, &analysis.pipelines).await?;
     tx.commit().await?;
     Ok((facts, nodes, edges))
 }
 
-async fn store_embeddings(pool: &PgPool, project_id: Uuid, analysis: &Analysis) -> Result<usize> {
+/// Chunk content is cut to the workspace's `minimal_chunks` excerpt before
+/// it is embedded, so neither the vector nor the row sees more.
+async fn store_embeddings(
+    pool: &PgPool,
+    ws: Uuid,
+    project_id: Uuid,
+    analysis: &Analysis,
+    controls: &Controls,
+) -> Result<usize> {
     let drafts = analysis.chunks.clone();
     let profile_text = analysis.profile_text.clone();
+    let controls = controls.clone();
     let (chunks, profile) = tokio::task::spawn_blocking(move || {
         let chunks: Vec<NewChunk> = drafts
             .into_iter()
             .filter(|c| !c.content.trim().is_empty())
-            .map(|c| NewChunk {
-                kind: knowledge_kind_to_db(chunk_kind(c.kind)),
-                project_id: Some(project_id),
-                ref_id: String::new(),
-                title: c.title,
-                path: c.path,
-                embedding: embed(&c.content),
-                content: c.content,
+            .map(|c| {
+                let content = controls.chunk_content(c.content);
+                NewChunk {
+                    kind: knowledge_kind_to_db(chunk_kind(c.kind)),
+                    project_id: Some(project_id),
+                    ref_id: String::new(),
+                    title: c.title,
+                    path: c.path,
+                    embedding: embed(&content),
+                    content,
+                }
             })
             .collect();
         (chunks, embed(&profile_text))
@@ -585,9 +634,10 @@ async fn store_embeddings(pool: &PgPool, project_id: Uuid, analysis: &Analysis) 
     .context("embedding panicked")?;
 
     let mut tx = pool.begin().await?;
-    db::chunks::replace_kinds(&mut tx, project_id, &scan_chunk_kinds(), &chunks).await?;
+    db::chunks::replace_kinds(&mut tx, ws, project_id, &scan_chunk_kinds(), &chunks).await?;
     db::profiles::upsert(
         &mut *tx,
+        ws,
         project_id,
         &analysis.profile_text,
         &analysis.technologies,
@@ -604,6 +654,7 @@ async fn store_embeddings(pool: &PgPool, project_id: Uuid, analysis: &Analysis) 
 async fn store_learned_patterns(
     pool: &PgPool,
     events: &EventBus,
+    ws: Uuid,
     project_id: Uuid,
     analysis: &Analysis,
 ) -> Result<usize> {
@@ -611,9 +662,10 @@ async fn store_learned_patterns(
         if draft.key.trim().is_empty() {
             continue;
         }
-        let id = format!("learned:{}", draft.key.trim());
+        let id = learned_id(ws, &draft.key);
         let pattern = PatternUpsert {
             id: id.clone(),
+            workspace_id: Some(ws),
             name: draft.name.clone(),
             summary: draft.summary.clone(),
             category: draft.category.clone(),
@@ -644,8 +696,8 @@ async fn store_learned_patterns(
             )),
         };
         db::patterns::upsert(pool, &pattern).await?;
-        db::patterns::add_used_by(pool, &id, project_id).await?;
-        events.pattern(&id, "updated", "active");
+        db::patterns::add_used_by(pool, ws, &id, project_id).await?;
+        events.pattern(ws, &id, "updated", "active");
     }
     Ok(analysis.learned_patterns.len())
 }

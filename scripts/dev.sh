@@ -16,6 +16,30 @@ if [[ -f .env ]]; then
   set -a; source .env; set +a
 fi
 
+# Identity (CONTRACT.md §18). Without a registered GitHub OAuth app,
+# SDI_DEV_LOGIN=1 makes GET /auth/login create a local session for the
+# GITHUB_TOKEN account with a personal workspace. The session secret signs
+# cookies and encrypts stored tokens; it is generated once and kept in
+# .run/session-secret (git-ignored) so sessions survive restarts.
+export SDI_DEV_LOGIN="${SDI_DEV_LOGIN:-1}"
+export SDI_PUBLIC_URL="${SDI_PUBLIC_URL:-http://127.0.0.1:5173}"
+if [[ -z "${SDI_SESSION_SECRET:-}" ]]; then
+  secret_file=.run/session-secret
+  if [[ ! -s "$secret_file" ]]; then
+    mkdir -p .run
+    umask_prev=$(umask); umask 077
+    if command -v openssl >/dev/null; then
+      openssl rand -hex 32 > "$secret_file"
+    else
+      head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$secret_file"
+      echo >> "$secret_file"
+    fi
+    umask "$umask_prev"
+    echo "SDI_SESSION_SECRET generated into $secret_file"
+  fi
+  export SDI_SESSION_SECRET="$(tr -d '\n' < "$secret_file")"
+fi
+
 # Workdirs of the docker adapter. Absolute, because the adapter hands paths
 # under it to the Docker daemon, which resolves them on the host, not
 # relative to this shell. DOCKER_HOST is left alone: the CLI default applies.
@@ -24,7 +48,7 @@ mkdir -p "$SDI_RUN_DIR"
 
 # Refuse to start on top of a previous stack: a half-bound set of services is
 # worse than a clear message.
-for port in 8080 5173 50051 50052 50053; do
+for port in 8080 5173 50051 50052 50053 50054; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "port $port is already in use (an earlier stack is still running)." >&2
     echo "stop it with: pkill -f scripts/dev.sh; pkill -f target/debug/sdi-; pkill -f vite" >&2
@@ -38,7 +62,7 @@ pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-for svc in knowledge intelligence execution gateway; do
+for svc in identity knowledge intelligence execution gateway; do
   ./target/debug/sdi-$svc &
   pids+=($!)
   sleep 0.3
@@ -52,5 +76,6 @@ fi
 echo
 echo "  gateway   http://127.0.0.1:8080/api/docs"
 echo "  web       http://127.0.0.1:5173"
+echo "  sign-in   dev login (SDI_DEV_LOGIN=$SDI_DEV_LOGIN) as the GITHUB_TOKEN account"
 echo
 wait

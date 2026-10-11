@@ -2,7 +2,7 @@
 //! reads both in parallel and patches whichever half the body names, so the
 //! settings page never has to know which service a knob belongs to.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::{intelligence::v1 as intelligence, knowledge::v1 as knowledge};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -13,14 +13,14 @@ use crate::{
         settings::{Settings, UpdateSettingsRequest},
     },
     error::{ApiJson, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(get_settings, update_settings))
 }
 
-async fn knowledge_settings(state: &AppState) -> ApiResult<KnowledgeSettings> {
+async fn knowledge_settings(state: &Scoped) -> ApiResult<KnowledgeSettings> {
     let settings = state
         .knowledge()
         .get_settings(knowledge::GetSettingsRequest {})
@@ -29,7 +29,7 @@ async fn knowledge_settings(state: &AppState) -> ApiResult<KnowledgeSettings> {
     Ok(settings.into())
 }
 
-async fn intelligence_settings(state: &AppState) -> ApiResult<IntelligenceSettings> {
+async fn intelligence_settings(state: &Scoped) -> ApiResult<IntelligenceSettings> {
     let settings = state
         .intelligence()
         .get_settings(intelligence::GetSettingsRequest {})
@@ -45,7 +45,7 @@ async fn intelligence_settings(state: &AppState) -> ApiResult<IntelligenceSettin
     tag = "system",
     responses((status = 200, body = Settings), ErrorResponses),
 )]
-async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<Settings>> {
+async fn get_settings(state: Scoped) -> ApiResult<Json<Settings>> {
     let (knowledge, intelligence) =
         tokio::try_join!(knowledge_settings(&state), intelligence_settings(&state))?;
     Ok(Json(Settings {
@@ -64,7 +64,7 @@ async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<Settings>
     responses((status = 200, body = Settings), ErrorResponses),
 )]
 async fn update_settings(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiJson(body): ApiJson<UpdateSettingsRequest>,
 ) -> ApiResult<Json<Settings>> {
     // Read-modify-write per part: the services take the whole settings

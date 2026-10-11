@@ -43,6 +43,27 @@ impl ApiError {
         Self::new(StatusCode::GATEWAY_TIMEOUT, "deadline_exceeded", message)
     }
 
+    /// No session, or one that is expired or revoked.
+    pub fn unauthenticated() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "sign in to use the API",
+        )
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "permission_denied", message)
+    }
+
+    pub fn precondition(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::PRECONDITION_FAILED,
+            "failed_precondition",
+            message,
+        )
+    }
+
     pub fn body(&self) -> ErrorBody {
         ErrorBody {
             code: self.code.clone(),
@@ -101,6 +122,12 @@ pub enum ErrorResponses {
     /// Malformed path, query or body, or a rejected argument.
     #[response(status = 400)]
     BadRequest(ErrorBody),
+    /// No session cookie, or an expired or revoked one.
+    #[response(status = 401)]
+    Unauthenticated(ErrorBody),
+    /// The workspace is not accessible, or the role is too low for this route.
+    #[response(status = 403)]
+    Forbidden(ErrorBody),
     /// The resource does not exist.
     #[response(status = 404)]
     NotFound(ErrorBody),

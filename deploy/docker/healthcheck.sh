@@ -9,6 +9,7 @@ case "${SDI_SERVICE:-}" in
   knowledge)    listen="${KNOWLEDGE_LISTEN:-0.0.0.0:50051}" ;;
   intelligence) listen="${INTELLIGENCE_LISTEN:-0.0.0.0:50052}" ;;
   execution)    listen="${EXECUTION_LISTEN:-0.0.0.0:50053}" ;;
+  identity)     listen="${IDENTITY_LISTEN:-0.0.0.0:50054}" ;;
   *) echo "unknown SDI_SERVICE: ${SDI_SERVICE:-<unset>}" >&2; exit 1 ;;
 esac
 port="${listen##*:}"

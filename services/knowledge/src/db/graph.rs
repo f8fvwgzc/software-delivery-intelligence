@@ -13,6 +13,7 @@ use crate::{
 #[derive(Debug, Clone, FromRow)]
 pub struct NodeRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub kind: String,
     pub key: String,
@@ -25,6 +26,7 @@ pub struct NodeRow {
 #[derive(Debug, Clone, FromRow)]
 pub struct EdgeRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub source_id: Uuid,
     pub target_id: Uuid,
@@ -43,17 +45,27 @@ struct EdgeKeyRow {
     relation: String,
 }
 
-pub async fn nodes(exec: impl PgExecutor<'_>, project_id: Uuid) -> sqlx::Result<Vec<NodeRow>> {
+pub async fn nodes(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+) -> sqlx::Result<Vec<NodeRow>> {
     sqlx::query_as::<_, NodeRow>(
-        "SELECT * FROM graph_nodes WHERE project_id = $1 ORDER BY kind, key",
+        "SELECT * FROM graph_nodes WHERE workspace_id = $1 AND project_id = $2 ORDER BY kind, key",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_all(exec)
     .await
 }
 
-pub async fn get_node(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<NodeRow>> {
-    sqlx::query_as::<_, NodeRow>("SELECT * FROM graph_nodes WHERE id = $1")
+pub async fn get_node(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<Option<NodeRow>> {
+    sqlx::query_as::<_, NodeRow>("SELECT * FROM graph_nodes WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
         .bind(id)
         .fetch_optional(exec)
         .await
@@ -61,12 +73,14 @@ pub async fn get_node(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Optio
 
 pub async fn edges(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     include_history: bool,
 ) -> sqlx::Result<Vec<EdgeRow>> {
     sqlx::query_as::<_, EdgeRow>(
-        "SELECT * FROM graph_edges WHERE project_id = $1 AND ($2 OR valid_to IS NULL) ORDER BY valid_from, relation",
+        "SELECT * FROM graph_edges WHERE workspace_id = $1 AND project_id = $2 AND ($3 OR valid_to IS NULL) ORDER BY valid_from, relation",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(include_history)
     .fetch_all(exec)
@@ -78,12 +92,14 @@ pub async fn edges(
 /// Returns `(nodes, valid edges)` after the sync.
 pub async fn sync(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     nodes: &[NodeDraft],
     edges: &[EdgeDraft],
 ) -> sqlx::Result<(usize, usize)> {
     let keys: Vec<&str> = nodes.iter().map(|n| n.key.as_str()).collect();
-    sqlx::query("DELETE FROM graph_nodes WHERE project_id = $1 AND NOT (key = ANY($2))")
+    sqlx::query("DELETE FROM graph_nodes WHERE workspace_id = $1 AND project_id = $2 AND NOT (key = ANY($3))")
+        .bind(workspace_id)
         .bind(project_id)
         .bind(&keys)
         .execute(&mut *conn)
@@ -92,14 +108,15 @@ pub async fn sync(
     let mut ids: HashMap<&str, Uuid> = HashMap::new();
     for node in nodes {
         let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO graph_nodes (id, project_id, kind, key, label, description, source_path, attributes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "INSERT INTO graph_nodes (id, workspace_id, project_id, kind, key, label, description, source_path, attributes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (project_id, key) DO UPDATE SET
                kind = EXCLUDED.kind, label = EXCLUDED.label, description = EXCLUDED.description,
                source_path = EXCLUDED.source_path, attributes = EXCLUDED.attributes
              RETURNING id",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(node_kind_to_db(node_kind(node.kind)))
         .bind(&node.key)
@@ -117,8 +134,9 @@ pub async fn sync(
          FROM graph_edges e
          JOIN graph_nodes s ON s.id = e.source_id
          JOIN graph_nodes t ON t.id = e.target_id
-         WHERE e.project_id = $1 AND e.valid_to IS NULL",
+         WHERE e.workspace_id = $1 AND e.project_id = $2 AND e.valid_to IS NULL",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_all(&mut *conn)
     .await?;
@@ -160,10 +178,13 @@ pub async fn sync(
         .map(|e| e.id)
         .collect();
     if !closed_ids.is_empty() {
-        sqlx::query("UPDATE graph_edges SET valid_to = now() WHERE id = ANY($1)")
-            .bind(&closed_ids)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "UPDATE graph_edges SET valid_to = now() WHERE workspace_id = $1 AND id = ANY($2)",
+        )
+        .bind(workspace_id)
+        .bind(&closed_ids)
+        .execute(&mut *conn)
+        .await?;
     }
 
     for edge in wanted {
@@ -176,10 +197,11 @@ pub async fn sync(
             continue;
         }
         sqlx::query(
-            "INSERT INTO graph_edges (id, project_id, source_id, target_id, relation, category, valid_from, attributes)
-             VALUES ($1, $2, $3, $4, $5, $6, now(), $7)",
+            "INSERT INTO graph_edges (id, workspace_id, project_id, source_id, target_id, relation, category, valid_from, attributes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(ids[edge.source_key.as_str()])
         .bind(ids[edge.target_key.as_str()])

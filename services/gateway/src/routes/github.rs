@@ -1,6 +1,6 @@
 //! Read-only GitHub connector.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use sdi_proto::knowledge::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -8,7 +8,7 @@ use super::map_all;
 use crate::{
     dto::github::{GithubAccount, GithubRepo, ListReposQuery},
     error::{ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -24,7 +24,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     tag = "github",
     responses((status = 200, body = GithubAccount), ErrorResponses),
 )]
-async fn get_account(State(state): State<AppState>) -> ApiResult<Json<GithubAccount>> {
+async fn get_account(state: Scoped) -> ApiResult<Json<GithubAccount>> {
     let account = state
         .knowledge()
         .get_github_account(proto::GetGithubAccountRequest {})
@@ -42,7 +42,7 @@ async fn get_account(State(state): State<AppState>) -> ApiResult<Json<GithubAcco
     responses((status = 200, body = Vec<GithubRepo>), ErrorResponses),
 )]
 async fn list_repos(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListReposQuery>,
 ) -> ApiResult<Json<Vec<GithubRepo>>> {
     let response = state

@@ -15,6 +15,7 @@ pub struct Job {
 #[derive(Debug, Clone, FromRow)]
 pub struct PipelineRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub provider: String,
     pub name: String,
@@ -25,10 +26,12 @@ pub struct PipelineRow {
 
 pub async fn replace(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     pipelines: &[PipelineDraft],
 ) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM pipelines WHERE project_id = $1")
+    sqlx::query("DELETE FROM pipelines WHERE workspace_id = $1 AND project_id = $2")
+        .bind(workspace_id)
         .bind(project_id)
         .execute(&mut *conn)
         .await?;
@@ -45,9 +48,10 @@ pub async fn replace(
             })
             .collect();
         sqlx::query(
-            "INSERT INTO pipelines (id, project_id, provider, name, path, triggers, jobs) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO pipelines (id, workspace_id, project_id, provider, name, path, triggers, jobs) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(&pipeline.provider)
         .bind(&pipeline.name)
@@ -60,9 +64,16 @@ pub async fn replace(
     Ok(())
 }
 
-pub async fn list(exec: impl PgExecutor<'_>, project_id: Uuid) -> sqlx::Result<Vec<PipelineRow>> {
-    sqlx::query_as::<_, PipelineRow>("SELECT * FROM pipelines WHERE project_id = $1 ORDER BY path")
-        .bind(project_id)
-        .fetch_all(exec)
-        .await
+pub async fn list(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+) -> sqlx::Result<Vec<PipelineRow>> {
+    sqlx::query_as::<_, PipelineRow>(
+        "SELECT * FROM pipelines WHERE workspace_id = $1 AND project_id = $2 ORDER BY path",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .fetch_all(exec)
+    .await
 }

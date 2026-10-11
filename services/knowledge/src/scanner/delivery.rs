@@ -75,8 +75,8 @@ pub async fn sync_runs(
     }
 
     let mut conn = pool.acquire().await?;
-    db::delivery::upsert_runs(&mut conn, project.id, &new_runs).await?;
-    db::projects::set_runs_synced(&mut *conn, project.id).await?;
+    db::delivery::upsert_runs(&mut conn, project.workspace_id, project.id, &new_runs).await?;
+    db::projects::set_runs_synced(&mut *conn, project.workspace_id, project.id).await?;
     Ok(new_runs.len())
 }
 
@@ -148,8 +148,14 @@ pub async fn sync_deployments(
     }
 
     let mut conn = pool.acquire().await?;
-    db::delivery::upsert_deployments(&mut conn, project.id, &new_deployments).await?;
-    db::projects::set_deployments_synced(&mut *conn, project.id).await?;
+    db::delivery::upsert_deployments(
+        &mut conn,
+        project.workspace_id,
+        project.id,
+        &new_deployments,
+    )
+    .await?;
+    db::projects::set_deployments_synced(&mut *conn, project.workspace_id, project.id).await?;
     Ok(new_deployments.len())
 }
 

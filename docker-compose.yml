@@ -1,6 +1,9 @@
-# Production-shaped stack: nginx edge on :80, two gateway replicas, the three
+# Production-shaped stack: nginx edge on :80, two gateway replicas, the four
 # gRPC services and Postgres with pgvector, on private networks. Secrets come
 # from the host environment or a git-ignored .env (compose interpolates it).
+# Sign-in needs either the GitHub OAuth/App variables (docs/github-app.md)
+# or SDI_DEV_LOGIN=1 with a GITHUB_TOKEN; SDI_SESSION_SECRET is always
+# required (CONTRACT.md §18, docs/self-hosting.md).
 #
 #   make up            build + start, waits for every healthcheck
 #   make up-local-exec same, plus the `local-exec` profile: the execution
@@ -77,6 +80,47 @@ services:
           memory: 128M
     logging: *logging
 
+  # Who is calling (CONTRACT.md §18): GitHub OAuth sessions, GitHub App
+  # installations, workspaces, membership, audit, data controls. The only
+  # service that holds GitHub credentials for other people; everything it
+  # stores is encrypted with SDI_SESSION_SECRET.
+  identity:
+    <<: *rust-service
+    image: sdi/identity:${SDI_TAG:-local}
+    build:
+      <<: *rust-build
+      args:
+        SERVICE: identity
+    environment:
+      <<: *rust-env
+      IDENTITY_LISTEN: 0.0.0.0:50054
+      # Where users are sent back to after GitHub; also the origin that
+      # `returnTo` is validated against and the cookie's host.
+      SDI_PUBLIC_URL: ${SDI_PUBLIC_URL:-http://localhost}
+      # 32+ bytes. Signs session tokens and encrypts stored OAuth tokens and
+      # reasoner keys. Unset is a startup error, never a silent default:
+      # `openssl rand -hex 32` and put it in .env.
+      SDI_SESSION_SECRET: ${SDI_SESSION_SECRET:-}
+      # GitHub OAuth app (individuals) and GitHub App (organisations). All
+      # optional together with SDI_DEV_LOGIN=1, in which case /auth/login
+      # creates a local session for the GITHUB_TOKEN account.
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      # PEM, or the PEM base64-encoded on one line (easier in .env).
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      SDI_DEV_LOGIN: ${SDI_DEV_LOGIN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy: *small
+
   knowledge:
     <<: *rust-service
     image: sdi/knowledge:${SDI_TAG:-local}
@@ -88,11 +132,16 @@ services:
       <<: *rust-env
       KNOWLEDGE_LISTEN: 0.0.0.0:50051
       # Read-only token for scanning; `scripts/dev.sh` takes it from `gh`.
+      # Organisation workspaces use short-lived installation tokens minted
+      # by identity instead (Identity.GetInstallationToken).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      IDENTITY_GRPC_URL: http://identity:50054
     networks:
       - backend
     depends_on:
       postgres:
+        condition: service_healthy
+      identity:
         condition: service_healthy
     deploy:
       # Repository analysis holds file trees in memory; give it headroom.
@@ -140,6 +189,7 @@ services:
       <<: *rust-env
       EXECUTION_LISTEN: 0.0.0.0:50053
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
+      IDENTITY_GRPC_URL: http://identity:50054
       # The `github` adapter writes with the same token knowledge reads
       # with; opening pull requests needs `repo` write (docs/adapters.md).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -235,10 +285,20 @@ services:
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
       INTELLIGENCE_GRPC_URL: http://intelligence:50052
       EXECUTION_GRPC_URL: http://execution:50053
+      # Every /api/v1 request is resolved through Identity.Authorize before
+      # it reaches a service (CONTRACT.md §18).
+      IDENTITY_GRPC_URL: http://identity:50054
+      SDI_PUBLIC_URL: ${SDI_PUBLIC_URL:-http://localhost}
+      SDI_DEV_LOGIN: ${SDI_DEV_LOGIN:-}
+      # POST /api/v1/webhooks/github is verified at the HTTP surface
+      # (HMAC over the raw body, CONTRACT.md §18) before anything is parsed.
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
     networks:
       - frontend
       - backend
     depends_on: &gateway-deps
+      identity:
+        condition: service_healthy
       knowledge:
         condition: service_healthy
       intelligence:
@@ -298,8 +358,8 @@ services:
 networks:
   # Only web and the gateways sit on the edge network; Postgres and the gRPC
   # services are reachable solely through the gateway. Neither network is
-  # `internal: true` because knowledge needs GitHub and intelligence needs
-  # the Anthropic API.
+  # `internal: true` because knowledge and identity need GitHub and
+  # intelligence needs the Anthropic API.
   frontend:
   backend:
 

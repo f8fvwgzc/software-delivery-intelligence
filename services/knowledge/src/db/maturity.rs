@@ -19,6 +19,7 @@ pub struct Axis {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MaturityRow {
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub overall: i32,
     pub stage: String,
@@ -49,17 +50,19 @@ pub fn stage_for(overall: u32) -> &'static str {
 
 pub async fn upsert(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     draft: &MaturityDraft,
 ) -> sqlx::Result<()> {
     let overall = draft.overall.min(100);
     let axes: Vec<Axis> = draft.axes.iter().map(axis).collect();
     sqlx::query(
-        "INSERT INTO maturity (project_id, overall, stage, axes, computed_at)
-         VALUES ($1, $2, $3, $4, now())
+        "INSERT INTO maturity (workspace_id, project_id, overall, stage, axes, computed_at)
+         VALUES ($1, $2, $3, $4, $5, now())
          ON CONFLICT (project_id) DO UPDATE SET
            overall = EXCLUDED.overall, stage = EXCLUDED.stage, axes = EXCLUDED.axes, computed_at = now()",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(overall as i32)
     .bind(stage_for(overall))
@@ -69,11 +72,18 @@ pub async fn upsert(
     Ok(())
 }
 
-pub async fn get(exec: impl PgExecutor<'_>, project_id: Uuid) -> sqlx::Result<Option<MaturityRow>> {
-    sqlx::query_as::<_, MaturityRow>("SELECT * FROM maturity WHERE project_id = $1")
-        .bind(project_id)
-        .fetch_optional(exec)
-        .await
+pub async fn get(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+) -> sqlx::Result<Option<MaturityRow>> {
+    sqlx::query_as::<_, MaturityRow>(
+        "SELECT * FROM maturity WHERE workspace_id = $1 AND project_id = $2",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .fetch_optional(exec)
+    .await
 }
 
 #[cfg(test)]

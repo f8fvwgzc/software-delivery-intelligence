@@ -1,7 +1,7 @@
 //! Executions, their event log and delivery counters. The live event stream
 //! is in `crate::sse`.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::execution::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -13,7 +13,7 @@ use crate::{
         StartExecutionRequest,
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -36,7 +36,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     responses((status = 200, body = Vec<Execution>), ErrorResponses),
 )]
 async fn list_executions(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<ListExecutionsQuery>,
 ) -> ApiResult<Json<Vec<Execution>>> {
     let response = state
@@ -61,7 +61,7 @@ async fn list_executions(
     responses((status = 201, body = Execution), ErrorResponses),
 )]
 async fn create_execution(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiJson(body): ApiJson<CreateExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<Execution>)> {
     let execution = state
@@ -88,10 +88,7 @@ async fn create_execution(
     params(("id" = String, Path, description = "Execution id")),
     responses((status = 200, body = Execution), ErrorResponses),
 )]
-async fn get_execution(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Execution>> {
+async fn get_execution(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Execution>> {
     let execution = state
         .execution()
         .get_execution(proto::GetExecutionRequest { id })
@@ -110,7 +107,7 @@ async fn get_execution(
     responses((status = 200, body = Execution), ErrorResponses),
 )]
 async fn start_execution(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     body: Option<ApiJson<StartExecutionRequest>>,
 ) -> ApiResult<Json<Execution>> {
@@ -136,7 +133,7 @@ async fn start_execution(
     responses((status = 200, body = Execution), ErrorResponses),
 )]
 async fn resolve_failure(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<ResolveFailureRequest>,
 ) -> ApiResult<Json<Execution>> {
@@ -169,7 +166,7 @@ async fn resolve_failure(
     responses((status = 200, body = Execution), ErrorResponses),
 )]
 async fn cancel_execution(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<CancelExecutionRequest>,
 ) -> ApiResult<Json<Execution>> {
@@ -193,7 +190,7 @@ async fn cancel_execution(
     responses((status = 200, body = Vec<ExecutionEvent>), ErrorResponses),
 )]
 async fn list_events(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<ListEventsQuery>,
 ) -> ApiResult<Json<Vec<ExecutionEvent>>> {
@@ -218,7 +215,7 @@ async fn list_events(
     responses((status = 200, body = DeliveryStats), ErrorResponses),
 )]
 async fn delivery_stats(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiQuery(query): ApiQuery<DeliveryStatsQuery>,
 ) -> ApiResult<Json<DeliveryStats>> {
     let stats = state

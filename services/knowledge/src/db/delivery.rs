@@ -17,6 +17,7 @@ pub struct Failure {
 #[derive(Debug, Clone, FromRow)]
 pub struct RunRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub provider_run_id: i64,
     pub pipeline_name: String,
@@ -56,6 +57,7 @@ pub struct NewRun {
 #[derive(Debug, Clone, FromRow)]
 pub struct DeploymentRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub provider_id: i64,
     pub source: String,
@@ -86,14 +88,15 @@ pub struct NewDeployment {
 
 pub async fn upsert_runs(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     runs: &[NewRun],
 ) -> sqlx::Result<()> {
     for run in runs {
         sqlx::query(
-            "INSERT INTO pipeline_runs (id, project_id, provider_run_id, pipeline_name, pipeline_path, run_number, status, branch,
+            "INSERT INTO pipeline_runs (id, workspace_id, project_id, provider_run_id, pipeline_name, pipeline_path, run_number, status, branch,
                 commit_sha, commit_message, actor, event, started_at, duration_seconds, html_url, failure, synced_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
              ON CONFLICT (project_id, provider_run_id) DO UPDATE SET
                pipeline_name = EXCLUDED.pipeline_name, pipeline_path = EXCLUDED.pipeline_path, status = EXCLUDED.status,
                commit_message = EXCLUDED.commit_message, actor = EXCLUDED.actor, started_at = EXCLUDED.started_at,
@@ -101,6 +104,7 @@ pub async fn upsert_runs(
                failure = EXCLUDED.failure, synced_at = now()",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(run.provider_run_id)
         .bind(&run.pipeline_name)
@@ -124,12 +128,15 @@ pub async fn upsert_runs(
 
 pub async fn list_runs(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     limit: i64,
 ) -> sqlx::Result<Vec<RunRow>> {
     sqlx::query_as::<_, RunRow>(
-        "SELECT * FROM pipeline_runs WHERE project_id = $1 ORDER BY started_at DESC NULLS LAST, run_number DESC LIMIT $2",
+        "SELECT * FROM pipeline_runs WHERE workspace_id = $1 AND project_id = $2
+         ORDER BY started_at DESC NULLS LAST, run_number DESC LIMIT $3",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(limit)
     .fetch_all(exec)
@@ -138,18 +145,20 @@ pub async fn list_runs(
 
 pub async fn upsert_deployments(
     conn: &mut PgConnection,
+    workspace_id: Uuid,
     project_id: Uuid,
     deployments: &[NewDeployment],
 ) -> sqlx::Result<()> {
     for d in deployments {
         sqlx::query(
-            "INSERT INTO deployments (id, project_id, provider_id, source, environment, ref, commit_sha, status, created_at, creator, url, description, synced_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+            "INSERT INTO deployments (id, workspace_id, project_id, provider_id, source, environment, ref, commit_sha, status, created_at, creator, url, description, synced_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
              ON CONFLICT (project_id, source, provider_id) DO UPDATE SET
                environment = EXCLUDED.environment, status = EXCLUDED.status, url = EXCLUDED.url,
                description = EXCLUDED.description, synced_at = now()",
         )
         .bind(Uuid::now_v7())
+        .bind(workspace_id)
         .bind(project_id)
         .bind(d.provider_id)
         .bind(&d.source)
@@ -169,12 +178,14 @@ pub async fn upsert_deployments(
 
 pub async fn list_deployments(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     limit: i64,
 ) -> sqlx::Result<Vec<DeploymentRow>> {
     sqlx::query_as::<_, DeploymentRow>(
-        "SELECT * FROM deployments WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "SELECT * FROM deployments WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT $3",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(limit)
     .fetch_all(exec)

@@ -2,7 +2,7 @@
 //! scans, facts, questions, understanding, graph, dependencies, delivery
 //! history and similar projects.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, http::StatusCode};
 use sdi_proto::knowledge::v1 as proto;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -16,7 +16,7 @@ use crate::{
         SetProjectModeRequest, SimilarProject, Understanding,
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::AppState,
+    state::{AppState, Scoped},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -48,7 +48,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     tag = "projects",
     responses((status = 200, body = Vec<Project>), ErrorResponses),
 )]
-async fn list_projects(State(state): State<AppState>) -> ApiResult<Json<Vec<Project>>> {
+async fn list_projects(state: Scoped) -> ApiResult<Json<Vec<Project>>> {
     let response = state
         .knowledge()
         .list_projects(proto::ListProjectsRequest {})
@@ -66,7 +66,7 @@ async fn list_projects(State(state): State<AppState>) -> ApiResult<Json<Vec<Proj
     responses((status = 201, body = Project), ErrorResponses),
 )]
 async fn connect_project(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiJson(body): ApiJson<ConnectProjectRequest>,
 ) -> ApiResult<(StatusCode, Json<Project>)> {
     let project = state
@@ -87,10 +87,7 @@ async fn connect_project(
     params(("id" = String, Path, description = "Project id")),
     responses((status = 200, body = Project), ErrorResponses),
 )]
-async fn get_project(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Project>> {
+async fn get_project(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Project>> {
     let project = state
         .knowledge()
         .get_project(proto::GetProjectRequest { id })
@@ -107,10 +104,7 @@ async fn get_project(
     params(("id" = String, Path, description = "Project id")),
     responses((status = 200, description = "Deleted"), ErrorResponses),
 )]
-async fn delete_project(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<StatusCode> {
+async fn delete_project(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<StatusCode> {
     state
         .knowledge()
         .delete_project(proto::DeleteProjectRequest { id })
@@ -128,7 +122,7 @@ async fn delete_project(
     responses((status = 200, body = Project), ErrorResponses),
 )]
 async fn set_project_mode(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<SetProjectModeRequest>,
 ) -> ApiResult<Json<Project>> {
@@ -152,7 +146,7 @@ async fn set_project_mode(
     responses((status = 200, body = Vec<Scan>), ErrorResponses),
 )]
 async fn list_scans(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<ListScansQuery>,
 ) -> ApiResult<Json<Vec<Scan>>> {
@@ -176,7 +170,7 @@ async fn list_scans(
     responses((status = 201, body = Scan), ErrorResponses),
 )]
 async fn start_scan(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<(StatusCode, Json<Scan>)> {
     let scan = state
@@ -195,10 +189,7 @@ async fn start_scan(
     params(("id" = String, Path, description = "Scan id")),
     responses((status = 200, body = Scan), ErrorResponses),
 )]
-async fn get_scan(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<Scan>> {
+async fn get_scan(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<Scan>> {
     let scan = state
         .knowledge()
         .get_scan(proto::GetScanRequest { id })
@@ -216,7 +207,7 @@ async fn get_scan(
     responses((status = 200, body = Vec<Fact>), ErrorResponses),
 )]
 async fn list_facts(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<ListFactsQuery>,
 ) -> ApiResult<Json<Vec<Fact>>> {
@@ -241,7 +232,7 @@ async fn list_facts(
     responses((status = 200, body = Vec<Question>), ErrorResponses),
 )]
 async fn list_questions(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<ListQuestionsQuery>,
 ) -> ApiResult<Json<Vec<Question>>> {
@@ -266,7 +257,7 @@ async fn list_questions(
     responses((status = 200, body = Question), ErrorResponses),
 )]
 async fn answer_question(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<AnswerQuestionRequest>,
 ) -> ApiResult<Json<Question>> {
@@ -290,7 +281,7 @@ async fn answer_question(
     responses((status = 200, body = Understanding), ErrorResponses),
 )]
 async fn get_understanding(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Understanding>> {
     let understanding = state
@@ -311,7 +302,7 @@ async fn get_understanding(
     responses((status = 200, body = MaturityScore), ErrorResponses),
 )]
 async fn get_maturity(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<MaturityScore>> {
     let maturity = state
@@ -331,10 +322,7 @@ async fn get_maturity(
     params(("id" = String, Path, description = "Project id")),
     responses((status = 200, body = ProjectConfig), ErrorResponses),
 )]
-async fn get_config(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult<Json<ProjectConfig>> {
+async fn get_config(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResult<Json<ProjectConfig>> {
     // The config only travels inside the project context; a service that
     // leaves it unset means "no file", not an error.
     let context = state
@@ -354,7 +342,7 @@ async fn get_config(
     responses((status = 200, body = Graph), ErrorResponses),
 )]
 async fn get_graph(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<GetGraphQuery>,
 ) -> ApiResult<Json<Graph>> {
@@ -379,7 +367,7 @@ async fn get_graph(
     responses((status = 200, body = ImpactAnalysis), ErrorResponses),
 )]
 async fn analyze_impact(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<AnalyzeImpactRequest>,
 ) -> ApiResult<Json<ImpactAnalysis>> {
@@ -410,7 +398,7 @@ async fn analyze_impact(
     responses((status = 200, body = DependenciesResponse), ErrorResponses),
 )]
 async fn list_dependencies(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<DependenciesResponse>> {
     let response = state
@@ -430,7 +418,7 @@ async fn list_dependencies(
     responses((status = 200, body = Vec<Pipeline>), ErrorResponses),
 )]
 async fn list_pipelines(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Vec<Pipeline>>> {
     let response = state
@@ -450,7 +438,7 @@ async fn list_pipelines(
     responses((status = 200, body = PipelineRunsResponse), ErrorResponses),
 )]
 async fn list_pipeline_runs(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<DeliveryHistoryQuery>,
 ) -> ApiResult<Json<PipelineRunsResponse>> {
@@ -475,7 +463,7 @@ async fn list_pipeline_runs(
     responses((status = 200, body = DeploymentsResponse), ErrorResponses),
 )]
 async fn list_deployments(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<DeliveryHistoryQuery>,
 ) -> ApiResult<Json<DeploymentsResponse>> {
@@ -500,7 +488,7 @@ async fn list_deployments(
     responses((status = 200, body = Vec<SimilarProject>), ErrorResponses),
 )]
 async fn list_similar_projects(
-    State(state): State<AppState>,
+    state: Scoped,
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<ListSimilarQuery>,
 ) -> ApiResult<Json<Vec<SimilarProject>>> {

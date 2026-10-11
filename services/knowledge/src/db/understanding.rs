@@ -14,6 +14,7 @@ pub struct Section {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct UnderstandingRow {
+    pub workspace_id: Uuid,
     pub project_id: Uuid,
     pub tldr: String,
     pub architecture: String,
@@ -26,6 +27,7 @@ pub struct UnderstandingRow {
 
 pub async fn upsert(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
     draft: &UnderstandingDraft,
     commit_sha: &str,
@@ -41,13 +43,14 @@ pub async fn upsert(
         })
         .collect();
     sqlx::query(
-        "INSERT INTO understandings (project_id, tldr, architecture, stack, sections, request_flow, commit_sha, generated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+        "INSERT INTO understandings (workspace_id, project_id, tldr, architecture, stack, sections, request_flow, commit_sha, generated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
          ON CONFLICT (project_id) DO UPDATE SET
            tldr = EXCLUDED.tldr, architecture = EXCLUDED.architecture, stack = EXCLUDED.stack,
            sections = EXCLUDED.sections, request_flow = EXCLUDED.request_flow,
            commit_sha = EXCLUDED.commit_sha, generated_at = now()",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .bind(&draft.tldr)
     .bind(&draft.architecture)
@@ -62,10 +65,14 @@ pub async fn upsert(
 
 pub async fn get(
     exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
     project_id: Uuid,
 ) -> sqlx::Result<Option<UnderstandingRow>> {
-    sqlx::query_as::<_, UnderstandingRow>("SELECT * FROM understandings WHERE project_id = $1")
-        .bind(project_id)
-        .fetch_optional(exec)
-        .await
+    sqlx::query_as::<_, UnderstandingRow>(
+        "SELECT * FROM understandings WHERE workspace_id = $1 AND project_id = $2",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .fetch_optional(exec)
+    .await
 }

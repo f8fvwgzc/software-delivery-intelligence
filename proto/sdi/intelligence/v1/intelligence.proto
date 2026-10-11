@@ -49,6 +49,13 @@ service IntelligenceService {
   rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
   // Proposal, decision and document changes as they happen. Never ends.
   rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
+
+  // --- Workspace data (CONTRACT.md §19) ---------------------------------------
+  // Removes everything this service stores for the workspace (owner only).
+  rpc DeleteWorkspaceData(DeleteWorkspaceDataRequest) returns (DeleteWorkspaceDataResponse);
+  // Streams every row this service stores for the workspace, one JSON object
+  // per record, for the data export archive (admin).
+  rpc ExportWorkspaceData(ExportWorkspaceDataRequest) returns (stream WorkspaceDataRecord);
 }
 
 // ---------------------------------------------------------------------------
@@ -530,4 +537,30 @@ message IntelligenceStats {
   uint32 decisions_active = 4;
   uint32 documents = 5;
   uint32 messages = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace data
+// ---------------------------------------------------------------------------
+
+message DeleteWorkspaceDataRequest {
+  // Must match the caller's workspace (x-sdi-workspace).
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceDataResponse {
+  // Rows removed per entity ("proposal", "message", "decision", "document", "diagram", "settings").
+  map<string, uint64> deleted = 1;
+}
+
+message ExportWorkspaceDataRequest {
+  // Must match the caller's workspace (x-sdi-workspace).
+  string workspace_id = 1;
+}
+
+message WorkspaceDataRecord {
+  // "proposal" | "message" | "decision" | "document" | "diagram" | "settings"
+  string entity = 1;
+  // The full row as one JSON object.
+  string json = 2;
 }

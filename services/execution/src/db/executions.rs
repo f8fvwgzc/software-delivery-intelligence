@@ -10,6 +10,7 @@ use crate::{adapters::Fault, domain::diagnosis::FailureRecord};
 #[derive(Debug, Clone, FromRow)]
 pub struct ExecutionRow {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub number: i64,
     pub project_id: String,
     pub project_name: String,
@@ -19,6 +20,8 @@ pub struct ExecutionRow {
     pub status: String,
     pub adapter: String,
     pub identity_id: Uuid,
+    /// `x-sdi-user` of the caller that created the run.
+    pub created_by: String,
     pub fault: Option<Json<Fault>>,
     pub failure: Option<Json<FailureRecord>>,
     pub last_checkpoint: Option<String>,
@@ -34,12 +37,13 @@ pub struct ExecutionRow {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-const COLUMNS: &str = "id, number, project_id, project_name, proposal_id, pattern_id, title, status, adapter, \
-     identity_id, fault, failure, last_checkpoint, revision, outputs, artifacts, created_at, updated_at, \
-     started_at, finished_at";
+const COLUMNS: &str = "id, workspace_id, number, project_id, project_name, proposal_id, pattern_id, title, status, \
+     adapter, identity_id, created_by, fault, failure, last_checkpoint, revision, outputs, artifacts, created_at, \
+     updated_at, started_at, finished_at";
 
 pub struct NewExecution<'a> {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     pub project_id: &'a str,
     pub project_name: &'a str,
     pub proposal_id: &'a str,
@@ -48,15 +52,18 @@ pub struct NewExecution<'a> {
     pub status: &'a str,
     pub adapter: &'a str,
     pub identity_id: Uuid,
+    pub created_by: &'a str,
     pub artifacts: &'a BTreeMap<String, String>,
 }
 
 pub async fn insert(tx: &mut Tx, new: NewExecution<'_>) -> sqlx::Result<ExecutionRow> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO executions (id, project_id, project_name, proposal_id, pattern_id, title, status, adapter, identity_id, artifacts) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {COLUMNS}"
+        "INSERT INTO executions (id, workspace_id, project_id, project_name, proposal_id, pattern_id, title, status, \
+         adapter, identity_id, created_by, artifacts) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING {COLUMNS}"
     )))
     .bind(new.id)
+    .bind(new.workspace_id)
     .bind(new.project_id)
     .bind(new.project_name)
     .bind(new.proposal_id)
@@ -65,15 +72,21 @@ pub async fn insert(tx: &mut Tx, new: NewExecution<'_>) -> sqlx::Result<Executio
     .bind(new.status)
     .bind(new.adapter)
     .bind(new.identity_id)
+    .bind(new.created_by)
     .bind(Json(new.artifacts))
     .fetch_one(&mut **tx)
     .await
 }
 
-pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<ExecutionRow> {
+pub async fn get<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<ExecutionRow> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM executions WHERE id = $1"
+        "SELECT {COLUMNS} FROM executions WHERE workspace_id = $1 AND id = $2"
     )))
+    .bind(workspace_id)
     .bind(id)
     .fetch_one(exec)
     .await
@@ -81,10 +94,11 @@ pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<Execut
 
 /// Locks the row for the rest of the transaction so one writer at a time
 /// touches an execution and its event sequence.
-pub async fn lock(tx: &mut Tx, id: Uuid) -> sqlx::Result<ExecutionRow> {
+pub async fn lock(tx: &mut Tx, workspace_id: Uuid, id: Uuid) -> sqlx::Result<ExecutionRow> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM executions WHERE id = $1 FOR UPDATE"
+        "SELECT {COLUMNS} FROM executions WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
     )))
+    .bind(workspace_id)
     .bind(id)
     .fetch_one(&mut **tx)
     .await
@@ -92,18 +106,23 @@ pub async fn lock(tx: &mut Tx, id: Uuid) -> sqlx::Result<ExecutionRow> {
 
 pub async fn list<'e>(
     exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
     project_id: &str,
     limit: i64,
 ) -> sqlx::Result<Vec<ExecutionRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM executions WHERE ($1 = '' OR project_id = $1) ORDER BY number DESC LIMIT $2"
+        "SELECT {COLUMNS} FROM executions WHERE workspace_id = $1 AND ($2 = '' OR project_id = $2) \
+         ORDER BY number DESC LIMIT $3"
     )))
+    .bind(workspace_id)
     .bind(project_id)
     .bind(limit)
     .fetch_all(exec)
     .await
 }
 
+/// Across every workspace: startup recovery resumes whatever was mid-flight
+/// (each row carries its workspace for the runner). The only unscoped read.
 pub async fn with_status<'e>(
     exec: impl PgExecutor<'e>,
     statuses: &[&str],
@@ -117,15 +136,48 @@ pub async fn with_status<'e>(
     .await
 }
 
+/// The workspace's executions in the given statuses, oldest first.
+pub async fn with_status_in<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    statuses: &[&str],
+) -> sqlx::Result<Vec<ExecutionRow>> {
+    let statuses: Vec<String> = statuses.iter().map(|s| (*s).to_owned()).collect();
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLUMNS} FROM executions WHERE workspace_id = $1 AND status = ANY($2) ORDER BY number"
+    )))
+    .bind(workspace_id)
+    .bind(statuses)
+    .fetch_all(exec)
+    .await
+}
+
+/// Ids and adapters of every execution of the workspace, for cleanup.
+pub async fn ids_and_adapters<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+) -> sqlx::Result<Vec<(Uuid, String)>> {
+    sqlx::query_as("SELECT id, adapter FROM executions WHERE workspace_id = $1 ORDER BY number")
+        .bind(workspace_id)
+        .fetch_all(exec)
+        .await
+}
+
 /// `started_at` is stamped the first time the run leaves PLANNING;
 /// `finished_at` when it reaches a terminal status.
-pub async fn set_status(tx: &mut Tx, id: Uuid, status: &str) -> sqlx::Result<()> {
+pub async fn set_status(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    status: &str,
+) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE executions SET status = $2, updated_at = now(), \
-         started_at = COALESCE(started_at, CASE WHEN $2 <> 'PLANNING' THEN now() END), \
-         finished_at = CASE WHEN $2 IN ('SUCCEEDED', 'FAILED', 'CANCELLED') THEN now() ELSE finished_at END \
-         WHERE id = $1",
+        "UPDATE executions SET status = $3, updated_at = now(), \
+         started_at = COALESCE(started_at, CASE WHEN $3 <> 'PLANNING' THEN now() END), \
+         finished_at = CASE WHEN $3 IN ('SUCCEEDED', 'FAILED', 'CANCELLED') THEN now() ELSE finished_at END \
+         WHERE workspace_id = $1 AND id = $2",
     )
+    .bind(workspace_id)
     .bind(id)
     .bind(status)
     .execute(&mut **tx)
@@ -133,69 +185,105 @@ pub async fn set_status(tx: &mut Tx, id: Uuid, status: &str) -> sqlx::Result<()>
     .map(|_| ())
 }
 
-pub async fn set_fault(tx: &mut Tx, id: Uuid, fault: Option<&Fault>) -> sqlx::Result<()> {
-    sqlx::query("UPDATE executions SET fault = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(fault.map(Json))
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+pub async fn set_fault(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    fault: Option<&Fault>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE executions SET fault = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(fault.map(Json))
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
 pub async fn set_failure(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     failure: Option<&FailureRecord>,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE executions SET failure = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(failure.map(Json))
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "UPDATE executions SET failure = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(failure.map(Json))
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
-pub async fn set_checkpoint(tx: &mut Tx, id: Uuid, key: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE executions SET last_checkpoint = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(key)
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+pub async fn set_checkpoint(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    key: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE executions SET last_checkpoint = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(key)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
 /// Adds a step's outputs to the run's. Later steps overwrite earlier keys
 /// (a rebuilt image replaces the old `image`).
 pub async fn merge_outputs(
     tx: &mut Tx,
+    workspace_id: Uuid,
     id: Uuid,
     outputs: &BTreeMap<String, String>,
 ) -> sqlx::Result<()> {
     if outputs.is_empty() {
         return Ok(());
     }
-    sqlx::query("UPDATE executions SET outputs = outputs || $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(Json(outputs))
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "UPDATE executions SET outputs = outputs || $3, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(Json(outputs))
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
-pub async fn set_identity(tx: &mut Tx, id: Uuid, identity_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE executions SET identity_id = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(identity_id)
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
+pub async fn set_identity(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    identity_id: Uuid,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE executions SET identity_id = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(identity_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
-pub async fn bump_revision(tx: &mut Tx, id: Uuid) -> sqlx::Result<i32> {
-    sqlx::query_scalar("UPDATE executions SET revision = revision + 1, updated_at = now() WHERE id = $1 RETURNING revision")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await
+pub async fn bump_revision(tx: &mut Tx, workspace_id: Uuid, id: Uuid) -> sqlx::Result<i32> {
+    sqlx::query_scalar(
+        "UPDATE executions SET revision = revision + 1, updated_at = now() \
+         WHERE workspace_id = $1 AND id = $2 RETURNING revision",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -211,7 +299,11 @@ pub struct StatsRow {
     pub failures_recovered: i64,
 }
 
-pub async fn stats<'e>(exec: impl PgExecutor<'e>, project_id: &str) -> sqlx::Result<StatsRow> {
+pub async fn stats<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    project_id: &str,
+) -> sqlx::Result<StatsRow> {
     sqlx::query_as(
         "SELECT \
            count(*)::bigint AS total, \
@@ -222,13 +314,14 @@ pub async fn stats<'e>(exec: impl PgExecutor<'e>, project_id: &str) -> sqlx::Res
            COALESCE(avg(EXTRACT(EPOCH FROM e.finished_at - e.started_at)) \
              FILTER (WHERE e.status IN ('SUCCEEDED','FAILED') AND e.started_at IS NOT NULL), 0)::float8 AS avg_duration_seconds, \
            COALESCE((SELECT sum(s.attempts) FROM steps s JOIN executions x ON x.id = s.execution_id \
-             WHERE $1 = '' OR x.project_id = $1), 0)::bigint AS steps_executed, \
+             WHERE x.workspace_id = $1 AND ($2 = '' OR x.project_id = $2)), 0)::bigint AS steps_executed, \
            (SELECT count(*) FROM approvals a JOIN executions x ON x.id = a.execution_id \
-             WHERE a.status = 'PENDING' AND ($1 = '' OR x.project_id = $1))::bigint AS approvals_pending, \
+             WHERE a.status = 'PENDING' AND x.workspace_id = $1 AND ($2 = '' OR x.project_id = $2))::bigint AS approvals_pending, \
            (SELECT count(*) FROM events ev JOIN executions x ON x.id = ev.execution_id \
-             WHERE ev.type = 'REPLANNED' AND ($1 = '' OR x.project_id = $1))::bigint AS failures_recovered \
-         FROM executions e WHERE $1 = '' OR e.project_id = $1",
+             WHERE ev.type = 'REPLANNED' AND x.workspace_id = $1 AND ($2 = '' OR x.project_id = $2))::bigint AS failures_recovered \
+         FROM executions e WHERE e.workspace_id = $1 AND ($2 = '' OR e.project_id = $2)",
     )
+    .bind(workspace_id)
     .bind(project_id)
     .fetch_one(exec)
     .await

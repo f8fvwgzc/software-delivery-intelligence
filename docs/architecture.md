@@ -16,8 +16,10 @@ its two trust boundaries:
 | `intelligence` | what the platform *thinks* should happen: proposals, ranking, negotiation, decisions, documents | Opinions must be reproducible and explainable. Keeping them out of the knowledge store means a bad ranking never contaminates a fact. |
 | `execution` | what *actually happens*: policies, permissions, approvals, the DAG runner, checkpoints, diagnosis | The blast radius lives here, so this is where every gate is enforced, regardless of who asked. |
 
-The `gateway` is the one HTTP surface and holds no state; the `web` app is a
-client of the gateway only. Services call each other over gRPC
+A fourth service, `identity`, sits beside the loop rather than in it: it
+knows who is calling and which workspace they are in, and nothing about
+repositories (§11). The `gateway` is the one HTTP surface and holds no
+state; the `web` app is a client of the gateway only. Services call each other over gRPC
 (`proto/sdi/*/v1`) and never share tables: each owns one Postgres schema
 (`CONTRACT.md` §4) and reads the others' data through RPCs such as
 `Knowledge.GetProjectContext`. That constraint is what lets a service be
@@ -145,7 +147,7 @@ generated in Rust), timestamps `timestamptz`.
 host :80 ──▶ web (nginx-unprivileged :8080) ──▶ gateway-1 :8080 ─┐
              frontend network                    gateway-2 :8080 ─┤ backend network
                                                                   ▼
-                                   knowledge :50051 · intelligence :50052 · execution :50053
+               identity :50054 · knowledge :50051 · intelligence :50052 · execution :50053
                                                                   ▼
                                                         postgres :5432 (volume pgdata)
 ```
@@ -154,8 +156,8 @@ host :80 ──▶ web (nginx-unprivileged :8080) ──▶ gateway-1 :8080 ─�
 
 - **Two networks.** Only `web` and the gateways sit on `frontend`; Postgres
   and the gRPC services are reachable solely through a gateway. Neither
-  network is `internal` because knowledge needs GitHub and intelligence may
-  need the Anthropic API.
+  network is `internal` because knowledge and identity need GitHub and
+  intelligence may need the Anthropic API.
 - **Health-gated start.** Every service has a healthcheck (Postgres
   `pg_isready`, Rust services a bash `/dev/tcp` probe since the images carry
   no curl, the gateway an HTTP `GET /api/v1/health`, nginx `/healthz`) and
@@ -166,7 +168,7 @@ host :80 ──▶ web (nginx-unprivileged :8080) ──▶ gateway-1 :8080 ─�
   memory limits, rotated JSON logs.
 - **One Rust image recipe.** `deploy/docker/rust.Dockerfile` takes
   `ARG SERVICE`; cargo-chef cooks the whole workspace's dependencies in a
-  layer that is byte-identical for all four services, so the expensive part
+  layer that is byte-identical for all five services, so the expensive part
   compiles once. An `extras-<service>` stage, selected by name, adds what a
   service needs beyond its binary: only execution gets the Docker CLI and
   buildx. Two gateway replicas share the `sdi/gateway` tag; the second one
@@ -201,6 +203,14 @@ nginx is the only public listener and implements `CONTRACT.md` §10:
   REST calls kept succeeding. `limit_conn` still bounds how many streams one
   address may hold. Exact and regex locations win over the `/api/` prefix,
   which is what keeps the prefix's rate limit off them.
+- **Webhooks.** `/api/v1/webhooks/github` is an exact location with its
+  own `zone=webhooks` at 10 r/s (burst 20) in place of the mutation zone:
+  GitHub delivers from a few addresses and bursts after a push, and a 429
+  would drop deliveries it does not retry. The body cap is stated in the
+  location (1 MB), and `X-Hub-Signature-256`, `X-GitHub-Event` and
+  `X-GitHub-Delivery` are forwarded explicitly so the gateway's HMAC check
+  cannot be broken by a change to the shared proxy snippet. `/api/v1/auth/*`
+  gets no special treatment: a login is a request like any other.
 - **Hygiene.** `server_tokens off`, gzip for text types, security headers
   (`X-Content-Type-Options`, `X-Frame-Options SAMEORIGIN`,
   `Referrer-Policy`, `Permissions-Policy`). TLS is expected to terminate in
@@ -221,7 +231,11 @@ healthcheck and the definition of done.
 5440) and every service plus the Vite dev server on the host, which keeps
 compile-run cycles fast and lets a debugger attach. `make up` is the same
 code in the production shape. Both paths read the same environment table
-(`CONTRACT.md` §3); only the hostnames differ.
+(`CONTRACT.md` §3 and §18); only the hostnames differ. Neither needs a
+registered GitHub app: `scripts/dev.sh` exports `SDI_DEV_LOGIN=1` and a
+session secret it generates once into `.run/session-secret`, and
+`/auth/login` then creates a local session for the `GITHUB_TOKEN` account
+(§11).
 
 ## 10. Phase 2: from observing to changing the repository
 
@@ -373,3 +387,127 @@ suite against it; a nightly run repeats the full set and enables the
 real-GitHub specs when a token secret exists. `scripts/loadcheck.sh` hits
 the edge for thirty seconds and reports p50, p95 and the share of 429s, so
 a change to the rate limits or the SSE exemption shows up as a number.
+
+## 11. Identity and tenancy
+
+`CONTRACT.md` §18 is the normative text; this section is the shape and the
+reasons. The design has one premise: **identity is GitHub**. SDI reads
+GitHub repositories, so the only sensible answer to "who may see this?" is
+"whoever GitHub already lets see it". There are no SDI passwords, no
+separate user directory, and no way to grant someone more than their
+GitHub role implies.
+
+### Workspaces
+
+A workspace is the tenancy unit. An individual's GitHub account is a
+workspace of kind `personal`; one installation of the SDI GitHub App on
+an organisation is a workspace of kind `organization`. Projects exist
+inside a workspace and come only from what GitHub exposes to it: the
+user's own repositories, or the installation's repository selection.
+Every tenant table in every schema has `workspace_id uuid not null` with
+an index, and every repository function takes a `workspace_id`; a row is
+never addressed by its id alone. Cross-workspace reads are therefore not
+forbidden by a check that could be forgotten but impossible by
+construction: there is no query shape that returns another tenant's row.
+
+### Roles
+
+Roles are *derived* from GitHub and only ever *narrowed* in SDI:
+
+| GitHub | SDI | May |
+|---|---|---|
+| org owner | `OWNER` | everything, including deleting the workspace |
+| member of team `sdi-admins` | `ADMIN` | policies, settings, members, data controls |
+| member of team `sdi-approvers` | `APPROVER` | decide approvals, docker/github executions, grants |
+| other org member | `MEMBER` | connect, scan, propose, negotiate, documents, diagrams, dry runs |
+| outside collaborator | `VIEWER` | read |
+
+An admin may set an `override_role` lower than the derived one, never
+higher. Membership is synced from org membership and teams: on the
+`member` and `team` webhooks, on an explicit `SyncMembers`, and lazily
+when someone opens a workspace they are not yet recorded in. Losing org
+membership removes access at the next request, because the derived role
+is recomputed, not cached as a fact.
+
+### The request path
+
+```
+browser ──cookie sdi_session, X-Sdi-Workspace──▶ gateway
+                                                   │ Identity.Authorize(session, workspace)   cached 60 s
+                                                   ▼
+                                                identity ── session → user; user × workspace → role
+                                                   │ Principal {user_id, workspace_id, role}
+                                                   ▼
+                                                gateway ── role check for the route (viewer = GET only, …)
+                                                   │ gRPC metadata: x-sdi-user, x-sdi-workspace, x-sdi-role
+                                                   ▼
+                                       knowledge / intelligence / execution
+                                                   │ tonic interceptor → Principal extension
+                                                   │ repository fn(workspace_id, …)
+                                                   ▼
+                                                Postgres  WHERE workspace_id = $1 AND …
+```
+
+1. **Cookie.** The session is an opaque token in an `httpOnly; Secure;
+   SameSite=Lax` cookie, `sdi_session`, valid 30 days and revocable. The
+   browser also names the workspace it is acting in with the
+   `X-Sdi-Workspace` header (or `?workspace=` for SSE, which cannot set
+   headers).
+2. **Authorize.** The gateway calls `Identity.Authorize` with both. The
+   identity service resolves the session to a user, the user and workspace
+   to a role, and returns a `Principal` or `UNAUTHENTICATED` /
+   `PERMISSION_DENIED`. The gateway caches the answer for 60 seconds per
+   (session, workspace), which bounds both the cost of the hop and the
+   delay before a revoked membership takes effect.
+3. **Metadata.** The gateway performs the route's role check, then
+   forwards `x-sdi-user`, `x-sdi-workspace` and `x-sdi-role` as gRPC
+   metadata on every call. Services never see the cookie and cannot mint
+   a principal; the metadata is trusted because the gRPC ports are on a
+   private network that only the gateway and the services share
+   (`SECURITY.md`).
+4. **Services.** A tonic interceptor in each service reads the metadata
+   into a `Principal` request extension, and every handler passes
+   `principal.workspace_id` into the repository layer. Service-to-service
+   calls (intelligence → knowledge and execution, execution → knowledge)
+   forward the metadata unchanged, so a fan-out stays inside the same
+   tenant. Internal jobs, such as a webhook-triggered rescan, run as
+   `x-sdi-user: system` with the workspace the webhook resolved to.
+
+Two consequences of this ordering are worth naming. The gateway is the
+only place that knows about cookies, so the session format can change
+without touching a service. And because authorisation is resolved once at
+the edge and carried as metadata, the services are deliberately naive:
+they trust the metadata and spend their complexity on their own domain.
+That is only safe while the gRPC ports are unreachable from anywhere
+else, which is why the compose file publishes none of them.
+
+### GitHub credentials
+
+Personal workspaces use the user's OAuth token, encrypted at rest with
+`SDI_SESSION_SECRET`. Organisation workspaces never hold a long-lived
+token at all: knowledge and execution ask `Identity.GetInstallationToken`,
+which mints a short-lived installation token from the App's private key
+and caches it in memory for at most 55 minutes. Uninstalling the App
+sends an `installation` webhook that removes the workspace; revoking an
+OAuth grant ends every session. The webhook endpoint itself is the one
+unauthenticated route: the gateway verifies `X-Hub-Signature-256` with the
+webhook secret before parsing a byte, and the edge forwards that header
+explicitly (§7, "The edge").
+
+### Dev mode
+
+When no OAuth variables are set and `SDI_DEV_LOGIN=1`, `GET /auth/login`
+creates a local session for the `GITHUB_TOKEN` account with a personal
+workspace. That keeps `make dev` and the CI e2e run working without a
+registered app, and it is the reason `SDI_DEV_LOGIN` must never be set on
+an instance other people can reach (`docs/self-hosting.md`).
+
+### What this buys the trust story
+
+`TRUST.md` and `CONTRACT.md` §19 promise per-workspace data controls,
+complete exports and real deletes. They are cheap to keep because of the
+tenancy rule: `data/export` walks every schema with one `workspace_id`,
+`DELETE /workspaces/{id}` cascades on the same column, and the data
+controls (cache mode, chunk size, reasoner, audit retention) are a row in
+the `identity` schema that each service reads through the same principal
+it already carries.

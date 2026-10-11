@@ -38,6 +38,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where GitHub sends the user back. Exchanges the code for a session,
+         *     sets the `sdi_session` cookie and redirects to where sign-in started.
+         */
+        get: operations["callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Starts sign-in: redirects to GitHub (or, in dev mode, straight to the
+         *     callback). `returnTo` must be a path or a URL on the app origin.
+         */
+        get: operations["login"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revokes the session and clears the cookie. */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The signed-in user and their workspaces, or 401. */
+        get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/decisions": {
         parameters: {
             query?: never;
@@ -137,11 +211,12 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Every change on the platform as it happens, merged from the three
-         *     services (CONTRACT.md §8, "Live events"). Each `data:` line is a
+         * Every change in the caller's workspace as it happens, merged from the
+         *     three services (CONTRACT.md §8, "Live events"). Each `data:` line is a
          *     `PlatformEvent`. The stream never ends: a service that goes away is
          *     reconnected with backoff while the others keep flowing, so the web app
-         *     opens it once per tab and invalidates its caches by `entity`.
+         *     opens it once per tab and invalidates its caches by `entity`. Events
+         *     of other workspaces (or without one) are dropped here (§18).
          */
         get: operations["watch_platform_events"];
         put?: never;
@@ -289,6 +364,43 @@ export interface paths {
         };
         /** The account behind the configured GitHub token. */
         get: operations["get_account"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github/app/install-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Where an organisation owner installs the SDI GitHub App. */
+        get: operations["install_url"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github/app/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GitHub's post-install redirect: records the installation as a workspace
+         *     of the signed-in user and sends them to it.
+         */
+        get: operations["setup"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1069,7 +1181,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** gRPC health of every backing service, checked concurrently. */
+        /** gRPC health of every backing service (identity included), checked concurrently. */
         get: operations["system_status"];
         put?: never;
         post?: never;
@@ -1077,6 +1189,209 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receives GitHub App events. Verified with `GITHUB_WEBHOOK_SECRET`; the
+         *     gateway answers 412 when none is configured.
+         */
+        post: operations["github"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every workspace the signed-in user can open, personal first. */
+        get: operations["list_workspaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One workspace the user can open (403 otherwise). */
+        get: operations["get_workspace"];
+        put?: never;
+        post?: never;
+        /**
+         * Deletes everything the platform stores for the workspace (owner):
+         *     every knowledge, intelligence and execution row, then the GitHub App
+         *     installation record. The deletion itself is audited.
+         */
+        delete: operations["delete_workspace"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Audit entries, newest first (admin). Page with `before`. */
+        get: operations["list_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/data-controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the workspace lets SDI store (CONTRACT.md §19). */
+        get: operations["get_data_controls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Changes the data controls (admin). Omitted fields keep their value. */
+        patch: operations["update_data_controls"];
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/data-controls/reasoner-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Stores the workspace's own model API key, encrypted at rest (admin).
+         *     An empty key removes it. The key is never returned.
+         */
+        put: operations["set_reasoner_key"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/data/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Everything stored for the workspace as one JSON document (admin),
+         *     streamed: workspace, members, data controls, every knowledge,
+         *     intelligence and execution row by entity, and the audit trail.
+         */
+        post: operations["export_data"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/data/purge-code-cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drops every cached file content and tree of the workspace (admin). */
+        post: operations["purge_code_cache"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Members synced from GitHub with their derived and effective roles. */
+        get: operations["list_members"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/members/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-reads organisation members and teams from GitHub (admin). */
+        post: operations["sync_members"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Narrows a member's role below what GitHub grants (admin). Null clears the override. */
+        patch: operations["update_member_role"];
         trace?: never;
     };
 }
@@ -1184,6 +1499,32 @@ export interface components {
             /** @description True when the repository already has a file at this path. */
             replacesExisting: boolean;
         };
+        /** @description One audited action. */
+        AuditEntry: {
+            /** @description Dotted action key, e.g. `project.connect`, `approval.decide`, `data.export`. */
+            action: string;
+            /**
+             * Format: date-time
+             * @description When it happened.
+             */
+            at: string;
+            /** @description Free-text detail. */
+            detail: string;
+            /** @description Entity type the action touched. */
+            entity: string;
+            /** @description Entity id, when known. */
+            entityId: string;
+            /** @description Entry id. */
+            id: string;
+            /** @description Client address as seen by the gateway. */
+            ip: string;
+            /** @description `x-request-id` of the request. */
+            requestId: string;
+            /** @description Acting user id, or `system`. */
+            userId: string;
+            /** @description Acting user's login at the time. */
+            userLogin: string;
+        };
         /** @description Body of `POST /executions/{id}/cancel`. */
         CancelExecutionRequest: {
             /** @description Why it was cancelled. */
@@ -1249,6 +1590,68 @@ export interface components {
             steps: components["schemas"]["PlanStep"][];
             /** @description Title. */
             title: string;
+        };
+        /** @description Per-workspace data handling (CONTRACT.md §19). Defaults are the most private. */
+        DataControls: {
+            /**
+             * Format: int32
+             * @description Days audit entries are kept; 0 keeps forever.
+             */
+            auditRetentionDays: number;
+            /** @description `none` (never stored), `session` (per commit, purged after the TTL or on disconnect) or `persistent`. */
+            codeCache: string;
+            /**
+             * Format: int32
+             * @description Hours a `session` cache entry lives.
+             */
+            codeCacheTtlHours: number;
+            /** @description Semantic chunks keep only short excerpts when true. */
+            minimalChunks: boolean;
+            /** @description `off` or `claude`. Only `claude` with a workspace key sends structured context to the model API. */
+            reasoner: string;
+            /** @description True when a workspace-owned model key is stored. */
+            reasonerKeyConfigured: boolean;
+            /** @description Last characters of the stored key, for recognition. */
+            reasonerKeyHint?: string | null;
+            /**
+             * Format: date-time
+             * @description Last change.
+             */
+            updatedAt: string;
+        };
+        /**
+         * @description Shape of the `POST /workspaces/{id}/data/export` body (documented; the
+         *     response is streamed as one JSON object of this form).
+         */
+        DataExport: {
+            /** @description Every audit entry. */
+            audit: components["schemas"]["AuditEntry"][];
+            dataControls?: components["schemas"]["DataControls"] | null;
+            /** @description Services that could not contribute, by name. */
+            errors: {
+                [key: string]: string;
+            };
+            /** @description Execution rows by entity (executions, steps, approvals, ...). */
+            execution: {
+                [key: string]: unknown[];
+            };
+            /**
+             * Format: date-time
+             * @description When the export was produced.
+             */
+            exportedAt: string;
+            /** @description Intelligence rows by entity (proposals, decisions, documents, diagrams, ...). */
+            intelligence: {
+                [key: string]: unknown[];
+            };
+            /** @description Knowledge rows by entity (projects, facts, graph, ...). */
+            knowledge: {
+                [key: string]: unknown[];
+            };
+            /** @description Members at export time. */
+            members: components["schemas"]["Member"][];
+            /** @description The workspace. */
+            workspace: components["schemas"]["Workspace"];
         };
         /** @description Body of `POST /approvals/{id}/decide`. */
         DecideApprovalRequest: {
@@ -1991,6 +2394,11 @@ export interface components {
             /** @description Relations walked from the origin to reach this node. */
             via: string[];
         };
+        /** @description Response of `GET /github/app/install-url`. */
+        InstallUrl: {
+            /** @description Where to send an organisation owner to install the SDI GitHub App. */
+            url: string;
+        };
         /** @description Ranking defaults and the reasoner, changed from the settings page. */
         IntelligenceSettings: {
             /** @description True when `ANTHROPIC_API_KEY` is configured. Read-only. */
@@ -2216,6 +2624,44 @@ export interface components {
             projectId: string;
             /** @description `legacy` (< 35), `transitional` (35–69) or `modern` (≥ 70). */
             stage: string;
+        };
+        /** @description Response of `GET /auth/me`. */
+        Me: {
+            /** @description The workspace this request was resolved in. */
+            currentWorkspaceId: string;
+            /** @description The signed-in user. */
+            user: components["schemas"]["User"];
+            /** @description Every workspace the user can open, personal first. */
+            workspaces: components["schemas"]["Workspace"][];
+        };
+        /** @description A workspace member as synced from GitHub. */
+        Member: {
+            /** @description Role implied by GitHub. */
+            derivedRole: components["schemas"]["Role"];
+            /** @description What applies. */
+            effectiveRole: components["schemas"]["Role"];
+            /** @description GitHub's view: `owner`, `member` or `outside_collaborator`. */
+            githubRole: string;
+            overrideRole?: components["schemas"]["Role"] | null;
+            /**
+             * Format: date-time
+             * @description Last sync from GitHub.
+             */
+            syncedAt: string;
+            /** @description SDI teams the member is on (`sdi-admins`, `sdi-approvers`). */
+            teams: string[];
+            /** @description The member. */
+            user: components["schemas"]["User"];
+        };
+        /** @description Response of `GET /workspaces/{id}/members`. */
+        MembersResponse: {
+            /** @description Members, by login. */
+            members: components["schemas"]["Member"][];
+            /**
+             * Format: date-time
+             * @description When GitHub was last read; null before the first sync.
+             */
+            syncedAt?: string | null;
         };
         /** @description One turn of a negotiation. */
         Message: {
@@ -2747,6 +3193,19 @@ export interface components {
          * @enum {string}
          */
         ProposalStatus: "unspecified" | "proposed" | "negotiating" | "accepted" | "rejected" | "superseded";
+        /** @description Response of `POST /workspaces/{id}/data/purge-code-cache`. */
+        PurgeResult: {
+            /**
+             * Format: int64
+             * @description Cached file contents removed.
+             */
+            filesDeleted: number;
+            /**
+             * Format: int64
+             * @description Cached repository trees removed.
+             */
+            treesDeleted: number;
+        };
         /** @description Something the scan could not know. Asked once, remembered afterwards. */
         Question: {
             /** @description True when a free-text answer is accepted. */
@@ -2859,6 +3318,11 @@ export interface components {
          * @enum {string}
          */
         RiskLevel: "unspecified" | "safe" | "medium" | "high" | "blocked";
+        /**
+         * @description Ordered: each role includes the ones below it (CONTRACT.md §18).
+         * @enum {string}
+         */
+        Role: "unspecified" | "viewer" | "member" | "approver" | "admin" | "owner";
         /** @description Root cause of a failed run. */
         RunFailure: {
             /** @description Failed job. */
@@ -3048,6 +3512,11 @@ export interface components {
             /** @description Mode to switch to. */
             mode: components["schemas"]["ProjectMode"];
         };
+        /** @description Body of `PUT /workspaces/{id}/data-controls/reasoner-key`. */
+        SetReasonerKeyRequest: {
+            /** @description The workspace's own model API key; empty removes it. Never returned. */
+            apiKey: string;
+        };
         /** @description Response of `GET /settings` and `PATCH /settings`. */
         Settings: {
             /** @description Ranking defaults and the reasoner (intelligence service). */
@@ -3224,6 +3693,25 @@ export interface components {
             /** @description Section title. */
             title: string;
         };
+        /** @description Body of `PATCH /workspaces/{id}/data-controls`. Omitted fields keep their value. */
+        UpdateDataControlsRequest: {
+            /**
+             * Format: int32
+             * @description 0–3650; 0 keeps forever.
+             */
+            auditRetentionDays?: number | null;
+            /** @description `none`, `session` or `persistent`. */
+            codeCache?: string | null;
+            /**
+             * Format: int32
+             * @description 1–8760.
+             */
+            codeCacheTtlHours?: number | null;
+            /** @description Keep only short excerpts in semantic chunks. */
+            minimalChunks?: boolean | null;
+            /** @description `off` or `claude`. */
+            reasoner?: string | null;
+        };
         /** @description Body of `PATCH /diagrams/{id}`: every field is optional, at least one must be set. */
         UpdateDiagramRequest: {
             /** @description Replaces the Mermaid source (`source` becomes `mermaid`); the spec is kept as is. */
@@ -3231,6 +3719,10 @@ export interface components {
             spec?: components["schemas"]["DiagramSpec"] | null;
             /** @description New title. */
             title?: string | null;
+        };
+        /** @description Body of `PATCH /workspaces/{id}/members/{userId}`. */
+        UpdateMemberRoleRequest: {
+            overrideRole?: components["schemas"]["Role"] | null;
         };
         /** @description Body of `PATCH /policies/{actionType}`. */
         UpdatePolicyRequest: {
@@ -3245,6 +3737,93 @@ export interface components {
             intelligence?: components["schemas"]["IntelligenceSettingsPatch"] | null;
             knowledge?: components["schemas"]["KnowledgeSettingsPatch"] | null;
         };
+        /** @description A signed-in GitHub account. */
+        User: {
+            /** @description Avatar image URL. */
+            avatarUrl: string;
+            /**
+             * Format: date-time
+             * @description First sign-in.
+             */
+            createdAt: string;
+            /** @description Primary verified email, when the OAuth grant allowed reading it. */
+            email?: string | null;
+            /** @description GitHub host the user signed in to (`github.com` or a GHES host). */
+            githubHost: string;
+            /**
+             * Format: int64
+             * @description GitHub numeric id.
+             */
+            githubId: number;
+            /** @description User id. */
+            id: string;
+            /** @description GitHub login. */
+            login: string;
+            /** @description Display name, when set on the profile. */
+            name: string;
+        };
+        /** @description Response of `POST /webhooks/github`. */
+        WebhookAck: {
+            /** @description The `X-GitHub-Event` that was delivered. */
+            event: string;
+            /** @description What the gateway did with it: `recorded`, `removed`, `synced`, `scan_started`, `ignored`. */
+            outcome: string;
+        };
+        /** @description One tenant: a personal account or an organisation installation. */
+        Workspace: {
+            /** @description Avatar image URL. */
+            avatarUrl: string;
+            /**
+             * Format: date-time
+             * @description When the workspace was created.
+             */
+            createdAt: string;
+            /** @description GitHub host. */
+            githubHost: string;
+            /** @description Workspace id; send it as `X-Sdi-Workspace` (or `?workspace=`). */
+            id: string;
+            /**
+             * Format: int64
+             * @description GitHub App installation id; null for personal workspaces.
+             */
+            installationId?: number | null;
+            /** @description Personal or organisation. */
+            kind: components["schemas"]["WorkspaceKind"];
+            /**
+             * Format: int32
+             * @description Number of synced members (1 for personal workspaces).
+             */
+            memberCount: number;
+            /** @description The caller's effective role. */
+            myRole: components["schemas"]["Role"];
+            /** @description Display name. */
+            name: string;
+            /**
+             * Format: int32
+             * @description Number of connected projects.
+             */
+            projectCount: number;
+            /** @description Repositories the installation grants: `all` or `selected`; null for personal workspaces. */
+            repositorySelection?: string | null;
+            /** @description GitHub login of the org or user. */
+            slug: string;
+        };
+        /** @description Response of `DELETE /workspaces/{id}`. */
+        WorkspaceDeleted: {
+            /** @description Rows removed per service and entity. */
+            deleted: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description The deleted workspace. */
+            workspaceId: string;
+        };
+        /**
+         * @description A user's own account, or a GitHub organisation with the app installed.
+         * @enum {string}
+         */
+        WorkspaceKind: "unspecified" | "personal" | "organization";
     };
     responses: never;
     parameters: never;
@@ -3278,6 +3857,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3365,6 +3962,397 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    callback: {
+        parameters: {
+            query?: {
+                /** @description Authorisation code. */
+                code?: string;
+                /** @description Signed state from `/auth/login`. */
+                state?: string;
+                /** @description Dev mode only: where to go afterwards. */
+                returnTo?: string;
+                /** @description GitHub's own error code when the user cancelled. */
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session cookie set; redirect to `returnTo` */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: {
+                /** @description Where to send the user after sign-in: a path, or a URL on the app origin. */
+                returnTo?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to GitHub's authorize page */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -3443,6 +4431,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -3513,6 +4519,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3600,6 +4624,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -3669,6 +4711,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3752,6 +4812,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -3820,6 +4898,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3907,6 +5003,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -3976,6 +5090,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4081,6 +5213,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4151,6 +5301,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4234,6 +5402,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4307,6 +5493,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4395,6 +5599,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4468,6 +5690,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4555,6 +5795,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4635,6 +5893,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4701,6 +5977,210 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    install_url: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallUrl"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setup: {
+        parameters: {
+            query: {
+                /** @description The new installation. */
+                installation_id: number;
+                /** @description `install` or `update`. */
+                setup_action?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the new workspace */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4777,6 +6257,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4876,6 +6374,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -4956,6 +6472,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5022,6 +6556,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5111,6 +6663,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5177,6 +6747,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5262,6 +6850,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5338,6 +6944,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5404,6 +7028,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5491,6 +7133,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5557,6 +7217,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5641,6 +7319,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5717,6 +7413,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5785,6 +7499,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5868,6 +7600,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -5937,6 +7687,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6025,6 +7793,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6094,6 +7880,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6181,6 +7985,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6250,6 +8072,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6330,6 +8170,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6418,6 +8276,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6497,7 +8373,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The file looks like a secret and is never displayed */
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6585,6 +8470,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6658,6 +8561,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6741,6 +8662,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6814,6 +8753,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6902,6 +8859,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -6971,6 +8946,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7057,6 +9050,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7136,6 +9147,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7205,6 +9234,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7291,6 +9338,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7360,6 +9425,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7443,6 +9526,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7512,6 +9613,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7596,6 +9715,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7665,6 +9802,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7752,6 +9907,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7821,6 +9994,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7908,6 +10099,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -7979,6 +10188,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8066,6 +10293,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -8139,6 +10384,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8226,6 +10489,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -8295,6 +10576,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8379,6 +10678,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -8445,6 +10762,24 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8529,6 +10864,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The resource does not exist. */
             404: {
                 headers: {
@@ -8591,6 +10944,1249 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemStatus"];
+                };
+            };
+        };
+    };
+    github: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description GitHub webhook payload */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAck"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_workspaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workspace"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeleted"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_audit: {
+        parameters: {
+            query?: {
+                /** @description Only actions starting with this, e.g. `execution.`. */
+                actionPrefix?: string;
+                /** @description Cursor: entries strictly before this time. */
+                before?: string;
+                /** @description Page size (default 100, max 1000). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEntry"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_data_controls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataControls"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_data_controls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDataControlsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataControls"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_reasoner_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetReasonerKeyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataControls"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    export_data: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The archive, streamed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataExport"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    purge_code_cache: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeResult"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MembersResponse"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    sync_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MembersResponse"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_member_role: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+                /** @description User id */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMemberRoleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Member"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

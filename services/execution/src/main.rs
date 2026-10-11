@@ -7,6 +7,7 @@ mod db;
 mod domain;
 mod events;
 mod grpc;
+mod identity;
 mod knowledge;
 mod runner;
 #[cfg(test)]
@@ -22,6 +23,7 @@ use crate::{
     adapters::{DockerAdapter, GithubAdapter, Registry, SimulatedAdapter},
     config::{SCHEMA, Settings},
     grpc::ExecutionGrpc,
+    identity::GrpcAudit,
     knowledge::GrpcPatternOutcomes,
     runner::Runtime,
 };
@@ -55,11 +57,14 @@ async fn main() -> anyhow::Result<()> {
         )),
     );
     let outcomes = Arc::new(GrpcPatternOutcomes::new(&settings.knowledge_url)?);
+    let audit = Arc::new(GrpcAudit::new(&settings.identity_url)?);
     let rt = Runtime::new(
         pool,
         adapters,
         outcomes,
+        audit,
         Duration::from_millis(settings.sim_delay_ms / 2),
+        settings.github_token.is_some(),
     );
     let resumed = rt.recover().await.context("could not resume executions")?;
 

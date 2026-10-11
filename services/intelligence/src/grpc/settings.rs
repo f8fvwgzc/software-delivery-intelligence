@@ -1,36 +1,44 @@
-//! Ranking defaults and reasoner choice. Weights are renormalised so a
-//! settings page that sends 0.2/0.2/0.1/0.15/0.15/0.1/0.1 and one that
-//! sends 20/20/10/15/15/10/10 mean the same thing.
+//! Ranking defaults and reasoner choice, one row per workspace. Weights are
+//! renormalised so a settings page that sends 0.2/0.2/0.1/0.15/0.15/0.1/0.1
+//! and one that sends 20/20/10/15/15/10/10 mean the same thing.
+//! `api_key_configured` reports whether the workspace can actually reach
+//! Claude: its data controls allow it and a key (its own, else the dev
+//! fallback) exists.
 
 use sdi_common::grpc::db_status;
 use sdi_proto::intelligence::v1::{IntelligenceSettings, UpdateSettingsRequest};
 use sqlx::types::Json;
 use tonic::Status;
 
-use super::IntelligenceGrpc;
+use super::{Caller, IntelligenceGrpc};
 use crate::{
     convert,
     db::settings::{self as repo, DEFAULT_COST_CEILING_USD},
     domain::model::Signal,
 };
 
-pub(super) async fn get(svc: &IntelligenceGrpc) -> Result<IntelligenceSettings, Status> {
-    let row = svc.settings().await?;
+pub(super) async fn get(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+) -> Result<IntelligenceSettings, Status> {
+    let row = svc.settings(caller).await?;
+    let access = svc.reasoner_access(caller).await;
     Ok(convert::settings(
         &row,
-        svc.api_key_configured(),
-        svc.effective_model(&row),
+        access.configured(),
+        svc.effective_model(&row, &access),
     ))
 }
 
 pub(super) async fn update(
     svc: &IntelligenceGrpc,
+    caller: &Caller,
     request: UpdateSettingsRequest,
 ) -> Result<IntelligenceSettings, Status> {
     let Some(incoming) = request.settings else {
         return Err(Status::invalid_argument("settings is required"));
     };
-    let mut row = svc.settings().await?;
+    let mut row = svc.settings(caller).await?;
 
     if let Some(weights) = incoming.default_weights {
         let mut weights = convert::weights_from_proto(&weights);
@@ -74,11 +82,8 @@ pub(super) async fn update(
         row.cost_ceiling_usd = DEFAULT_COST_CEILING_USD;
     }
 
-    repo::upsert(&svc.pool, &row).await.map_err(db_status)?;
-    let row = svc.settings().await?;
-    Ok(convert::settings(
-        &row,
-        svc.api_key_configured(),
-        svc.effective_model(&row),
-    ))
+    repo::upsert(&svc.pool, caller.workspace, &row)
+        .await
+        .map_err(db_status)?;
+    get(svc, caller).await
 }

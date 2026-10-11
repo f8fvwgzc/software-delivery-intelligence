@@ -1,4 +1,9 @@
-//! tonic service: one file per RPC group, the trait impl here only delegates.
+//! tonic service: one file per RPC group, the trait impl here only reads the
+//! caller (CONTRACT.md §18), checks the role and delegates.
+//!
+//! Roles: reads need VIEWER; generate / negotiate / accept / reject,
+//! documents, diagrams and decisions need MEMBER; settings need ADMIN;
+//! the workspace export needs ADMIN and the delete needs OWNER.
 
 mod decisions;
 mod diagrams;
@@ -9,22 +14,29 @@ mod settings;
 mod stats;
 #[cfg(test)]
 mod tests;
+mod workspace;
 
 use std::sync::Arc;
 
-use sdi_common::grpc::db_status;
+use chrono::Utc;
+use sdi_common::{
+    grpc::db_status,
+    principal::{Principal, Role},
+};
 use sdi_proto::{
     common::v1::{PlatformEvent, WatchEventsRequest},
+    identity::v1::{AuditEntry, ReasonerKey},
     intelligence::v1::{
         AcceptProposalRequest, CreateDecisionRequest, Decision, DeleteDiagramRequest,
-        DeleteDiagramResponse, Diagram, Document, GenerateDiagramRequest, GenerateDocumentRequest,
+        DeleteDiagramResponse, DeleteWorkspaceDataRequest, DeleteWorkspaceDataResponse, Diagram,
+        Document, ExportWorkspaceDataRequest, GenerateDiagramRequest, GenerateDocumentRequest,
         GenerateProposalRequest, GetDiagramRequest, GetDocumentRequest,
         GetIntelligenceStatsRequest, GetProposalRequest, GetSettingsRequest, IntelligenceSettings,
         IntelligenceStats, ListDecisionsRequest, ListDecisionsResponse, ListDiagramsRequest,
         ListDiagramsResponse, ListDocumentsRequest, ListDocumentsResponse, ListMessagesRequest,
         ListMessagesResponse, ListProposalsRequest, ListProposalsResponse, NegotiateRequest,
         NegotiateResponse, Proposal, RejectProposalRequest, SupersedeDecisionRequest,
-        UpdateDiagramRequest, UpdateSettingsRequest,
+        UpdateDiagramRequest, UpdateSettingsRequest, WorkspaceDataRecord,
         intelligence_service_server::IntelligenceService,
     },
 };
@@ -36,22 +48,77 @@ use uuid::Uuid;
 use crate::{
     db::settings::SettingsRow,
     events::EventBus,
-    gateway::{ExecutionGateway, KnowledgeGateway},
+    gateway::{ExecutionGateway, IdentityGateway, KnowledgeGateway},
     reasoner::{ClaudeReasoner, HeuristicReasoner, Reasoner},
 };
 
-/// What the environment allows the reasoner to be (CONTRACT.md §3).
-#[derive(Debug, Clone, Default)]
+/// What the environment allows the reasoner to be (CONTRACT.md §3). The
+/// environment key is the development fallback only: it is used when the
+/// workspace allows the reasoner but stored no key of its own.
+#[derive(Clone, Default)]
 pub struct ReasonerConfig {
     pub anthropic_api_key: Option<String>,
-    /// `ANTHROPIC_MODEL`: used when the settings row names no model.
+    /// `ANTHROPIC_MODEL`: used when neither the settings nor the key name a model.
     pub anthropic_model: String,
+}
+
+impl std::fmt::Debug for ReasonerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the key.
+        f.debug_struct("ReasonerConfig")
+            .field(
+                "anthropic_api_key",
+                &self.anthropic_api_key.as_ref().map(|_| "<set>"),
+            )
+            .field("anthropic_model", &self.anthropic_model)
+            .finish()
+    }
+}
+
+/// The caller of one RPC: the forwarded principal plus its workspace as the
+/// uuid every repository function takes.
+#[derive(Debug, Clone)]
+pub(crate) struct Caller {
+    pub principal: Principal,
+    pub workspace: Uuid,
+}
+
+impl Caller {
+    pub fn from_request<T>(request: &Request<T>) -> Result<Self, Status> {
+        let principal = Principal::from_request(request)?;
+        let workspace = Uuid::parse_str(principal.workspace_id.trim())
+            .map_err(|_| Status::unauthenticated("workspace id is not a valid id"))?;
+        Ok(Self {
+            principal,
+            workspace,
+        })
+    }
+
+    pub fn require(&self, min: Role) -> Result<(), Status> {
+        self.principal.require(min)
+    }
+}
+
+/// Whether, and with which key, the workspace may use the Claude reasoner.
+#[derive(Clone, Default)]
+pub(crate) struct ReasonerAccess {
+    /// The workspace's data controls allow `reasoner = claude`.
+    pub allowed: bool,
+    /// The key to call with: the workspace's own, else the dev fallback.
+    pub key: Option<ReasonerKey>,
+}
+
+impl ReasonerAccess {
+    pub fn configured(&self) -> bool {
+        self.allowed && self.key.is_some()
+    }
 }
 
 pub struct IntelligenceGrpc {
     pool: PgPool,
     knowledge: Arc<dyn KnowledgeGateway>,
     execution: Arc<dyn ExecutionGateway>,
+    identity: Arc<dyn IdentityGateway>,
     reasoner: ReasonerConfig,
     events: EventBus,
 }
@@ -61,49 +128,122 @@ impl IntelligenceGrpc {
         pool: PgPool,
         knowledge: Arc<dyn KnowledgeGateway>,
         execution: Arc<dyn ExecutionGateway>,
+        identity: Arc<dyn IdentityGateway>,
         reasoner: ReasonerConfig,
     ) -> Self {
         Self {
             pool,
             knowledge,
             execution,
+            identity,
             reasoner,
             events: EventBus::new(),
         }
     }
 
-    /// Stored settings, or the defaults when the row is missing.
-    pub(crate) async fn settings(&self) -> Result<SettingsRow, Status> {
-        Ok(crate::db::settings::get(&self.pool)
+    /// Stored settings of the workspace, or the defaults when the row is missing.
+    pub(crate) async fn settings(&self, caller: &Caller) -> Result<SettingsRow, Status> {
+        Ok(crate::db::settings::get(&self.pool, caller.workspace)
             .await
             .map_err(db_status)?
             .unwrap_or_else(SettingsRow::defaults))
     }
 
-    pub(crate) fn api_key_configured(&self) -> bool {
-        self.reasoner.anthropic_api_key.is_some()
-    }
-
-    /// The model Claude would be called with: the stored one, else the environment's.
-    pub(crate) fn effective_model(&self, settings: &SettingsRow) -> String {
-        if settings.model.trim().is_empty() {
-            self.reasoner.anthropic_model.clone()
-        } else {
-            settings.model.clone()
+    /// Resolves the reasoner the workspace may use (CONTRACT.md §19):
+    /// `GetDataControls.reasoner` must be `claude`, then the workspace's own
+    /// key is used, and only when it has none the environment's. A missing
+    /// identity service means "off": the heuristic always works.
+    pub(crate) async fn reasoner_access(&self, caller: &Caller) -> ReasonerAccess {
+        let controls = match self.identity.data_controls(&caller.principal).await {
+            Ok(controls) => controls,
+            Err(error) => {
+                tracing::warn!(%error, "data controls unavailable; reasoner stays off");
+                return ReasonerAccess::default();
+            }
+        };
+        if controls.reasoner.trim() != "claude" {
+            return ReasonerAccess {
+                allowed: false,
+                key: None,
+            };
         }
+        let key = match self.identity.reasoner_key(&caller.principal).await {
+            Ok(key) => key,
+            Err(error) => {
+                tracing::warn!(%error, "workspace reasoner key unavailable");
+                None
+            }
+        };
+        let key = key.filter(|k| !k.api_key.trim().is_empty()).or_else(|| {
+            self.reasoner
+                .anthropic_api_key
+                .clone()
+                .map(|api_key| ReasonerKey {
+                    api_key,
+                    model: String::new(),
+                })
+        });
+        ReasonerAccess { allowed: true, key }
     }
 
-    /// The settings choose the reasoner; "claude" only works when the key is
-    /// configured and falls back to the heuristic otherwise. Built per call so
-    /// a model changed on the settings page applies to the next turn.
-    pub(crate) fn reasoner_for(&self, settings: &SettingsRow) -> Arc<dyn Reasoner> {
-        match &self.reasoner.anthropic_api_key {
-            Some(key) if settings.reasoner == "claude" => Arc::new(ClaudeReasoner::new(
-                key.clone(),
-                self.effective_model(settings),
-            )),
+    /// The model Claude would be called with: the settings' choice, else the
+    /// one stored with the workspace key, else the environment's.
+    pub(crate) fn effective_model(
+        &self,
+        settings: &SettingsRow,
+        access: &ReasonerAccess,
+    ) -> String {
+        if !settings.model.trim().is_empty() {
+            return settings.model.clone();
+        }
+        access
+            .key
+            .as_ref()
+            .map(|k| k.model.trim())
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.reasoner.anthropic_model.clone())
+    }
+
+    /// The settings choose the reasoner; "claude" only works when the
+    /// workspace allows it and a key exists, and falls back to the heuristic
+    /// otherwise. Built per call so a changed key or model applies to the
+    /// next turn.
+    pub(crate) fn reasoner_for(
+        &self,
+        settings: &SettingsRow,
+        access: &ReasonerAccess,
+    ) -> Arc<dyn Reasoner> {
+        match &access.key {
+            Some(key) if access.allowed && settings.reasoner == "claude" => Arc::new(
+                ClaudeReasoner::new(key.api_key.clone(), self.effective_model(settings, access)),
+            ),
             _ => Arc::new(HeuristicReasoner),
         }
+    }
+
+    /// Fire-and-forget audit entry for the caller's action (CONTRACT.md §19).
+    pub(crate) fn audit(
+        &self,
+        caller: &Caller,
+        action: &str,
+        entity: &str,
+        entity_id: &str,
+        detail: String,
+    ) {
+        self.identity.record_audit(
+            &caller.principal,
+            AuditEntry {
+                workspace_id: caller.principal.workspace_id.clone(),
+                user_id: caller.principal.user_id.clone(),
+                action: action.to_owned(),
+                entity: entity.to_owned(),
+                entity_id: entity_id.to_owned(),
+                detail,
+                at: Some(sdi_common::time::to_proto(Utc::now())),
+                ..Default::default()
+            },
+        );
     }
 }
 
@@ -124,13 +264,21 @@ pub(crate) fn require(field: &str, value: &str) -> Result<String, Status> {
     Ok(trimmed.to_owned())
 }
 
+/// Reads the caller and checks the role before the request body is looked at.
+fn caller<T>(request: &Request<T>, min: Role) -> Result<Caller, Status> {
+    let caller = Caller::from_request(request)?;
+    caller.require(min)?;
+    Ok(caller)
+}
+
 #[tonic::async_trait]
 impl IntelligenceService for IntelligenceGrpc {
     async fn generate_proposal(
         &self,
         request: Request<GenerateProposalRequest>,
     ) -> Result<Response<Proposal>, Status> {
-        proposals::generate(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        proposals::generate(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -139,7 +287,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<ListProposalsRequest>,
     ) -> Result<Response<ListProposalsResponse>, Status> {
-        proposals::list(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        proposals::list(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -148,7 +297,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<GetProposalRequest>,
     ) -> Result<Response<Proposal>, Status> {
-        proposals::get(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        proposals::get(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -157,7 +307,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<AcceptProposalRequest>,
     ) -> Result<Response<Proposal>, Status> {
-        proposals::accept(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        proposals::accept(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -166,7 +317,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<RejectProposalRequest>,
     ) -> Result<Response<Proposal>, Status> {
-        proposals::reject(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        proposals::reject(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -175,7 +327,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<NegotiateRequest>,
     ) -> Result<Response<NegotiateResponse>, Status> {
-        negotiation::negotiate(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        negotiation::negotiate(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -184,7 +337,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<ListMessagesRequest>,
     ) -> Result<Response<ListMessagesResponse>, Status> {
-        negotiation::list_messages(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        negotiation::list_messages(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -193,7 +347,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<ListDecisionsRequest>,
     ) -> Result<Response<ListDecisionsResponse>, Status> {
-        decisions::list(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        decisions::list(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -202,7 +357,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<CreateDecisionRequest>,
     ) -> Result<Response<Decision>, Status> {
-        decisions::create(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        decisions::create(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -211,7 +367,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<SupersedeDecisionRequest>,
     ) -> Result<Response<Decision>, Status> {
-        decisions::supersede(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        decisions::supersede(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -220,7 +377,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<GenerateDocumentRequest>,
     ) -> Result<Response<Document>, Status> {
-        documents::generate(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        documents::generate(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -229,7 +387,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<ListDocumentsRequest>,
     ) -> Result<Response<ListDocumentsResponse>, Status> {
-        documents::list(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        documents::list(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -238,23 +397,26 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<GetDocumentRequest>,
     ) -> Result<Response<Document>, Status> {
-        documents::get(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        documents::get(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
 
     async fn get_intelligence_stats(
         &self,
-        _request: Request<GetIntelligenceStatsRequest>,
+        request: Request<GetIntelligenceStatsRequest>,
     ) -> Result<Response<IntelligenceStats>, Status> {
-        stats::get(self).await.map(Response::new)
+        let caller = caller(&request, Role::Viewer)?;
+        stats::get(self, &caller).await.map(Response::new)
     }
 
     async fn generate_diagram(
         &self,
         request: Request<GenerateDiagramRequest>,
     ) -> Result<Response<Diagram>, Status> {
-        diagrams::generate(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        diagrams::generate(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -263,7 +425,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<ListDiagramsRequest>,
     ) -> Result<Response<ListDiagramsResponse>, Status> {
-        diagrams::list(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        diagrams::list(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -272,7 +435,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<GetDiagramRequest>,
     ) -> Result<Response<Diagram>, Status> {
-        diagrams::get(self, request.into_inner())
+        let caller = caller(&request, Role::Viewer)?;
+        diagrams::get(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -281,7 +445,8 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<UpdateDiagramRequest>,
     ) -> Result<Response<Diagram>, Status> {
-        diagrams::update(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        diagrams::update(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -290,23 +455,26 @@ impl IntelligenceService for IntelligenceGrpc {
         &self,
         request: Request<DeleteDiagramRequest>,
     ) -> Result<Response<DeleteDiagramResponse>, Status> {
-        diagrams::delete(self, request.into_inner())
+        let caller = caller(&request, Role::Member)?;
+        diagrams::delete(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
 
     async fn get_settings(
         &self,
-        _request: Request<GetSettingsRequest>,
+        request: Request<GetSettingsRequest>,
     ) -> Result<Response<IntelligenceSettings>, Status> {
-        settings::get(self).await.map(Response::new)
+        let caller = caller(&request, Role::Viewer)?;
+        settings::get(self, &caller).await.map(Response::new)
     }
 
     async fn update_settings(
         &self,
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<IntelligenceSettings>, Status> {
-        settings::update(self, request.into_inner())
+        let caller = caller(&request, Role::Admin)?;
+        settings::update(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -315,8 +483,29 @@ impl IntelligenceService for IntelligenceGrpc {
 
     async fn watch_events(
         &self,
-        _request: Request<WatchEventsRequest>,
+        request: Request<WatchEventsRequest>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        Ok(Response::new(self.events.watch()))
+        let caller = caller(&request, Role::Viewer)?;
+        Ok(Response::new(self.events.watch(caller.workspace)))
+    }
+
+    async fn delete_workspace_data(
+        &self,
+        request: Request<DeleteWorkspaceDataRequest>,
+    ) -> Result<Response<DeleteWorkspaceDataResponse>, Status> {
+        let caller = caller(&request, Role::Owner)?;
+        workspace::delete(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    type ExportWorkspaceDataStream = ReceiverStream<Result<WorkspaceDataRecord, Status>>;
+
+    async fn export_workspace_data(
+        &self,
+        request: Request<ExportWorkspaceDataRequest>,
+    ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
+        let caller = caller(&request, Role::Admin)?;
+        workspace::export(self, &caller, request.into_inner()).map(Response::new)
     }
 }

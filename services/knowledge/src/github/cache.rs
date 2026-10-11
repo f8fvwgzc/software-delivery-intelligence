@@ -90,6 +90,15 @@ impl EtagCache {
         self.entries.clear();
         self.order.clear();
     }
+
+    /// Drops every entry whose key starts with `prefix` (one workspace's
+    /// slice of the cache). Returns how many went.
+    pub fn remove_prefix(&mut self, prefix: &str) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|url, _| !url.starts_with(prefix));
+        self.order.retain(|url| !url.starts_with(prefix));
+        before - self.entries.len()
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +136,18 @@ mod tests {
         cache.clear();
         assert!(cache.is_empty());
         assert!(cache.etag("a").is_none());
+    }
+
+    #[test]
+    fn remove_prefix_drops_one_slice_only() {
+        let mut cache = EtagCache::default();
+        cache.insert("ws1|/a", "\"1\"", Vec::new());
+        cache.insert("ws1|/b", "\"2\"", Vec::new());
+        cache.insert("ws2|/a", "\"3\"", Vec::new());
+        assert_eq!(cache.remove_prefix("ws1|"), 2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get("ws2|/a").is_some());
+        assert_eq!(cache.remove_prefix("ws1|"), 0);
     }
 
     #[test]
