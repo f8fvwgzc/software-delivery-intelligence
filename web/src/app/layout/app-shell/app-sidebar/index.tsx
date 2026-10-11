@@ -27,7 +27,7 @@ export function AppSidebar() {
   const { pathname } = useLocation()
 
   return (
-    <Sidebar collapsible="none" className="h-svh">
+    <Sidebar collapsible="none" className="sticky top-0 h-svh shrink-0 self-start">
       <SidebarContent className="gap-0">
         {navigation.map((group) => (
           <SidebarGroup key={group.label} className="py-1.5">
