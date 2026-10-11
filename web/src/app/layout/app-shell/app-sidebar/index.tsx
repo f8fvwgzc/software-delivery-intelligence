@@ -9,7 +9,6 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -17,7 +16,6 @@ import {
 } from '@/components/ui/sidebar'
 
 import { ApprovalsBadge } from './approvals-badge'
-import { Brand } from './brand'
 import { navigation, type NavItem } from './navigation'
 import { SidebarStatus } from './sidebar-status'
 
@@ -30,11 +28,7 @@ export function AppSidebar() {
   const { pathname } = useLocation()
 
   return (
-    <Sidebar variant="inset" collapsible="icon">
-      <SidebarHeader className="h-12 justify-center">
-        <Brand />
-      </SidebarHeader>
-
+    <Sidebar>
       <SidebarContent className="gap-0">
         {navigation.map((group) => (
           <SidebarGroup key={group.label} className="py-1.5">
