@@ -59,6 +59,12 @@ service KnowledgeService {
   rpc GetProjectContext(GetProjectContextRequest) returns (ProjectContext);
   rpc GetKnowledgeStats(GetKnowledgeStatsRequest) returns (KnowledgeStats);
 
+  // --- Code browser ---------------------------------------------------------
+  // The whole tree at the scanned commit, cached per scan.
+  rpc GetRepoTree(GetRepoTreeRequest) returns (RepoTree);
+  // One file's text at the scanned commit (GitHub contents API, cached).
+  rpc GetRepoFile(GetRepoFileRequest) returns (RepoFile);
+
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (KnowledgeSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (KnowledgeSettings);
@@ -883,6 +889,51 @@ message ProjectContext {
   MaturityScore maturity = 12;
   ProjectConfig config = 13;
   repeated Dependency dependencies = 14;
+}
+
+// ---------------------------------------------------------------------------
+// Code browser
+// ---------------------------------------------------------------------------
+
+message GetRepoTreeRequest {
+  string project_id = 1;
+}
+
+message RepoTreeEntry {
+  string path = 1;
+  string name = 2;
+  bool is_dir = 3;
+  uint64 size = 4;
+  // Lowercase language id from the extension, e.g. "typescript"; empty when unknown.
+  string language = 5;
+}
+
+message RepoTree {
+  string project_id = 1;
+  string commit_sha = 2;
+  repeated RepoTreeEntry entries = 3;
+  // GitHub truncated the recursive tree (very large repositories).
+  bool truncated = 4;
+}
+
+message GetRepoFileRequest {
+  string project_id = 1;
+  string path = 2;
+}
+
+message RepoFile {
+  string path = 1;
+  string commit_sha = 2;
+  // UTF-8 text. Empty when binary.
+  string content = 3;
+  bool binary = 4;
+  // Content was cut at the size limit.
+  bool truncated = 5;
+  uint64 size = 6;
+  string language = 7;
+  string html_url = 8;
+  // Ids of facts whose source_path is this file.
+  repeated string fact_ids = 9;
 }
 
 message GetKnowledgeStatsRequest {}

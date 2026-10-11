@@ -546,3 +546,85 @@ Generated content uses the project's own names (repo name, service names,
 detected port) and the negotiated parameters (region, runtime). Files that
 already exist in the repository are generated with `replaces_existing=true`
 and the PR step writes them only when the option says so.
+
+## 15. Code browser (knowledge)
+
+`GetRepoTree` returns every entry of the repository at the scanned commit
+(from the GitHub recursive tree, cached per `(project, commit)` in the
+`repo_trees` table; `truncated` when GitHub truncated it). `GetRepoFile`
+returns one file's text (contents API, raw media type, cached in
+`repo_files` by `(project, commit, path)`; 1 MiB limit → `truncated`; binary
+detection by NUL bytes / known extensions → `binary=true`, empty content;
+`language` from the extension table in `crates/analyzer`). Paths are
+validated (no `..`, no leading `/`). Secret-looking files (`.env`,
+`*.pem`, `*.key`, `id_rsa*`) are refused with `PERMISSION_DENIED` — the
+platform never displays secrets even when the repository contains them.
+
+Routes: `GET /projects/{id}/tree`, `GET /projects/{id}/file?path=<path>`.
+Web: `/projects/:id/code` and `/projects/:id/code/*path` — a GitHub-like
+tree (directories first, lazy-expanded, keyboard navigable) and a file view
+(line numbers, mono, wrap off, language caption, "Open on GitHub", facts
+detected from this file listed above the code). Diagram nodes and facts link
+here by path.
+
+## 16. Diagrams (intelligence)
+
+A `Diagram` is a `DiagramSpec` (groups, nodes, edges — the single source of
+truth for rendering) plus the Mermaid rendered from it. Generation is
+**evidence-based like gitdiagram, deterministic by default**: the
+knowledge graph (nodes, valid edges, facts), the repo tree (`GetRepoTree`)
+and a bounded sample of key files (entry points, routers, manifests via
+`GetRepoFile`) produce the spec; nodes carry the repository `path` that
+implements them and edges carry `evidence_path` (the file that shows the
+call) or are `dashed` when inferred. When `ANTHROPIC_API_KEY` is set and the
+reasoner is `claude`, the reasoner writes the `explanation` and may rename
+labels / regroup nodes but can only *remove* edges, never add unsupported
+ones. Limits: 34 nodes, 48 edges, 3–6 groups (split into overview + detail
+beyond that).
+
+Kinds and what they read:
+
+| kind | built from |
+|---|---|
+| `architecture` | graph services/libraries/datastores/external APIs + their edges; groups = top-level directories or workspace members |
+| `high_level` | actors (users, CI, GitHub) → product → external systems; ≤ 9 nodes |
+| `data_flow` | datastores, queues, services with read/write/publish edges |
+| `deployment` | environments, container images, infrastructure nodes, pipelines (`DEPLOYED_TO`, `PROVISIONS`, `RELEASES`) |
+| `dependency` | packages by ecosystem with `DEPENDS_ON` fan-in |
+| `sequence` | the principal workflow: actor → entry point → … → datastore → returns |
+| `module_map` | directories/packages as a tree from the repo tree |
+| `db_schema` | tables/columns from migrations and ORM models found in the scan |
+| `custom` | the prompt (reasoner) or imported Mermaid |
+
+Mermaid output: `flowchart LR|TB` with `subgraph` per group, node shapes
+by kind (`[(db)]` for datastores, `([actor])`, `[[infra]]`, `>external]`),
+`-.->` for dashed edges, `click <id> "/projects/<id>/code/<path>"` for nodes
+with a path, and `%% evidence: <path>` comments per edge. `UpdateDiagram`
+with `mermaid` makes the Mermaid source authoritative (`source="mermaid"`);
+the spec is kept for the editorial renderer but marked stale in the UI.
+
+Routes: `GET /projects/{id}/diagrams`, `POST /projects/{id}/diagrams {kind, prompt?}`,
+`GET /diagrams/{id}`, `PATCH /diagrams/{id} {title?, spec?, mermaid?}`,
+`DELETE /diagrams/{id}`.
+
+## 17. Editorial diagram renderer (web)
+
+`web/src/features/diagrams/components/editorial-canvas` renders a
+`DiagramSpec` as inline SVG in the spirit of `cathrynlavery/diagram-design`
+(`~/.claude/skills/diagram-design`: style-guide.md, output-spec.md,
+type-architecture.md, type-high-level.md, type-data-flow.md,
+type-deployment.md, type-dependency.md, semantic-patterns.md): hairline
+strokes, no shadows or gradients, the project's own tokens (brand accent
+≤ 5 placements, semantic colours only for state), Geist for labels and
+Geist Mono for captions/paths, 8 px grid, groups as tinted rounded regions
+with a small-caps label, nodes as 6 px-radius cards with a kind icon
+(lucide) and caption, edges as orthogonal-ish routed paths with open
+arrowheads and label pills, dashed for inferred, a legend only when more
+than one edge style appears. Layout via `@dagrejs/dagre` with compound
+groups; `LR` default, `TB` for sequence/module maps. Interactions: hover
+highlights a node's edges, click opens the code browser at `node.path`,
+⌘-scroll zoom and drag pan, fit-to-view, light/dark via tokens. Export:
+SVG (serialised with inlined computed styles) and PNG (2× canvas). The
+Mermaid tab renders the diagram's `mermaid` with `mermaid` (lazy chunk,
+theme variables mapped from the tokens) and offers an editor with live
+preview, syntax errors shown inline, and Save (`PATCH … {mermaid}`).

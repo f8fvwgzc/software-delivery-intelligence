@@ -35,6 +35,15 @@ service IntelligenceService {
 
   rpc GetIntelligenceStats(GetIntelligenceStatsRequest) returns (IntelligenceStats);
 
+  // --- Diagrams -------------------------------------------------------------
+  // Builds a diagram spec (and its Mermaid) from the knowledge graph, tree and key files.
+  rpc GenerateDiagram(GenerateDiagramRequest) returns (Diagram);
+  rpc ListDiagrams(ListDiagramsRequest) returns (ListDiagramsResponse);
+  rpc GetDiagram(GetDiagramRequest) returns (Diagram);
+  // User edits: title, spec or Mermaid source. Bumps the revision.
+  rpc UpdateDiagram(UpdateDiagramRequest) returns (Diagram);
+  rpc DeleteDiagram(DeleteDiagramRequest) returns (DeleteDiagramResponse);
+
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (IntelligenceSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
@@ -373,6 +382,127 @@ message ListDocumentsResponse {
 message GetDocumentRequest {
   string id = 1;
 }
+
+// ---------------------------------------------------------------------------
+// Diagrams (CONTRACT.md §16)
+// ---------------------------------------------------------------------------
+
+enum DiagramKind {
+  DIAGRAM_KIND_UNSPECIFIED = 0;
+  // Components, subsystems and the calls between them (the gitdiagram view).
+  DIAGRAM_KIND_ARCHITECTURE = 1;
+  // Actors, product, and the few external systems; one screen.
+  DIAGRAM_KIND_HIGH_LEVEL = 2;
+  DIAGRAM_KIND_DATA_FLOW = 3;
+  // Where things run: environments, hosts, images, ports.
+  DIAGRAM_KIND_DEPLOYMENT = 4;
+  DIAGRAM_KIND_DEPENDENCY = 5;
+  // The principal workflow as a sequence of calls.
+  DIAGRAM_KIND_SEQUENCE = 6;
+  // Directories and packages as a tree.
+  DIAGRAM_KIND_MODULE_MAP = 7;
+  DIAGRAM_KIND_DB_SCHEMA = 8;
+  // Built from a free-text prompt (reasoner) or imported Mermaid.
+  DIAGRAM_KIND_CUSTOM = 9;
+}
+
+message DiagramGroup {
+  string id = 1;
+  string label = 2;
+  string description = 3;
+  // Repository directory the group stands for, when there is one.
+  string path = 4;
+}
+
+message DiagramNode {
+  string id = 1;
+  string label = 2;
+  // "actor" | "service" | "module" | "ui" | "datastore" | "queue" | "external" | "infra" | "job"
+  string kind = 3;
+  string group_id = 4;
+  // Repository path the node stands for; the web app links it to the code browser.
+  string path = 5;
+  string description = 6;
+  // Short type caption under the label, e.g. "axum", "PostgreSQL".
+  string caption = 7;
+}
+
+message DiagramEdge {
+  string id = 1;
+  string source = 2;
+  string target = 3;
+  // 1–3 words, e.g. "calls", "reads", "publishes".
+  string label = 4;
+  // "call" | "data" | "async" | "returns" | "contains"
+  string style = 5;
+  // Optional or unverified relationship.
+  bool dashed = 6;
+  // File that shows the relationship; empty when inferred.
+  string evidence_path = 7;
+}
+
+message DiagramSpec {
+  // "LR" | "TB"
+  string direction = 1;
+  repeated DiagramGroup groups = 2;
+  repeated DiagramNode nodes = 3;
+  repeated DiagramEdge edges = 4;
+}
+
+message Diagram {
+  string id = 1;
+  string project_id = 2;
+  DiagramKind kind = 3;
+  string title = 4;
+  // 60–150 words: what the diagram shows and its evidence limits.
+  string explanation = 5;
+  DiagramSpec spec = 6;
+  // Mermaid rendered from the spec, or the user's edited source.
+  string mermaid = 7;
+  // "generated" | "edited" | "mermaid"  (mermaid = the Mermaid source is authoritative)
+  string source = 8;
+  string commit_sha = 9;
+  uint32 revision = 10;
+  // "heuristic" | "claude"
+  string reasoner = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message GenerateDiagramRequest {
+  string project_id = 1;
+  DiagramKind kind = 2;
+  // Free text for CUSTOM, or a focus hint ("the payment flow") for other kinds.
+  string prompt = 3;
+}
+
+message ListDiagramsRequest {
+  string project_id = 1;
+}
+
+message ListDiagramsResponse {
+  // Spec and mermaid are omitted in list responses.
+  repeated Diagram diagrams = 1;
+}
+
+message GetDiagramRequest {
+  string id = 1;
+}
+
+message UpdateDiagramRequest {
+  string id = 1;
+  string title = 2;
+  // When set, replaces the spec and regenerates the Mermaid (source = "edited").
+  DiagramSpec spec = 3;
+  // When set, replaces the Mermaid source (source = "mermaid"); the spec is kept as is.
+  string mermaid = 4;
+}
+
+message DeleteDiagramRequest {
+  string id = 1;
+}
+
+message DeleteDiagramResponse {}
 
 // Ranking defaults and the reasoner. Changed from the settings page.
 message IntelligenceSettings {
