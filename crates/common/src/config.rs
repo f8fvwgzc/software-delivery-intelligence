@@ -44,6 +44,7 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://sdi:sdi@127.0.0.1:5440/sdi";
 pub const DEFAULT_KNOWLEDGE_URL: &str = "http://127.0.0.1:50051";
 pub const DEFAULT_INTELLIGENCE_URL: &str = "http://127.0.0.1:50052";
 pub const DEFAULT_EXECUTION_URL: &str = "http://127.0.0.1:50053";
+pub const DEFAULT_IDENTITY_URL: &str = "http://127.0.0.1:50054";
 
 pub fn database_url() -> String {
     env_or("DATABASE_URL", DEFAULT_DATABASE_URL)
@@ -59,4 +60,8 @@ pub fn intelligence_url() -> String {
 
 pub fn execution_url() -> String {
     env_or("EXECUTION_GRPC_URL", DEFAULT_EXECUTION_URL)
+}
+
+pub fn identity_url() -> String {
+    env_or("IDENTITY_GRPC_URL", DEFAULT_IDENTITY_URL)
 }

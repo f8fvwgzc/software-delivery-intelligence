@@ -24,3 +24,9 @@ pub mod execution {
         tonic::include_proto!("sdi.execution.v1");
     }
 }
+
+pub mod identity {
+    pub mod v1 {
+        tonic::include_proto!("sdi.identity.v1");
+    }
+}

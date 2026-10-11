@@ -700,3 +700,92 @@ SVG (serialised with the tokens resolved to the current theme) and PNG
 primary/secondary/tertiary are the first three tints over the
 background) and offers an editor with live preview, syntax errors shown
 inline, and Save (`PATCH … {mermaid}`).
+
+## 18. Identity, workspaces and tenancy
+
+Identity is GitHub. There are no SDI passwords, no separate employee
+directory and no way to grant someone more than GitHub already grants them.
+
+- **Sign-in**: GitHub OAuth (`read:user user:email`; for the personal
+  workspace also `repo` read via the OAuth grant). A session is an opaque
+  token in an `httpOnly; Secure; SameSite=Lax` cookie `sdi_session`, 30
+  days, revocable.
+- **Organisations**: install the **SDI GitHub App** (permissions:
+  `contents:read`, `metadata:read`, `actions:read`, `deployments:read`,
+  `pull_requests:write` (only used by the `github` adapter), `members:read`;
+  events `installation`, `installation_repositories`, `push`,
+  `pull_request`, `member`, `team`). One installation = one workspace of
+  kind `organization`. GitHub Enterprise Server works through a
+  per-installation `api_base_url`.
+- **Projects** come only from the installation's repository selection
+  (`ListGithubRepos` lists that set); personal workspaces list the user's
+  own repositories.
+- **Membership** is synced from GitHub org membership and teams
+  (`SyncMembers`, webhooks `member`/`team`, and lazily when a user opens a
+  workspace they are not yet a member of): org `owner` → `OWNER`; a member
+  of a team named `sdi-admins` → `ADMIN`; `sdi-approvers` → `APPROVER`;
+  other org members → `MEMBER`; outside collaborators → `VIEWER`. An admin
+  may set `override_role` **lower** than the derived role, never higher.
+  Losing org membership removes access at the next request.
+- **Authorisation**: the gateway resolves the cookie + the `X-Sdi-Workspace`
+  header (or `?workspace=`) through `Identity.Authorize` (cached 60 s) and
+  forwards `x-sdi-user`, `x-sdi-workspace`, `x-sdi-role` as gRPC metadata.
+  Every service reads them with a tonic interceptor into a `Principal`
+  extension; **every repository function takes `workspace_id`** and every
+  tenant table has a `workspace_id uuid not null` column with an index;
+  cross-workspace reads are impossible by construction (ids alone never
+  address a row). Role checks: viewer = GET only; member = connect/scan/
+  propose/negotiate/documents/diagrams/dry-run executions; approver =
+  decide approvals, docker/github executions, grants; admin = policies,
+  settings, members, data controls; owner = delete workspace.
+- **Service-to-service** calls (intelligence → knowledge/execution,
+  execution → knowledge) forward the same metadata unchanged. Internal
+  jobs (webhook-triggered rescans) run with `x-sdi-user: system`.
+- Routes: `GET /auth/login?returnTo=` (302 to GitHub), `GET /auth/callback`
+  (sets the cookie, 302 to `returnTo`), `POST /auth/logout`, `GET /auth/me`
+  (`{user, workspaces}` or 401), `GET /workspaces`, `GET /workspaces/{id}`,
+  `GET /workspaces/{id}/members`, `PATCH /workspaces/{id}/members/{userId}
+  {overrideRole}`, `POST /workspaces/{id}/members/sync`,
+  `GET /github/app/install-url`, `GET /github/app/setup?installation_id=`
+  (post-install redirect), `POST /webhooks/github` (HMAC `X-Hub-Signature-256`
+  verified, no session), `GET /workspaces/{id}/audit?actionPrefix=&before=&limit=`,
+  `GET/PATCH /workspaces/{id}/data-controls`, `PUT /workspaces/{id}/data-controls/reasoner-key {apiKey}`,
+  `POST /workspaces/{id}/data/export` (JSON archive of everything stored
+  for the workspace), `POST /workspaces/{id}/data/purge-code-cache`,
+  `DELETE /workspaces/{id}` (owner; everything).
+  All existing `/api/v1/*` routes require a session and a workspace; the
+  SSE streams are filtered to the workspace.
+- Environment: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`,
+  `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM, base64 allowed),
+  `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `SDI_SESSION_SECRET` (32+ bytes,
+  signs session tokens and encrypts stored keys), `SDI_PUBLIC_URL`,
+  `IDENTITY_GRPC_URL` (`http://127.0.0.1:50054`). **Dev mode**: when the
+  OAuth variables are absent and `SDI_DEV_LOGIN=1`, `GET /auth/login`
+  creates a local session for the `GITHUB_TOKEN` account with a personal
+  workspace, so `make dev` keeps working without registering an app.
+
+## 19. Trust: what SDI stores and never does
+
+The product's claim is "we read your repository to help you deliver it;
+we do not keep your code, train on it or move it anywhere you did not
+choose". The architecture has to make that checkable:
+
+| What | Where | Retention | Can be turned off |
+|---|---|---|---|
+| Facts, graph, understanding, maturity, dependencies, pipeline/deployment metadata | `knowledge` schema, per workspace | until the project is disconnected | no (this is the product) |
+| Semantic chunks + embeddings | `knowledge.chunks` | until disconnect | `minimal_chunks` keeps ≤ 400-char excerpts |
+| Repository tree | `knowledge.repo_trees` | latest commit only | no (needed for the code browser) |
+| File contents (code browser, diagram inputs) | `knowledge.repo_files` | `code_cache`: `none` (never stored) / `session` (default, TTL 24 h, purged on disconnect) / `persistent` | yes |
+| Generated artifacts, proposals, decisions, documents, diagrams | `intelligence` schema | until deleted | n/a |
+| Execution logs and outputs | `execution` schema | until deleted; workdirs removed after each run | n/a |
+| LLM requests | none stored; sent only when `reasoner=claude` with the workspace's own key; payload = structured context (facts, options, spec), never raw files | — | yes (default off) |
+| Audit entries | `identity.audit` | `audit_retention_days` (default 365) | no |
+| GitHub tokens | installation tokens are minted per request and cached ≤ 55 min in memory; OAuth tokens encrypted at rest with `SDI_SESSION_SECRET` | session lifetime | — |
+
+Guarantees enforced in code: secrets-looking paths are never read (§15);
+no third-party telemetry; exports are complete (`data/export`) and deletes
+are real (`DELETE /workspaces/{id}` cascades every schema and is audited);
+self-hosting is a first-class path (`make up`) so an organisation can run
+SDI inside its own network. `TRUST.md` and `PRIVACY.md` at the repository
+root state this in plain language and point at the tables above; the
+product shows the same table on the Data & privacy page.

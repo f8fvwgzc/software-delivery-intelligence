@@ -1,0 +1,308 @@
+syntax = "proto3";
+
+package sdi.identity.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Who is calling, which workspace they are in, and what they may do.
+// Identity is GitHub: users sign in with GitHub OAuth, organisations
+// install the SDI GitHub App. A workspace is one installation (or a
+// user's personal account). Membership and roles are derived from GitHub
+// and can only be narrowed here, never widened.
+service IdentityService {
+  // --- Sessions (GitHub OAuth) ---------------------------------------------
+  rpc BeginLogin(BeginLoginRequest) returns (BeginLoginResponse);
+  rpc CompleteLogin(CompleteLoginRequest) returns (Session);
+  rpc GetSession(GetSessionRequest) returns (Session);
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+
+  // --- Workspaces and membership --------------------------------------------
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // Admin-only narrowing of a member's effective role.
+  rpc SetMemberRole(SetMemberRoleRequest) returns (Member);
+  // Re-reads org members and teams from GitHub.
+  rpc SyncMembers(SyncMembersRequest) returns (ListMembersResponse);
+
+  // --- GitHub App installations ---------------------------------------------
+  // Called by the gateway's webhook handler and the post-install redirect.
+  rpc RecordInstallation(RecordInstallationRequest) returns (Workspace);
+  rpc RemoveInstallation(RemoveInstallationRequest) returns (RemoveInstallationResponse);
+  // Short-lived installation access token for the knowledge/execution services.
+  rpc GetInstallationToken(GetInstallationTokenRequest) returns (InstallationToken);
+
+  // --- Authorisation (service-to-service) -----------------------------------
+  // Resolves a session into a principal for one workspace; the gateway calls
+  // this once per request and forwards the result as gRPC metadata.
+  rpc Authorize(AuthorizeRequest) returns (Principal);
+
+  // --- Audit and data controls ----------------------------------------------
+  rpc RecordAudit(RecordAuditRequest) returns (RecordAuditResponse);
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+  rpc GetDataControls(GetDataControlsRequest) returns (DataControls);
+  rpc UpdateDataControls(UpdateDataControlsRequest) returns (DataControls);
+  // Stores a workspace-owned LLM key (encrypted at rest); never returned.
+  rpc SetReasonerKey(SetReasonerKeyRequest) returns (DataControls);
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+message BeginLoginRequest {
+  // Where to send the user after login, validated against the app origin.
+  string return_to = 1;
+}
+
+message BeginLoginResponse {
+  // GitHub authorize URL with a signed state.
+  string authorize_url = 1;
+}
+
+message CompleteLoginRequest {
+  string code = 1;
+  string state = 2;
+}
+
+message User {
+  string id = 1;
+  int64 github_id = 2;
+  string login = 3;
+  string name = 4;
+  string avatar_url = 5;
+  string email = 6;
+  // GitHub host the user signed in to ("github.com" or a GHES host).
+  string github_host = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message Session {
+  // Opaque token stored in the httpOnly cookie.
+  string token = 1;
+  User user = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  string return_to = 4;
+}
+
+message GetSessionRequest {
+  string token = 1;
+}
+
+message RevokeSessionRequest {
+  string token = 1;
+}
+
+message RevokeSessionResponse {}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+enum WorkspaceKind {
+  WORKSPACE_KIND_UNSPECIFIED = 0;
+  // The user's own account; repos from their personal OAuth grant.
+  WORKSPACE_KIND_PERSONAL = 1;
+  // A GitHub organisation (or enterprise org) with the app installed.
+  WORKSPACE_KIND_ORGANIZATION = 2;
+}
+
+// Ordered: each role includes the ones below it.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Read everything, nothing else.
+  ROLE_VIEWER = 1;
+  // Connect projects, propose, negotiate, run dry runs.
+  ROLE_MEMBER = 2;
+  // Decide approvals, run docker/github adapters.
+  ROLE_APPROVER = 3;
+  // Policies, settings, members, data controls.
+  ROLE_ADMIN = 4;
+  // Installed the app / owns the account.
+  ROLE_OWNER = 5;
+}
+
+message Workspace {
+  string id = 1;
+  WorkspaceKind kind = 2;
+  // GitHub login of the org or user.
+  string slug = 3;
+  string name = 4;
+  string avatar_url = 5;
+  string github_host = 6;
+  // 0 for personal workspaces.
+  int64 installation_id = 7;
+  // Repositories the installation grants ("all" or "selected").
+  string repository_selection = 8;
+  // The caller's effective role.
+  Role my_role = 9;
+  uint32 member_count = 10;
+  uint32 project_count = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message ListWorkspacesRequest {
+  string user_id = 1;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+message GetWorkspaceRequest {
+  string id = 1;
+}
+
+message Member {
+  User user = 1;
+  // From GitHub: "owner" | "member" | "outside_collaborator".
+  string github_role = 2;
+  repeated string teams = 3;
+  // Role implied by GitHub.
+  Role derived_role = 4;
+  // Admin override, never above derived_role. UNSPECIFIED = no override.
+  Role override_role = 5;
+  Role effective_role = 6;
+  google.protobuf.Timestamp synced_at = 7;
+}
+
+message ListMembersRequest {
+  string workspace_id = 1;
+}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+  google.protobuf.Timestamp synced_at = 2;
+}
+
+message SetMemberRoleRequest {
+  string workspace_id = 1;
+  string user_id = 2;
+  Role override_role = 3;
+}
+
+message SyncMembersRequest {
+  string workspace_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Installations
+// ---------------------------------------------------------------------------
+
+message RecordInstallationRequest {
+  int64 installation_id = 1;
+  string account_login = 2;
+  // "Organization" | "User"
+  string account_type = 3;
+  string account_avatar_url = 4;
+  string github_host = 5;
+  string repository_selection = 6;
+  // User who completed the install flow, if known.
+  string installed_by_user_id = 7;
+}
+
+message RemoveInstallationRequest {
+  int64 installation_id = 1;
+}
+
+message RemoveInstallationResponse {}
+
+message GetInstallationTokenRequest {
+  string workspace_id = 1;
+}
+
+message InstallationToken {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  // API base, e.g. "https://api.github.com" or "https://ghe.example.com/api/v3".
+  string api_base_url = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Authorisation
+// ---------------------------------------------------------------------------
+
+message AuthorizeRequest {
+  string session_token = 1;
+  string workspace_id = 2;
+}
+
+// Forwarded by the gateway as gRPC metadata on every call:
+//   x-sdi-user: user id · x-sdi-workspace: workspace id · x-sdi-role: role name
+message Principal {
+  User user = 1;
+  Workspace workspace = 2;
+  Role role = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Audit and data controls
+// ---------------------------------------------------------------------------
+
+message AuditEntry {
+  string id = 1;
+  string workspace_id = 2;
+  string user_id = 3;
+  string user_login = 4;
+  // "project.connect" | "scan.start" | "proposal.accept" | "execution.start" | "approval.decide" | "file.read" | "settings.update" | "data.export" | "data.purge" | ...
+  string action = 5;
+  string entity = 6;
+  string entity_id = 7;
+  string detail = 8;
+  string request_id = 9;
+  string ip = 10;
+  google.protobuf.Timestamp at = 11;
+}
+
+message RecordAuditRequest {
+  AuditEntry entry = 1;
+}
+
+message RecordAuditResponse {}
+
+message ListAuditRequest {
+  string workspace_id = 1;
+  string action_prefix = 2;
+  uint32 limit = 3;
+  // Cursor: entries strictly before this timestamp.
+  google.protobuf.Timestamp before = 4;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+}
+
+// Per-workspace data handling. The defaults are the most private ones.
+message DataControls {
+  string workspace_id = 1;
+  // "none": file contents are never stored (fetched on demand, diagrams read
+  // them in memory); "session": cached per commit and purged after
+  // `code_cache_ttl_hours` or on disconnect (default); "persistent".
+  string code_cache = 2;
+  uint32 code_cache_ttl_hours = 3;
+  // Semantic chunks keep only short excerpts (never whole files) when true.
+  bool minimal_chunks = 4;
+  // "off" (default) | "claude". Only "claude" with a workspace key sends
+  // structured context (never raw files) to the model API.
+  string reasoner = 5;
+  bool reasoner_key_configured = 6;
+  // Last 4 characters of the stored key, for recognition only.
+  string reasoner_key_hint = 7;
+  // Days to keep audit entries. 0 keeps forever.
+  uint32 audit_retention_days = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message GetDataControlsRequest {
+  string workspace_id = 1;
+}
+
+message UpdateDataControlsRequest {
+  DataControls controls = 1;
+}
+
+message SetReasonerKeyRequest {
+  string workspace_id = 1;
+  // Empty removes the key.
+  string api_key = 2;
+}

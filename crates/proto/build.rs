@@ -1,10 +1,11 @@
 use std::path::Path;
 
-const PROTOS: [&str; 4] = [
+const PROTOS: [&str; 5] = [
     "sdi/common/v1/common.proto",
     "sdi/knowledge/v1/knowledge.proto",
     "sdi/intelligence/v1/intelligence.proto",
     "sdi/execution/v1/execution.proto",
+    "sdi/identity/v1/identity.proto",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
