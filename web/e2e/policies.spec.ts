@@ -3,9 +3,10 @@
  * default that must not be relaxed shows its locked state and the gateway
  * refuses to change it (CONTRACT.md §5.2).
  */
-import { expect, test, type APIRequestContext } from '@playwright/test'
+import type { APIRequestContext } from '@playwright/test'
 
 import { testIds } from '../src/test-ids'
+import { expect, test } from './fixtures'
 import { ApiError, listPolicies, updatePolicy, type Policy, type PolicyDecision } from './helpers/api'
 import { isApiReachable, newApiContext, watchConsole } from './helpers/stack'
 

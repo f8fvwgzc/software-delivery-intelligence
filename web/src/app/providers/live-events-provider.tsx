@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 
+import { useAuth } from '@/features/auth/lib/auth-context'
 import type { components } from '@/lib/api/schema'
 import { liveConnection } from '@/lib/live/connection-store'
 import { useEventSource } from '@/lib/live/use-event-source'
@@ -9,6 +10,8 @@ import { LiveEventsContext } from '@/lib/live/use-live-events'
 type PlatformEvent = components['schemas']['PlatformEvent']
 
 const STREAM_URL = '/api/v1/events/stream'
+/** The stream is per workspace: a different id is a different URL, so the hook reopens it. */
+const streamUrl = (workspaceId: string) => `${STREAM_URL}?workspace=${encodeURIComponent(workspaceId)}`
 const DEBOUNCE_MS = 150
 /** The platform stream never ends; nothing closes it but unmount. */
 const NO_END_EVENTS: readonly string[] = []
@@ -40,7 +43,7 @@ const ALL_FAMILIES: readonly (readonly string[])[] = [
 ]
 
 /**
- * Opens the platform event stream once per tab and turns every event into
+ * Opens the platform event stream once per tab and workspace and turns every event into
  * a debounced invalidation of the affected query families. While the stream
  * is up, feature queries stop polling (they read `liveConnection`); when it
  * drops they resume, and when it reconnects everything is refetched once to
@@ -48,6 +51,7 @@ const ALL_FAMILIES: readonly (readonly string[])[] = [
  */
 export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
+  const { currentWorkspace } = useAuth()
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const wasConnected = useRef(false)
 
@@ -65,7 +69,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   }
 
   useEventSource<PlatformEvent>({
-    url: STREAM_URL,
+    url: streamUrl(currentWorkspace.id),
     endEvents: NO_END_EVENTS,
     onMessage: (event) => {
       liveConnection.markEvent(Date.now())

@@ -3,8 +3,9 @@
  * alone (no gateway) the data regions fall back to their ErrorState and
  * that is tolerated; against a running stack every PageHeader must show.
  */
-import { expect, test, type APIRequestContext } from '@playwright/test'
+import type { APIRequestContext } from '@playwright/test'
 
+import { expect, test } from './fixtures'
 import { listProjects, type Project } from './helpers/api'
 import { expectPageFrame, isApiReachable, newApiContext, watchConsole } from './helpers/stack'
 
@@ -20,6 +21,9 @@ const ROUTES = [
   { path: '/knowledge/search', title: 'Search' },
   { path: '/policies', title: 'Policies' },
   { path: '/system', title: 'System' },
+  { path: '/workspace/members', title: 'Members' },
+  { path: '/workspace/audit', title: 'Audit' },
+  { path: '/workspace/data', title: 'Data & privacy' },
 ] as const
 
 const PROJECT_ROUTES = [

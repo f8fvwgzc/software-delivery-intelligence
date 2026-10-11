@@ -9,14 +9,17 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { useAuth } from '@/features/auth/lib/auth-context'
 
 import { ApprovalsBadge } from './approvals-badge'
-import { navigation, type NavItem } from './navigation'
+import { visibleNavigation, type NavItem } from './navigation'
 import { SidebarStatus } from './sidebar-status'
+import { WorkspaceSwitcher } from './workspace-switcher'
 
 function isActive(item: NavItem, pathname: string) {
   if (item.to === '/') return pathname === '/'
@@ -25,11 +28,16 @@ function isActive(item: NavItem, pathname: string) {
 
 export function AppSidebar() {
   const { pathname } = useLocation()
+  const { currentWorkspace } = useAuth()
+  const groups = visibleNavigation(currentWorkspace.myRole)
 
   return (
     <Sidebar collapsible="none" className="sticky top-0 h-svh shrink-0 self-start border-r border-sidebar-border">
+      <SidebarHeader className="border-b border-sidebar-border">
+        <WorkspaceSwitcher />
+      </SidebarHeader>
       <SidebarContent className="gap-0">
-        {navigation.map((group) => (
+        {groups.map((group) => (
           <SidebarGroup key={group.label} className="py-1.5">
             <SidebarGroupLabel className="text-2xs tracking-wide uppercase">{group.label}</SidebarGroupLabel>
             <SidebarGroupContent>

@@ -4,8 +4,9 @@
  * report so it can be worked down without blocking the suite.
  */
 import { AxeBuilder } from '@axe-core/playwright'
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import type { APIRequestContext, Page } from '@playwright/test'
 
+import { expect, test } from './fixtures'
 import {
   cancelExecutionQuietly,
   createDryRun,

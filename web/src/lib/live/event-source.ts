@@ -15,6 +15,8 @@
  *   returned `close()` is called from a React cleanup.
  */
 
+import { withWorkspaceParam } from '@/lib/workspace-store'
+
 export type StreamState = 'connecting' | 'open' | 'reconnecting' | 'paused' | 'closed'
 
 export interface EventSourceHandlers {
@@ -95,7 +97,8 @@ export function openEventSource(options: EventSourceOptions, handlers: EventSour
     clearReconnect()
     setState(attempt === 0 ? 'connecting' : 'reconnecting')
 
-    const next = new EventSource(url)
+    // EventSource cannot send headers; the workspace travels as a query parameter.
+    const next = new EventSource(withWorkspaceParam(url))
     source = next
 
     next.onopen = () => {

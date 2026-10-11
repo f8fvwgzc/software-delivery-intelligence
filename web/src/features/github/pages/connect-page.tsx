@@ -6,15 +6,18 @@ import { useNavigate } from 'react-router'
 import { routes } from '@/app/router/routes'
 import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader, Section } from '@/components/shared/page'
+import { useAuth } from '@/features/auth/lib/auth-context'
 
 import { useConnectRepository } from '../api/mutations'
 import { githubQueries } from '../api/queries'
 import type { GithubRepo } from '../api/types'
 import { AccountCard, AccountCardSkeleton } from '../components/account-card'
+import { InstallationCard } from '../components/installation-card'
 import { RepoSearch } from '../components/repo-search'
 import { RepoTable, RepoTableSkeleton } from '../components/repo-table'
 import { TOKEN_ENV_VAR } from '../lib/labels'
 
+/** Personal: the OAuth account behind the session. Organisation: the installation, no account to show. */
 function AccountPanel() {
   const { data } = useSuspenseQuery(githubQueries.account())
   return <AccountCard account={data} />
@@ -29,6 +32,7 @@ interface RepoRowsPanelProps {
 /** The list itself; only mounted once the account confirms a token exists. */
 function RepoRowsPanel({ query, stale, onClearQuery }: RepoRowsPanelProps) {
   const navigate = useNavigate()
+  const { currentWorkspace } = useAuth()
   const { data: repos } = useSuspenseQuery(githubQueries.repos(query))
   const connect = useConnectRepository()
 
@@ -45,6 +49,7 @@ function RepoRowsPanel({ query, stale, onClearQuery }: RepoRowsPanelProps) {
       query={query}
       stale={stale}
       connectingFullName={connect.isPending ? connect.variables.repoFullName : null}
+      source={currentWorkspace.kind === 'organization' ? 'installation' : 'token'}
       onConnect={onConnect}
       onClearQuery={onClearQuery}
     />
@@ -53,9 +58,11 @@ function RepoRowsPanel({ query, stale, onClearQuery }: RepoRowsPanelProps) {
 
 /** Gate on the account so a missing token explains itself instead of failing the list. */
 function RepoListPanel(props: RepoRowsPanelProps) {
+  const { currentWorkspace } = useAuth()
   const { data: account } = useSuspenseQuery(githubQueries.account())
 
-  if (!account.tokenConfigured) {
+  // An installation always has a token: it is minted per request (CONTRACT.md §18).
+  if (!account.tokenConfigured && currentWorkspace.kind !== 'organization') {
     return (
       <EmptyState
         icon={KeyRoundIcon}
@@ -73,6 +80,8 @@ function RepoListPanel(props: RepoRowsPanelProps) {
 }
 
 export default function ConnectPage() {
+  const { currentWorkspace } = useAuth()
+  const organisation = currentWorkspace.kind === 'organization'
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query.trim())
   const stale = query.trim() !== deferredQuery
@@ -88,19 +97,31 @@ export default function ConnectPage() {
     <Page>
       <PageHeader
         title="Connect repository"
-        description="Pick a repository the token can see. The first scan starts as soon as it is connected."
+        description={
+          organisation
+            ? `Pick a repository the SDI app is installed on in ${currentWorkspace.name}. The first scan starts as soon as it is connected.`
+            : 'Pick a repository your GitHub account can see. The first scan starts as soon as it is connected.'
+        }
       />
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
         <div className="lg:col-start-2 lg:row-start-1">
-          <QueryBoundary fallback={<AccountCardSkeleton />}>
-            <AccountPanel />
-          </QueryBoundary>
+          {organisation ? (
+            <InstallationCard workspace={currentWorkspace} />
+          ) : (
+            <QueryBoundary fallback={<AccountCardSkeleton />}>
+              <AccountPanel />
+            </QueryBoundary>
+          )}
         </div>
 
         <Section
           title="Repositories"
-          description="Already connected repositories open their project instead."
+          description={
+            organisation
+              ? 'The installation’s selection; change it on GitHub. Already connected repositories open their project instead.'
+              : 'Already connected repositories open their project instead.'
+          }
           className="lg:col-start-1 lg:row-start-1"
         >
           <RepoSearch value={query} onChange={setQuery} />

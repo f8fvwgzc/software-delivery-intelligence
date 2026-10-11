@@ -13,6 +13,7 @@ import {
 } from '@playwright/test'
 
 import { getHealth, getSystemStatus, poll, type SystemStatus } from './api'
+import { signInDev } from './auth'
 
 export const env = {
   /** `SDI_E2E_GITHUB=1`: a real GitHub account is behind the stack. */
@@ -21,17 +22,19 @@ export const env = {
   repo: process.env.SDI_E2E_REPO ?? 'f8fvwgzc/view-engine',
 }
 
-/** An API context for hooks (`beforeAll` has no `request` fixture). */
-export function newApiContext(
+/** An API context for hooks (`beforeAll` has no `request` fixture), signed in when the gateway answers. */
+export async function newApiContext(
   playwright: PlaywrightWorkerArgs['playwright'],
   baseURL: string | undefined,
 ): Promise<APIRequestContext> {
-  return playwright.request.newContext({
+  const context = await playwright.request.newContext({
     baseURL,
     // Proposal generation and scans take longer than Playwright's 30s default.
     timeout: 120_000,
     extraHTTPHeaders: { accept: 'application/json' },
   })
+  await signInDev(context)
+  return context
 }
 
 /** True when the gateway answers `/api/v1/health` with `{"status":"ok"}`. */

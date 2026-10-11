@@ -5,9 +5,10 @@
  * GITHUB_TOKEN that can see SDI_E2E_REPO (default f8fvwgzc/view-engine).
  * The project is reused when it is already connected and never deleted.
  */
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import type { APIRequestContext, Locator, Page } from '@playwright/test'
 
 import { testIds } from '../src/test-ids'
+import { expect, test } from './fixtures'
 import {
   cancelExecutionQuietly,
   getExecution,

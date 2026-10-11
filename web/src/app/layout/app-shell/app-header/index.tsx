@@ -1,6 +1,7 @@
 import { Breadcrumbs } from './breadcrumbs'
 import { CommandMenu } from './command-menu'
 import { ThemeToggle } from './theme-toggle'
+import { UserMenu } from './user-menu'
 
 /** The sidebar has no toggle button; ⌘B and the rail on its edge collapse it. */
 export function AppHeader() {
@@ -10,6 +11,7 @@ export function AppHeader() {
       <div className="ml-auto flex items-center gap-1">
         <CommandMenu />
         <ThemeToggle />
+        <UserMenu />
       </div>
     </header>
   )

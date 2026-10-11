@@ -36,7 +36,12 @@ export function ErrorState({
   const resolvedTitle =
     title ?? (error instanceof ApiError ? error.title : 'Something went wrong')
   const resolvedDescription =
-    description ?? (error instanceof Error ? error.message : 'An unexpected error occurred.')
+    description ??
+    (error instanceof ApiError && error.requiredRole
+      ? 'Your role in this workspace is lower. Roles come from GitHub; an admin can narrow them, never widen them.'
+      : error instanceof Error
+        ? error.message
+        : 'An unexpected error occurred.')
 
   return (
     <Empty className={cn('rounded-lg border border-destructive/20 bg-destructive/[0.03] py-10', className)}>

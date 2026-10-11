@@ -1,5 +1,6 @@
 /** Every in-app URL is built here, so a path changes in exactly one place. */
 export const routes = {
+  login: () => '/login',
   overview: () => '/',
   connect: () => '/connect',
 
@@ -30,6 +31,10 @@ export const routes = {
   patterns: () => '/knowledge/patterns',
   decisions: () => '/knowledge/decisions',
   search: () => '/knowledge/search',
+
+  members: () => '/workspace/members',
+  audit: () => '/workspace/audit',
+  dataPrivacy: () => '/workspace/data',
 
   policies: () => '/policies',
   system: () => '/system',

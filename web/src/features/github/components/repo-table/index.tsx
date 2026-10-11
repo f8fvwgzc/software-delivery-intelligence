@@ -21,12 +21,14 @@ interface RepoTableProps {
   stale: boolean
   /** `fullName` of the repository being connected, if any. */
   connectingFullName: string | null
+  /** Where the rows come from: the user's OAuth grant or an organisation's installation. */
+  source: 'token' | 'installation'
   onConnect: (repo: GithubRepo) => void
   onClearQuery: () => void
 }
 
 /** Dense repository list: visibility dot, mono name, language, last push, one action. */
-export function RepoTable({ repos, query, stale, connectingFullName, onConnect, onClearQuery }: RepoTableProps) {
+export function RepoTable({ repos, query, stale, connectingFullName, source, onConnect, onClearQuery }: RepoTableProps) {
   if (repos.length === 0 && query) {
     return (
       <EmptyState
@@ -43,7 +45,13 @@ export function RepoTable({ repos, query, stale, connectingFullName, onConnect, 
   }
 
   if (repos.length === 0) {
-    return (
+    return source === 'installation' ? (
+      <EmptyState
+        icon={FolderGitIcon}
+        title="The installation grants no repositories"
+        description="Pick repositories for the SDI app on GitHub; the list follows the installation's selection."
+      />
+    ) : (
       <EmptyState
         icon={FolderGitIcon}
         title="The token can see no repositories"

@@ -2,7 +2,7 @@ import { SearchIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { navigation } from '@/app/layout/app-shell/app-sidebar/navigation'
+import { visibleNavigation } from '@/app/layout/app-shell/app-sidebar/navigation'
 import { Button } from '@/components/ui/button'
 import {
   CommandDialog,
@@ -13,11 +13,14 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { Kbd } from '@/components/ui/kbd'
+import { useAuth } from '@/features/auth/lib/auth-context'
 
 /** ⌘K navigation. Pages only; project-level search lives on the Search page. */
 export function CommandMenu() {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
+  const { currentWorkspace } = useAuth()
+  const groups = visibleNavigation(currentWorkspace.myRole)
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -60,7 +63,7 @@ export function CommandMenu() {
         <CommandInput placeholder="Type a page name…" />
         <CommandList>
           <CommandEmpty>No pages found.</CommandEmpty>
-          {navigation.map((group) => (
+          {groups.map((group) => (
             <CommandGroup key={group.label} heading={group.label}>
               {group.items.map((item) => (
                 <CommandItem key={item.to} value={`${group.label} ${item.label}`} onSelect={() => go(item.to)}>

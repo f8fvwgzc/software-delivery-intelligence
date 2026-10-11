@@ -3,18 +3,23 @@ import {
   BookOpenIcon,
   BoxesIcon,
   CheckSquareIcon,
+  DatabaseIcon,
   FolderGitIcon,
   LayoutDashboardIcon,
   LightbulbIcon,
   PlugIcon,
   ScaleIcon,
+  ScrollTextIcon,
   SearchIcon,
   SettingsIcon,
   ShieldCheckIcon,
+  UsersIcon,
   type LucideIcon,
 } from 'lucide-react'
 
 import { routes } from '@/app/router/routes'
+import type { Role } from '@/features/auth/api/types'
+import { hasRole } from '@/features/auth/lib/roles'
 
 export interface NavItem {
   label: string
@@ -22,6 +27,8 @@ export interface NavItem {
   icon: LucideIcon
   /** Highlight when the URL starts with `to` (not only exact matches). */
   prefix?: boolean
+  /** Hidden below this role; the gateway refuses the calls anyway (CONTRACT.md §18). */
+  minRole?: Role
 }
 
 export interface NavGroup {
@@ -60,6 +67,16 @@ export const navigation: NavGroup[] = [
       { label: 'Policies', to: routes.policies(), icon: ScaleIcon },
       { label: 'System', to: routes.system(), icon: ShieldCheckIcon },
       { label: 'Settings', to: routes.settings(), icon: SettingsIcon },
+      { label: 'Members', to: routes.members(), icon: UsersIcon, minRole: 'admin' },
+      { label: 'Audit', to: routes.audit(), icon: ScrollTextIcon, minRole: 'admin' },
+      { label: 'Data & privacy', to: routes.dataPrivacy(), icon: DatabaseIcon, minRole: 'admin' },
     ],
   },
 ]
+
+/** The groups a user of `role` may see; a group with nothing left is dropped. */
+export function visibleNavigation(role: Role): NavGroup[] {
+  return navigation
+    .map((group) => ({ ...group, items: group.items.filter((item) => !item.minRole || hasRole(role, item.minRole)) }))
+    .filter((group) => group.items.length > 0)
+}
