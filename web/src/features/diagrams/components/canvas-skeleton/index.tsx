@@ -2,7 +2,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
 /** Height shared by the canvas, the Mermaid preview and their skeletons, so switching tabs never jumps. */
-export const CANVAS_HEIGHT_CLASS = 'h-[max(420px,calc(100dvh-19rem))]'
+export const CANVAS_HEIGHT_CLASS = 'h-[max(640px,calc(100dvh-19rem))]'
 
 interface GroupSpec {
   left: number

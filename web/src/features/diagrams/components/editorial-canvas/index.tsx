@@ -73,7 +73,7 @@ export default function EditorialCanvas({ spec, kind, direction, title, onOpenPa
     return { legend, bounds }
   }, [scene, legendItems])
 
-  const { viewport, dragging, fitView, zoomBy, wasPan, pointerHandlers } = useViewport(containerRef, bounds)
+  const { viewport, canvasHeight, dragging, fitView, zoomBy, wasPan, pointerHandlers } = useViewport(containerRef, bounds)
 
   // Hovering a node lights its edges and neighbours and fades everything else.
   const connected = useMemo(() => {
@@ -111,29 +111,32 @@ export default function EditorialCanvas({ spec, kind, direction, title, onOpenPa
   const sceneProps = { markerPrefix, hovered, connected, onHover: setHovered, onOpen: onOpenPath, wasPan }
 
   return (
-    <div ref={containerRef} className={cn('relative size-full overflow-hidden bg-background', className)}>
-      <svg
-        ref={svgRef}
-        className={cn('size-full touch-none select-none outline-none', dragging ? 'cursor-grabbing' : 'cursor-grab')}
-        style={{ fontFamily: 'var(--font-sans)' }}
-        role="img"
-        aria-label={title}
-        {...pointerHandlers}
-      >
-        <title>{title}</title>
-        <Markers prefix={markerPrefix} />
-        <g data-content transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.k})`}>
-          <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} style={{ fill: 'var(--background)' }} />
-          {scene.renderer === 'er' ? (
-            <ErScene layout={scene.layout} {...sceneProps} />
-          ) : scene.renderer === 'sequence' ? (
-            <SequenceScene layout={scene.layout} {...sceneProps} />
-          ) : (
-            <GraphScene layout={scene.layout} {...sceneProps} />
-          )}
-          <Legend layout={legend} bounds={bounds} inset={CANVAS_MARGIN} />
-        </g>
-      </svg>
+    <div className={cn('relative size-full overflow-hidden bg-background', className)}>
+      {/* The pane scrolls vertically; the svg is as tall as the drawing at the current zoom. */}
+      <div ref={containerRef} className="size-full overflow-x-hidden overflow-y-auto">
+        <svg
+          ref={svgRef}
+          className={cn('block w-full touch-pan-y select-none outline-none', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+          style={{ fontFamily: 'var(--font-sans)', height: canvasHeight }}
+          role="img"
+          aria-label={title}
+          {...pointerHandlers}
+        >
+          <title>{title}</title>
+          <Markers prefix={markerPrefix} />
+          <g data-content transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.k})`}>
+            <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} style={{ fill: 'var(--background)' }} />
+            {scene.renderer === 'er' ? (
+              <ErScene layout={scene.layout} {...sceneProps} />
+            ) : scene.renderer === 'sequence' ? (
+              <SequenceScene layout={scene.layout} {...sceneProps} />
+            ) : (
+              <GraphScene layout={scene.layout} {...sceneProps} />
+            )}
+            <Legend layout={legend} bounds={bounds} inset={CANVAS_MARGIN} />
+          </g>
+        </svg>
+      </div>
       <CanvasToolbar
         zoom={viewport.k}
         onZoomIn={() => zoomBy(1.25)}

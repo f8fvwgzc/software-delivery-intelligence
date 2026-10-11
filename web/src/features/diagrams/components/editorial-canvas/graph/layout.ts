@@ -1,13 +1,15 @@
 import { graphlib, layout } from '@dagrejs/dagre'
 
-import type { DiagramEdge, DiagramNode, DiagramSpec } from '../../../api/queries'
+import type { DiagramEdge, DiagramGroup, DiagramNode, DiagramSpec } from '../../../api/queries'
 import { EDGE_STYLE, NODE_SHAPES, edgeStyle, nodeShape, type EdgeStyle, type NodeShape } from '../../../lib/labels'
 import { GROUP_PAD, GROUP_PAD_TOP, type LaidOutGroup } from '../group-region'
 import { NEUTRAL_TINT, groupTints, nodeTint, type Tint } from '../palette'
 import { fitText, linesWidth, textWidth, wrapText, type Font } from '../text'
 import { edgeKey } from '../keys'
 import type { Box, Direction, Point } from '../types'
+import { layoutBands } from './bands'
 import { shapeInset, shapeTopInset } from './node-shape'
+import { routeOrthogonal, type OrthoNode } from './ortho'
 import { routeThroughPoints, type RoutedPath } from './routing'
 
 export const LABEL_FONT: Font = { size: 13, weight: 500 }
@@ -118,133 +120,163 @@ function sizeNode(node: DiagramNode): SizedNode {
   return { node, shape, w, h, lines, sub, inset: { x: insetX, top: shapeTopInset(shape, h) } }
 }
 
+interface Placed {
+  boxes: Map<string, Box>
+  groupBoxes: Map<string, Box>
+  routes: Map<string, RoutedPath>
+  /** Dagre's label positions, when the layout reserved room for them. */
+  labelBoxes: Box[]
+}
+
+interface EdgeEntry {
+  edge: DiagramEdge
+  id: string
+  label: string
+}
+
 /**
- * Compound dagre layout, top-down by default: groups as clusters, nodes
- * sized from their text, edge labels as dagre label dummies so the path
- * passes through them. Dagre's edge points are kept; they already bend
- * around ranks and clusters.
+ * Stacked bands (TB): actors on top, groups in role order, rows of at
+ * most four nodes, orthogonal routing through the channels and corridors
+ * between them (see bands.ts and ortho.ts).
  */
+function placeStacked(nodes: readonly DiagramNode[], groups: readonly DiagramGroup[], edges: readonly DiagramEdge[], sized: ReadonlyMap<string, SizedNode>, entries: readonly EdgeEntry[]): Placed {
+  const bands = layoutBands(nodes, groups, edges, sized)
+  const groupBoxes = new Map<string, Box>()
+  for (const band of bands.bands) for (const placed of band.groups) groupBoxes.set(placed.group.id, placed.box)
+  const orthoNodes = new Map<string, OrthoNode>()
+  for (const [id, box] of bands.boxes) {
+    const size = sized.get(id)
+    if (size) orthoNodes.set(id, { box, shape: size.shape })
+  }
+  const routes = routeOrthogonal(
+    entries.map(({ edge, id, label }) => ({
+      id,
+      source: edge.source,
+      target: edge.target,
+      labelWidth: label ? textWidth(label, EDGE_LABEL_FONT) + EDGE_LABEL_PAD * 2 : 0,
+    })),
+    orthoNodes,
+    bands.rows,
+    [...groupBoxes.values()].map((box) => ({ x: box.x, y: box.y, w: box.w, h: GROUP_PAD_TOP })),
+  )
+  return { boxes: bands.boxes, groupBoxes, routes, labelBoxes: [] }
+}
+
+/**
+ * Compound dagre layout (LR): groups as clusters, edge labels as dagre
+ * label dummies so the path passes through them, dagre's own edge points
+ * kept as rounded polylines.
+ */
+function placeDagre(nodes: readonly DiagramNode[], groups: readonly DiagramGroup[], sized: ReadonlyMap<string, SizedNode>, entries: readonly EdgeEntry[], direction: Direction): Placed {
+  const graph = new graphlib.Graph({ compound: true, multigraph: true })
+  graph.setGraph({ rankdir: direction, compound: true, nodesep: 40, ranksep: 70, edgesep: 20, marginx: 8, marginy: 8 })
+  graph.setDefaultEdgeLabel(() => ({}))
+  const groupIds = new Set(groups.map((group) => group.id))
+  for (const group of groups) graph.setNode(group.id, { label: group.label })
+  for (const node of nodes) {
+    const size = sized.get(node.id)
+    if (!size) continue
+    graph.setNode(node.id, { width: size.w, height: size.h })
+    if (node.groupId && groupIds.has(node.groupId)) graph.setParent(node.id, node.groupId)
+  }
+  for (const { edge, id, label } of entries) {
+    graph.setEdge(
+      edge.source,
+      edge.target,
+      label ? { width: textWidth(label, EDGE_LABEL_FONT) + EDGE_LABEL_PAD * 2, height: EDGE_LABEL_HEIGHT, labelpos: 'c' } : {},
+      id,
+    )
+  }
+  layout(graph)
+
+  const boxes = new Map<string, Box>()
+  for (const node of nodes) {
+    const size = sized.get(node.id)
+    const placed = graph.node(node.id)
+    if (size && placed) boxes.set(node.id, { x: placed.x - size.w / 2, y: placed.y - size.h / 2, w: size.w, h: size.h })
+  }
+  const groupBoxes = new Map<string, Box>()
+  for (const group of groups) {
+    const inner = union(nodes.filter((node) => node.groupId === group.id).flatMap((node) => boxes.get(node.id) ?? []))
+    if (inner) {
+      groupBoxes.set(group.id, { x: inner.x - GROUP_PAD, y: inner.y - GROUP_PAD_TOP, w: inner.w + GROUP_PAD * 2, h: inner.h + GROUP_PAD_TOP + GROUP_PAD })
+    }
+  }
+  const routes = new Map<string, RoutedPath>()
+  const labelBoxes: Box[] = []
+  for (const { edge, id, label } of entries) {
+    const placed = graph.edge(edge.source, edge.target, id) as
+      | { points: Point[]; x?: number; y?: number; width?: number; height?: number }
+      | undefined
+    const source = boxes.get(edge.source)
+    const target = boxes.get(edge.target)
+    const sourceSize = sized.get(edge.source)
+    const targetSize = sized.get(edge.target)
+    if (!placed || !source || !target || !sourceSize || !targetSize) continue
+    const labelAt = label && placed.x !== undefined && placed.y !== undefined ? { x: placed.x, y: placed.y } : null
+    if (labelAt && placed.width && placed.height) {
+      labelBoxes.push({ x: labelAt.x - placed.width / 2, y: labelAt.y - placed.height / 2, w: placed.width, h: placed.height })
+    }
+    routes.set(id, routeThroughPoints(placed.points, { box: source, shape: sourceSize.shape }, { box: target, shape: targetSize.shape }, labelAt))
+  }
+  return { boxes, groupBoxes, routes, labelBoxes }
+}
+
+/** Sizes every node from its text, places nodes and groups by direction, routes and classifies the edges. */
 export function layoutGraph(spec: DiagramSpec, direction: Direction): GraphLayout {
   const nodes = spec.nodes ?? []
   const groups = spec.groups ?? []
   const edges = spec.edges ?? []
   const tints = groupTints(groups)
 
-  const graph = new graphlib.Graph({ compound: true, multigraph: true })
-  graph.setGraph({ rankdir: direction, compound: true, nodesep: 40, ranksep: 70, edgesep: 20, marginx: 8, marginy: 8 })
-  graph.setDefaultEdgeLabel(() => ({}))
-
-  const groupIds = new Set(groups.map((group) => group.id))
-  for (const group of groups) graph.setNode(group.id, { label: group.label })
-
   const sized = new Map<string, SizedNode>()
-  for (const node of nodes) {
-    const size = sizeNode(node)
-    sized.set(node.id, size)
-    graph.setNode(node.id, { width: size.w, height: size.h })
-    if (node.groupId && groupIds.has(node.groupId)) graph.setParent(node.id, node.groupId)
-  }
+  for (const node of nodes) sized.set(node.id, sizeNode(node))
 
-  const edgeIds: string[] = []
+  const entries: EdgeEntry[] = []
   edges.forEach((edge, index) => {
-    if (!sized.has(edge.source) || !sized.has(edge.target) || edge.source === edge.target) {
-      edgeIds.push('')
-      return
-    }
-    const id = edgeKey(edge, index)
-    edgeIds.push(id)
-    const label = edge.label?.trim() ?? ''
-    graph.setEdge(
-      edge.source,
-      edge.target,
-      label
-        ? { width: textWidth(label, EDGE_LABEL_FONT) + EDGE_LABEL_PAD * 2, height: EDGE_LABEL_HEIGHT, labelpos: 'c' }
-        : {},
-      id,
-    )
+    if (!sized.has(edge.source) || !sized.has(edge.target) || edge.source === edge.target) return
+    entries.push({ edge, id: edgeKey(edge, index), label: edge.label?.trim() ?? '' })
   })
 
-  layout(graph)
+  const placed =
+    direction === 'TB' ? placeStacked(nodes, groups, edges, sized, entries) : placeDagre(nodes, groups, sized, entries, direction)
 
   const laidOutNodes: LaidOutNode[] = []
-  const byId = new Map<string, LaidOutNode>()
   for (const node of nodes) {
     const size = sized.get(node.id)
-    const placed = graph.node(node.id)
-    if (!size || !placed) continue
-    const item: LaidOutNode = {
-      node,
-      box: { x: placed.x - size.w / 2, y: placed.y - size.h / 2, w: size.w, h: size.h },
-      shape: size.shape,
-      tint: nodeTint(node, tints),
-      lines: size.lines,
-      sub: size.sub,
-      inset: size.inset,
-    }
-    laidOutNodes.push(item)
-    byId.set(node.id, item)
+    const box = placed.boxes.get(node.id)
+    if (!size || !box) continue
+    laidOutNodes.push({ node, box, shape: size.shape, tint: nodeTint(node, tints), lines: size.lines, sub: size.sub, inset: size.inset })
   }
 
   const laidOutGroups: LaidOutGroup[] = []
   for (const group of groups) {
-    const inner = union(laidOutNodes.filter(({ node }) => node.groupId === group.id).map(({ box }) => box))
-    if (!inner) continue
-    laidOutGroups.push({
-      group,
-      tint: tints.get(group.id) ?? NEUTRAL_TINT,
-      box: {
-        x: inner.x - GROUP_PAD,
-        y: inner.y - GROUP_PAD_TOP,
-        w: inner.w + GROUP_PAD * 2,
-        h: inner.h + GROUP_PAD_TOP + GROUP_PAD,
-      },
-    })
+    const box = placed.groupBoxes.get(group.id)
+    if (box) laidOutGroups.push({ group, box, tint: tints.get(group.id) ?? NEUTRAL_TINT })
   }
 
   const laidOutEdges: LaidOutEdge[] = []
-  const shapes = new Set<NodeShape>()
-  for (const item of laidOutNodes) shapes.add(item.shape)
   let solidEdges = false
   let dashedEdges = false
-  const labelBoxes: Box[] = []
-  edges.forEach((edge, index) => {
-    const id = edgeIds[index]
-    if (!id) return
-    const placed = graph.edge(edge.source, edge.target, id) as
-      | { points: Point[]; x?: number; y?: number; width?: number; height?: number }
-      | undefined
-    const source = byId.get(edge.source)
-    const target = byId.get(edge.target)
-    if (!placed || !source || !target) return
-    const label = edge.label?.trim() ?? ''
-    const labelAt = label && placed.x !== undefined && placed.y !== undefined ? { x: placed.x, y: placed.y } : null
-    if (labelAt && placed.width && placed.height) {
-      labelBoxes.push({ x: labelAt.x - placed.width / 2, y: labelAt.y - placed.height / 2, w: placed.width, h: placed.height })
-    }
+  for (const { edge, id, label } of entries) {
+    const route = placed.routes.get(id)
+    if (!route) continue
     const style = edgeStyle(edge.style)
     const dashed = Boolean(edge.dashed) || EDGE_STYLE[style].dashed
     if (dashed) dashedEdges = true
     else solidEdges = true
-    laidOutEdges.push({
-      edge,
-      id,
-      style,
-      dashed,
-      label,
-      route: routeThroughPoints(
-        placed.points,
-        { box: source.box, shape: source.shape },
-        { box: target.box, shape: target.shape },
-        labelAt,
-      ),
-    })
-  })
+    laidOutEdges.push({ edge, id, style, dashed, label, route })
+  }
 
+  const shapes = new Set(laidOutNodes.map((item) => item.shape))
   const content = union([
     ...laidOutNodes.map(({ box }) => box),
     ...laidOutGroups.map(({ box }) => box),
     ...laidOutEdges.flatMap(({ route }) => route.points.map((point) => ({ x: point.x, y: point.y, w: 0, h: 0 }))),
-    ...labelBoxes,
+    ...laidOutEdges.flatMap(({ route, label }) =>
+      label ? [{ x: route.mid.x - textWidth(label, EDGE_LABEL_FONT) / 2 - EDGE_LABEL_PAD, y: route.mid.y - EDGE_LABEL_HEIGHT / 2, w: textWidth(label, EDGE_LABEL_FONT) + EDGE_LABEL_PAD * 2, h: EDGE_LABEL_HEIGHT }] : [],
+    ),
+    ...placed.labelBoxes,
   ]) ?? { x: 0, y: 0, w: MIN_WIDTH, h: 0 }
 
   return {

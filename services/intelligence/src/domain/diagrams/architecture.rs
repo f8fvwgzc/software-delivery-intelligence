@@ -11,11 +11,9 @@ use sdi_proto::knowledge::v1::NodeKind;
 use super::{
     DiagramInput, add_graph_edges,
     catalog::{Catalog, humanize_dir, node_id},
-    components::{Components, Role},
+    components::{Components, Role, verb_rank},
     evidence::{self, external_hosts},
-    model::{
-        DiagramEdge, DiagramGroup, DiagramNode, DiagramSpec, MAX_EDGES, MAX_NODES, kind, style,
-    },
+    model::{DiagramEdge, DiagramGroup, DiagramNode, DiagramSpec, kind, style},
 };
 
 pub const GROUP_DATA: &str = "data";
@@ -26,6 +24,13 @@ pub const ACTOR_CI: &str = "actor_ci";
 
 /// Roles are used as groups when the components name at least this many.
 const MIN_ROLES: usize = 3;
+/// Readability targets (CONTRACT.md §16): the 34/48 limits stay the hard cap.
+pub const TARGET_NODES: usize = 24;
+pub const TARGET_EDGES: usize = 32;
+/// A file imported by this many sampled files stays its own component.
+const HUB_FAN_IN: usize = 4;
+/// A group with this many internal edges loses its generic "uses" ones.
+const INTRA_EDGES_BEFORE_PRUNE: usize = 6;
 
 pub fn build(input: &DiagramInput<'_>) -> DiagramSpec {
     let catalog = Catalog::new(input);
@@ -37,7 +42,8 @@ pub fn build(input: &DiagramInput<'_>) -> DiagramSpec {
     let hosts = external_hosts(&catalog);
     let actors = actor_count(&catalog, &components);
     let reserved = stores.len() + externals.len() + hosts.len() + actors;
-    components.collapse_to(MAX_NODES.saturating_sub(reserved).max(4));
+    components.fold_files(HUB_FAN_IN);
+    components.collapse_to(TARGET_NODES.saturating_sub(reserved).max(4));
 
     // The binary the operator runs is bootstrap when nothing else names it.
     if let Some(principal) = principal_service(&components).map(|c| c.id.clone())
@@ -132,9 +138,70 @@ pub fn build(input: &DiagramInput<'_>) -> DiagramSpec {
         .iter()
         .map(|c| (c.id.clone(), c.package.clone()))
         .collect();
-    trim_edges(&mut spec, &packages);
+    merge_parallel_edges(&mut spec);
+    prune_intra_group_uses(&mut spec);
+    trim_edges(&mut spec, &packages, TARGET_EDGES);
     spec.prune_groups();
     spec
+}
+
+/// One edge per pair of nodes: the strongest verb wins, evidence over
+/// inference, and a data style over a plain call.
+fn merge_parallel_edges(spec: &mut DiagramSpec) {
+    let mut kept: Vec<DiagramEdge> = Vec::new();
+    for edge in std::mem::take(&mut spec.edges) {
+        match kept
+            .iter_mut()
+            .find(|e| e.source == edge.source && e.target == edge.target)
+        {
+            Some(existing) => {
+                let better = (edge.dashed, verb_rank(&edge.label))
+                    < (existing.dashed, verb_rank(&existing.label));
+                if better {
+                    let id = existing.id.clone();
+                    *existing = edge;
+                    existing.id = id;
+                }
+            }
+            None => kept.push(edge),
+        }
+    }
+    spec.edges = kept;
+}
+
+/// Generic "uses" edges inside a group that already shows six or more
+/// internal relationships add nothing a reader can act on.
+fn prune_intra_group_uses(spec: &mut DiagramSpec) {
+    let group_of: HashMap<&str, &str> = spec
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.group_id.as_str()))
+        .collect();
+    let mut intra: HashMap<String, usize> = HashMap::new();
+    for edge in &spec.edges {
+        if let (Some(a), Some(b)) = (
+            group_of.get(edge.source.as_str()),
+            group_of.get(edge.target.as_str()),
+        ) && a == b
+            && !a.is_empty()
+        {
+            *intra.entry((*a).to_owned()).or_default() += 1;
+        }
+    }
+    spec.edges.retain(|edge| {
+        let same_group = match (
+            group_of.get(edge.source.as_str()),
+            group_of.get(edge.target.as_str()),
+        ) {
+            (Some(a), Some(b)) => a == b && !a.is_empty(),
+            _ => false,
+        };
+        let busy = group_of
+            .get(edge.source.as_str())
+            .and_then(|g| intra.get(*g))
+            .is_some_and(|n| *n >= INTRA_EDGES_BEFORE_PRUNE);
+        !(same_group && busy && edge.label == "uses")
+    });
 }
 
 /// A library or module component nothing calls and that calls nothing is
@@ -522,11 +589,11 @@ pub fn add_inferred_ui_calls(spec: &mut DiagramSpec) {
     }
 }
 
-/// Keeps the 48 most telling edges: actor edges, then edges to stores and
+/// Keeps the `limit` most telling edges: actor edges, then edges to stores and
 /// external systems, then cross-package calls with a specific verb, then
 /// the rest, generic "uses" and inferred ones last.
-fn trim_edges(spec: &mut DiagramSpec, packages: &HashMap<String, String>) {
-    if spec.edges.len() <= MAX_EDGES {
+fn trim_edges(spec: &mut DiagramSpec, packages: &HashMap<String, String>, limit: usize) {
+    if spec.edges.len() <= limit {
         return;
     }
     let kinds: HashMap<&str, &str> = spec
@@ -566,7 +633,7 @@ fn trim_edges(spec: &mut DiagramSpec, packages: &HashMap<String, String>) {
         .map(|(i, e)| (i, rank(e)))
         .collect();
     ranked.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-    let keep: HashSet<usize> = ranked.iter().take(MAX_EDGES).map(|(i, _)| *i).collect();
+    let keep: HashSet<usize> = ranked.iter().take(limit).map(|(i, _)| *i).collect();
     let mut index = 0;
     spec.edges.retain(|_| {
         let kept = keep.contains(&index);
@@ -659,12 +726,10 @@ mod tests {
             .node("dir_services_api_src_db")
             .expect("db dir component");
         assert_eq!(db.label, "Api store");
-        let client = spec
-            .node("file_web_src_lib_api_ts")
-            .expect("api.ts has fan-in 3");
-        assert_eq!(client.label, "API client");
-        assert_eq!(client.caption, "api.ts");
+        // api.ts has fan-in 3: below the hub threshold, so it folds into the web root.
+        assert!(!spec.has_node("file_web_src_lib_api_ts"));
         assert!(spec.has_node("dir_web_src_features_views"));
+        assert!(spec.nodes.len() <= TARGET_NODES && spec.edges.len() <= TARGET_EDGES);
         // The user reaches the UI.
         let user = spec.edges.iter().find(|e| e.source == ACTOR_USER).unwrap();
         assert_eq!(user.target, "service_web");
@@ -795,7 +860,17 @@ mod tests {
         assert!(spec.nodes.len() >= 14, "{ids:?}");
         assert!(spec.edges.len() >= 18, "{labels:?}");
         assert!(spec.groups.len() >= 4, "{:?}", spec.groups);
-        assert!(spec.nodes.len() <= MAX_NODES && spec.edges.len() <= MAX_EDGES);
+        assert!(spec.nodes.len() <= TARGET_NODES, "{ids:?}");
+        assert!(spec.edges.len() <= TARGET_EDGES, "{labels:?}");
+        // One edge per pair; no generic intra-group noise once a group is busy.
+        let mut pairs: Vec<(&str, &str)> = spec
+            .edges
+            .iter()
+            .map(|e| (e.source.as_str(), e.target.as_str()))
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        assert_eq!(pairs.len(), spec.edges.len());
         // Role groups, since the code names bootstrap, execution, integrations, monitoring and state.
         let group_ids: Vec<&str> = spec.groups.iter().map(|g| g.id.as_str()).collect();
         assert!(group_ids.contains(&Role::Execution.id()), "{group_ids:?}");
@@ -829,11 +904,11 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels
-                .iter()
-                .any(|(s, l, t)| *s == "file_crates_symphony_src_app_rs"
+            labels.iter().any(
+                |(s, l, t)| (*s == "service_symphony" || s.contains("app_rs"))
                     && *l == "starts"
-                    && t.contains("runtime")),
+                    && t.contains("runtime")
+            ),
             "{labels:?}"
         );
         assert!(

@@ -303,10 +303,12 @@ pub struct Components {
     pub edges: Vec<ComponentEdge>,
     by_file: HashMap<String, String>,
     pub file_graph: FileGraph,
+    /// Distinct sampled importers per file.
+    pub fan_in: BTreeMap<String, usize>,
 }
 
 /// Verb specificity: the most informative verb between two components wins.
-fn verb_rank(label: &str) -> usize {
+pub fn verb_rank(label: &str) -> usize {
     match label {
         "starts" | "runs" | "dispatches" => 0,
         "loads" | "validates" | "records" | "writes" | "reads" | "streams" => 1,
@@ -367,6 +369,7 @@ impl Components {
         let short_names = short_package_names(catalog);
         let mut comps = Components {
             file_graph,
+            fan_in: fan_in.clone(),
             ..Default::default()
         };
 
@@ -512,7 +515,20 @@ impl Components {
                     ]
                     .iter()
                     .map(|h| format!("{dir}/{h}"))
-                    .find(|p| catalog.file_exists(p));
+                    .find(|p| catalog.file_exists(p))
+                    .or_else(|| {
+                        // No hub file: link the directory's first source file.
+                        let mut sources: Vec<&str> = catalog
+                            .files_under(dir)
+                            .filter(|f| {
+                                parent_dir(f) == dir
+                                    && is_source(f)
+                                    && !Catalog::is_excluded_path(f)
+                            })
+                            .collect();
+                        sources.sort();
+                        sources.first().map(|f| (*f).to_owned())
+                    });
                     comps.items.push(Component {
                         id: id.clone(),
                         label,
@@ -732,6 +748,34 @@ impl Components {
             .collect();
         self.items
             .retain(|c| c.is_root || connected.contains(&c.id));
+    }
+
+    /// Readability pass for the architecture map: single-file components
+    /// fold into their directory (or package root) unless the file is a hub
+    /// imported by at least `hub_fan_in` sampled files or the only
+    /// component of its role.
+    pub fn fold_files(&mut self, hub_fan_in: usize) {
+        let mut per_role: HashMap<Role, usize> = HashMap::new();
+        for c in &self.items {
+            *per_role.entry(c.role).or_default() += 1;
+        }
+        let victims: Vec<String> = self
+            .items
+            .iter()
+            .filter(|c| !c.is_root && !c.protected && c.id.starts_with("file_"))
+            .filter(|c| {
+                let hub = c
+                    .files
+                    .iter()
+                    .any(|f| self.fan_in.get(f).copied().unwrap_or(0) >= hub_fan_in);
+                let only_of_role = per_role.get(&c.role).copied().unwrap_or(0) <= 1;
+                !hub && !only_of_role
+            })
+            .map(|c| c.id.clone())
+            .collect();
+        for id in victims {
+            self.merge_into_parent(&id);
+        }
     }
 
     pub fn merge_into_parent(&mut self, id: &str) {
@@ -983,8 +1027,10 @@ pub fn dir_label(
     let name = dir_name.to_lowercase();
     let pkg = capitalise(package);
     let own = sentence(&split_words(dir_name));
+    // "Web UI" for web/src/components; "Components UI" when the package is
+    // itself called ui, so it never reads "Ui UI".
     let generic = |suffix: &str| {
-        if pkg.is_empty() {
+        if pkg.is_empty() || pkg.eq_ignore_ascii_case(suffix) {
             format!("{own} {suffix}")
         } else {
             format!("{pkg} {suffix}")
@@ -1183,6 +1229,31 @@ mod tests {
         assert_eq!(records.label, "records");
         assert_eq!(records.style, style::DATA);
         assert!(comps.roles().len() >= 4);
+    }
+
+    #[test]
+    fn fold_files_keeps_hubs_and_lone_roles() {
+        let files = fixtures::symphony_files();
+        let tree = fixtures::symphony_tree();
+        let ctx = fixtures::symphony_context();
+        let input = symphony(&ctx, &tree, &files);
+        let catalog = Catalog::new(&input);
+        let mut comps = Components::build(&catalog);
+        assert!(comps.get("file_crates_symphony_src_app_rs").is_some());
+        comps.fold_files(4);
+        // app.rs has one importer: folded into the binary.
+        assert!(comps.get("file_crates_symphony_src_app_rs").is_none());
+        assert_eq!(
+            comps.component_of("crates/symphony/src/app.rs").as_deref(),
+            Some("service_symphony")
+        );
+        // workflow_store.rs is imported by five sampled files: a hub that stays.
+        assert!(
+            comps
+                .get("file_crates_symphony_core_src_workflow_store_rs")
+                .is_some()
+        );
+        assert!(comps.edges.iter().all(|e| e.source != e.target));
     }
 
     #[test]

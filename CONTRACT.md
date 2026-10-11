@@ -592,7 +592,14 @@ direction with verbs read from the importing file (`tokio::spawn` /
 reasoner is `claude`, the reasoner writes the `explanation` and may rename
 labels / regroup nodes but can only *remove* edges, never add unsupported
 ones. Limits: 34 nodes, 48 edges, 3–6 groups (split into overview + detail
-beyond that).
+beyond that). `architecture` targets 18–24 nodes and ≤ 32 edges for
+readability: single-file components fold into their directory (or package
+root) unless they are entry points, hubs imported by ≥ 4 sampled files or
+the only component of their role; parallel edges between two nodes merge
+into the one with the strongest verb; generic "uses" edges inside a group
+that already shows ≥ 6 internal edges are dropped; actors, entry points,
+every datastore and every external system always stay. 34/48 remain the
+hard cap.
 
 Kinds and what they read:
 
@@ -646,12 +653,28 @@ renderer:
   datastores always rose, externals always green. Groups are light
   rectangles labelled top-centre (12 px medium, 16 px padding). Edges are
   foreground/60 with open arrowheads, dashed when inferred or `returns`,
-  labels plain 12 px text on a background-coloured halo at dagre's label
-  position. Layout is `@dagrejs/dagre` (compound groups, ranksep 70,
-  nodesep 40, edgesep 20) and the edges follow dagre's own points as
-  rounded polylines; `TB` for every graph kind except `dependency`
-  (`LR`) and `custom` (the spec's `direction`), because the builders
-  currently write the model default `LR` rather than a choice.
+  labels plain 12 px text on a background-coloured halo, nudged in 14 px
+  steps off other labels, nodes and group titles. Layout is top-down
+  (`TB`) for every graph kind except `dependency` (`LR`) and `custom`
+  (the spec's `direction`), because the builders currently write the
+  model default `LR` rather than a choice. `TB` is a stacked band layout
+  (`graph/bands.ts`): actors in a top band, then the groups in role order
+  (bootstrap/configuration → execution → integrations → monitoring/UI →
+  state/storage, matched on id and label; otherwise the topological order
+  of the edges between groups; unmatched groups sit between execution and
+  integrations), each group's nodes ordered by a dagre pass over its own
+  edges and wrapped into rows of at most four (≤ 900 px), datastores on
+  the last row; consecutive single-row groups share a band while they fit
+  in 960 px, so the drawing is at most ~1100 px wide and grows down.
+  Edges are routed orthogonally (`graph/ortho.ts`): out of the node's top
+  or bottom, along the channel between rows, through a corridor between
+  nodes or outside the drawing when rows must be crossed, into the
+  target's top or bottom, never through a node; runs sharing a channel
+  or corridor take 10 px lanes. `LR` keeps a compound `@dagrejs/dagre`
+  layout (ranksep 70, nodesep 40, edgesep 20) with dagre's edge points as
+  rounded polylines. The pane fits the drawing to its width (never past
+  1:1) and scrolls vertically; the pane is the viewport minus the chrome,
+  at least 640 px.
 - **ER** (`db_schema`): a card per table — mono name in a tinted header,
   a row per column parsed from `node.description` (one per line,
   `name type [PK] [FK → table.col] [NOT NULL] [UNIQUE]`; a comma list
