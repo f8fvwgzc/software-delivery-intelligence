@@ -20,13 +20,16 @@ interface FileHeaderProps {
   onMarkdownModeChange?: (mode: MarkdownMode) => void
 }
 
-/** Path, language, size and the file actions. Sticks under the app header while the code scrolls. */
+/**
+ * Path, language, size and the file actions. Sticks under the app header and
+ * the project band (its height is `--project-band`, set by the project layout).
+ */
 export function FileHeader({ file, lineCount, markdownMode, onMarkdownModeChange }: FileHeaderProps) {
   const { copied, copy } = useCopied()
   const name = baseName(file.path)
 
   return (
-    <header className="sticky top-12 z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-t-lg border-b bg-background/95 px-3 py-2 backdrop-blur-sm">
+    <header className="sticky top-[calc(3rem+var(--project-band,0px))] z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-t-lg border-b bg-background/95 px-3 py-2 backdrop-blur-sm">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <EntryGlyph name={name} isDir={false} language={file.language} className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 truncate font-mono text-sm" title={file.path}>

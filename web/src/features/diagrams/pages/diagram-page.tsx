@@ -104,13 +104,14 @@ function DiagramBody({ diagramId }: { diagramId: string }) {
               </AlertDescription>
             </Alert>
           ) : null}
-          <div className={cn('relative overflow-hidden rounded-lg bg-card ring-1 ring-border', CANVAS_HEIGHT_CLASS)}>
+          <div className={cn('relative overflow-hidden rounded-lg bg-background ring-1 ring-border', CANVAS_HEIGHT_CLASS)}>
             {hasSpec && spec ? (
               // Its own boundary: a layout failure explains itself here and leaves the header and other tabs usable.
               <QueryBoundary fallback={<CanvasSkeleton className="h-full rounded-none ring-0" />}>
                 <EditorialCanvas
                   ref={canvasRef}
                   spec={spec}
+                  kind={diagram.kind}
                   direction={direction}
                   title={diagram.title}
                   onOpenPath={(path) => navigate(codeBrowserPath(diagram.projectId, path))}

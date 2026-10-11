@@ -6,15 +6,18 @@
 
 pub mod architecture;
 pub mod catalog;
+pub mod components;
 pub mod data_flow;
 pub mod db_schema;
 pub mod dependency;
 pub mod deployment;
 pub mod evidence;
 pub mod high_level;
+pub mod imports;
 pub mod mermaid;
 pub mod model;
 pub mod module_map;
+pub mod schema;
 pub mod sequence;
 
 #[cfg(test)]
@@ -30,9 +33,15 @@ use sdi_proto::{
 use catalog::Catalog;
 pub use model::{DiagramEdge, DiagramSpec};
 
-/// Key files read per diagram and the size each is cut to.
-pub const MAX_KEY_FILES: usize = 12;
-pub const MAX_FILE_BYTES: usize = 20 * 1024;
+/// Key files read per diagram and the size each is cut to: `key_files`
+/// picks up to `PRIMARY_KEY_FILES` by structure (entry points, routers,
+/// module hubs, manifests, large sources), `follow_imports` tops the sample
+/// up to `MAX_KEY_FILES` with the files those import most.
+pub const MAX_KEY_FILES: usize = 60;
+pub const PRIMARY_KEY_FILES: usize = 40;
+pub const MAX_FILE_BYTES: usize = 24 * 1024;
+/// The database schema reads every migration and model file, up to this many.
+pub const MAX_SCHEMA_FILES: usize = 200;
 
 pub struct DiagramInput<'a> {
     pub context: &'a ProjectContext,
@@ -153,13 +162,13 @@ pub fn explanation(kind: DiagramKind, spec: &DiagramSpec, catalog: &Catalog<'_>)
             "the project's own packages per ecosystem and the third-party packages they depend on, with fan-in across manifests"
         }
         DiagramKind::Sequence => {
-            "the principal request path from the user through the entry point to the data store and back"
+            "the principal workflow as ordered messages: from the user through the entry point and the modules it calls to the data store, and the returns back"
         }
         DiagramKind::ModuleMap => {
             "directories and packages as a tree, as the repository is laid out"
         }
         DiagramKind::DbSchema => {
-            "the tables found in migrations and ORM models and the foreign keys between them"
+            "every table with its columns as the migrations and ORM models leave it once applied in order, and the foreign keys between tables"
         }
         DiagramKind::Unspecified => "the project",
     };
@@ -175,7 +184,7 @@ pub fn explanation(kind: DiagramKind, spec: &DiagramSpec, catalog: &Catalog<'_>)
     ));
     if files > 0 {
         text.push_str(&format!(
-            "Call and data evidence comes from {files} sampled key files (entry points, routers, manifests and migrations), so calls made elsewhere may be missing. "
+            "Call and data evidence comes from {files} sampled key files (entry points, routers, manifests, migrations and the modules they import), so calls made elsewhere may be missing. "
         ));
     } else {
         text.push_str(
@@ -187,7 +196,7 @@ pub fn explanation(kind: DiagramKind, spec: &DiagramSpec, catalog: &Catalog<'_>)
             "Pipelines and infrastructure appear only when the scan found workflows, compose files or IaC. "
         }
         DiagramKind::DbSchema => {
-            "Columns come from the sampled migration and model files; tables created elsewhere are not listed. "
+            "Columns come from every migration and model file in the scan, applied in path order; tables created in code are not listed. "
         }
         DiagramKind::Dependency => {
             "Only the most used runtime dependencies are shown; development and build tooling is left out. "
@@ -200,45 +209,194 @@ pub fn explanation(kind: DiagramKind, spec: &DiagramSpec, catalog: &Catalog<'_>)
     text
 }
 
-/// The sample of files a kind reads: entry points, routers, manifests,
-/// deployment descriptors and migrations, ranked by relevance to the kind,
-/// at most `MAX_KEY_FILES`. Pure, so the gRPC layer only fetches.
+/// The sample of files a kind reads, ranked by relevance to the kind:
+/// entry points, routers, module hubs (`lib.rs`, `mod.rs`, `index.ts`,
+/// `__init__.py`), manifests, deployment descriptors, large source files
+/// and migrations; shallow and large files first; tests, fixtures, docs,
+/// CI, generated and vendored files never. The database schema gets every
+/// migration and model file (up to `MAX_SCHEMA_FILES`); every other kind
+/// at most `PRIMARY_KEY_FILES`. Pure, so the gRPC layer only fetches.
 pub fn key_files(kind: DiagramKind, tree: &[RepoTreeEntry]) -> Vec<String> {
-    let mut ranked: Vec<(u8, usize, &str)> = tree
+    if kind == DiagramKind::DbSchema {
+        let mut files: Vec<&str> = tree
+            .iter()
+            .filter(|e| {
+                !e.is_dir && !Catalog::is_excluded_path(&e.path) && !imports::is_generated(&e.path)
+            })
+            .filter(|e| db_schema::is_schema_file(&e.path))
+            .map(|e| e.path.as_str())
+            .collect();
+        files.sort();
+        return files
+            .into_iter()
+            .take(MAX_SCHEMA_FILES)
+            .map(str::to_owned)
+            .collect();
+    }
+    let mut ranked: Vec<(u8, usize, std::cmp::Reverse<u64>, &str)> = tree
         .iter()
         .filter(|e| !e.is_dir)
         .filter(|e| !Catalog::is_excluded_path(&e.path) || is_workflow(&e.path))
+        .filter(|e| !imports::is_generated(&e.path))
         .filter_map(|e| {
             let depth = e.path.matches('/').count();
-            let class = classify(&e.path)?;
+            let class = classify(&e.path).or_else(|| {
+                if !imports::is_source(&e.path) {
+                    None
+                } else if e.size >= components::SIGNIFICANT_BYTES {
+                    Some(FileClass::LargeSource)
+                } else {
+                    Some(FileClass::Source)
+                }
+            })?;
             let priority = priority(kind, class, depth)?;
-            Some((priority, depth, e.path.as_str()))
+            Some((priority, depth, std::cmp::Reverse(e.size), e.path.as_str()))
         })
         .collect();
     ranked.sort();
-    ranked
+    // Entry points of every package (manifest directory) always make it
+    // for the kinds that read the import graph.
+    let mut out: Vec<String> = if matches!(
+        kind,
+        DiagramKind::Architecture
+            | DiagramKind::Custom
+            | DiagramKind::DataFlow
+            | DiagramKind::Sequence
+            | DiagramKind::HighLevel
+    ) {
+        let mut always = package_entry_points(tree);
+        // Manifests name the crates and their lib aliases, which the
+        // resolver needs; they are small.
+        let mut manifests: Vec<String> = tree
+            .iter()
+            .filter(|e| !e.is_dir && !Catalog::is_excluded_path(&e.path))
+            .filter(|e| {
+                matches!(
+                    e.name.as_str(),
+                    "Cargo.toml" | "package.json" | "pyproject.toml" | "go.mod"
+                )
+            })
+            .map(|e| e.path.clone())
+            .collect();
+        manifests.sort();
+        always.extend(manifests.into_iter().take(PRIMARY_KEY_FILES / 4));
+        always
+    } else {
+        Vec::new()
+    };
+    for (_, _, _, path) in ranked {
+        if out.len() >= PRIMARY_KEY_FILES {
+            break;
+        }
+        if !out.iter().any(|p| p == path) {
+            out.push(path.to_owned());
+        }
+    }
+    out.truncate(PRIMARY_KEY_FILES);
+    out
+}
+
+/// The entry point of every directory holding a manifest, from the tree alone.
+fn package_entry_points(tree: &[RepoTreeEntry]) -> Vec<String> {
+    let files: std::collections::HashSet<&str> = tree
+        .iter()
+        .filter(|e| !e.is_dir)
+        .map(|e| e.path.as_str())
+        .collect();
+    let mut dirs: Vec<&str> = tree
+        .iter()
+        .filter(|e| !e.is_dir && !Catalog::is_excluded_path(&e.path))
+        .filter(|e| {
+            matches!(
+                e.name.as_str(),
+                "Cargo.toml"
+                    | "package.json"
+                    | "pyproject.toml"
+                    | "go.mod"
+                    | "pom.xml"
+                    | "build.gradle"
+            )
+        })
+        .map(|e| e.path.rsplit_once('/').map(|(d, _)| d).unwrap_or(""))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    let mut out = Vec::new();
+    for dir in dirs {
+        for candidate in catalog::ENTRY_POINTS {
+            let path = if dir.is_empty() {
+                candidate.to_owned()
+            } else {
+                format!("{dir}/{candidate}")
+            };
+            if files.contains(path.as_str()) && imports::is_source(&path) {
+                if !out.contains(&path) {
+                    out.push(path);
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Files the sample imports but has not read, most imported first, so the
+/// gRPC layer can top the sample up to `MAX_KEY_FILES`. Entry points of
+/// packages the sample missed come first.
+pub fn follow_imports(input: &DiagramInput<'_>, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let catalog = Catalog::new(input);
+    let resolver = imports::Resolver::new(&catalog);
+    let mut out: Vec<String> = Vec::new();
+    for node in catalog.nodes().filter(|n| catalog.is_product_node(n)) {
+        if let Some(entry) = catalog.entry_point(&catalog.dir_of(node))
+            && !input.files.contains_key(&entry)
+            && imports::is_source(&entry)
+        {
+            out.push(entry);
+        }
+    }
+    let graph = imports::FileGraph::build(&catalog, &resolver);
+    let mut ranked: Vec<(std::cmp::Reverse<usize>, std::cmp::Reverse<u64>, String)> = graph
+        .fan_in()
         .into_iter()
-        .take(MAX_KEY_FILES)
-        .map(|(_, _, p)| p.to_owned())
-        .collect()
+        .filter(|(path, _)| !input.files.contains_key(path) && !out.contains(path))
+        .filter(|(path, _)| !Catalog::is_excluded_path(path) && !imports::is_generated(path))
+        .map(|(path, fan_in)| {
+            (
+                std::cmp::Reverse(fan_in),
+                std::cmp::Reverse(catalog.file_size(&path)),
+                path,
+            )
+        })
+        .collect();
+    ranked.sort();
+    out.extend(ranked.into_iter().map(|(_, _, p)| p));
+    out.truncate(limit);
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileClass {
+pub enum FileClass {
     Entry,
     Router,
+    Hub,
     Manifest,
     Deploy,
     Workflow,
     Migration,
     Model,
+    LargeSource,
+    Source,
 }
 
 fn is_workflow(path: &str) -> bool {
     path.starts_with(".github/workflows/") && (path.ends_with(".yml") || path.ends_with(".yaml"))
 }
 
-fn classify(path: &str) -> Option<FileClass> {
+pub(crate) fn classify(path: &str) -> Option<FileClass> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let lower = path.to_lowercase();
     if is_workflow(path) {
@@ -282,6 +440,7 @@ fn classify(path: &str) -> Option<FileClass> {
             | "routes.js"
             | "router.js"
             | "views.py"
+            | "server.rs"
     ) || lower.contains("/routes/mod.rs")
         || lower.contains("/routes/index.")
         || lower.contains("/api/mod.rs")
@@ -289,6 +448,9 @@ fn classify(path: &str) -> Option<FileClass> {
         || lower.contains("/app/api/")
     {
         return Some(FileClass::Router);
+    }
+    if matches!(name, "mod.rs" | "__init__.py") {
+        return Some(FileClass::Hub);
     }
     if matches!(
         name,
@@ -319,25 +481,39 @@ fn classify(path: &str) -> Option<FileClass> {
     {
         return Some(FileClass::Deploy);
     }
-    if (lower.contains("/migrations/")
+    let migration_dir = lower.contains("/migrations/")
         || lower.starts_with("migrations/")
-        || lower.contains("/migrate/"))
+        || lower.contains("/migrate/")
+        || lower.starts_with("migrate/")
+        || lower.contains("/alembic/versions/")
+        || lower.starts_with("alembic/versions/")
+        || lower.contains("/db/migrate/")
+        || lower.contains("/sql/");
+    if migration_dir
         && (name.ends_with(".sql")
             || name.ends_with(".ts")
             || name.ends_with(".js")
-            || name.ends_with(".py"))
+            || name.ends_with(".py")
+            || name.ends_with(".rb")
+            || name.ends_with(".rs"))
+        && !name.starts_with("mod.")
+        && !name.starts_with("__init__")
     {
         return Some(FileClass::Migration);
     }
     if name == "schema.prisma"
         || name == "schema.sql"
         || name == "schema.rs"
+        || name == "schema.rb"
         || name == "models.py"
         || name == "models.rs"
         || name == "entities.ts"
+        || name == "entity.ts"
         || lower.contains("/models/")
         || lower.contains("/entities/")
+        || lower.contains("/entity/")
         || lower.contains("/drizzle/schema")
+        || lower.contains("/prisma/")
     {
         return Some(FileClass::Model);
     }
@@ -375,17 +551,23 @@ fn priority(kind: DiagramKind, class: FileClass, depth: usize) -> Option<u8> {
         DiagramKind::Sequence => match class {
             Entry => 0,
             Router => 0,
-            Model => 3,
+            Hub => 2,
+            LargeSource => 3,
+            Model => 4,
             Manifest => 4,
+            Source => 5,
             _ => return None,
         },
         _ => match class {
             Entry => 0,
             Router => 1,
-            Manifest => 2,
-            Deploy => 3,
-            Migration => 5,
-            Model => 4,
+            Hub => 2,
+            Manifest => 3,
+            Deploy => 4,
+            LargeSource => 5,
+            Model => 5,
+            Source => 6,
+            Migration => 7,
             Workflow => return None,
         },
     };
@@ -497,7 +679,7 @@ mod tests {
     fn key_files_prefer_entry_points_then_routers_then_manifests() {
         let tree = tree();
         let files = key_files(DiagramKind::Architecture, &tree);
-        assert!(files.len() <= MAX_KEY_FILES);
+        assert!(files.len() <= PRIMARY_KEY_FILES);
         // Entry points lead, shallowest first.
         assert!(
             files[..4].iter().all(|f| {
@@ -507,6 +689,15 @@ mod tests {
                     || f.ends_with("App.tsx")
                     || f.ends_with("main.py")
             }),
+            "{files:?}"
+        );
+        // Module hubs and plain sources follow, never generated or vendored files.
+        assert!(
+            files.contains(&"services/api/src/routes/mod.rs".to_owned()),
+            "{files:?}"
+        );
+        assert!(
+            files.contains(&"services/api/src/cache.rs".to_owned()),
             "{files:?}"
         );
         assert!(files.contains(&"services/api/src/main.rs".to_owned()));
@@ -521,7 +712,41 @@ mod tests {
         assert!(files.iter().all(|f| !f.starts_with(".github/")));
 
         let schema = key_files(DiagramKind::DbSchema, &tree);
-        assert!(schema[0].contains("migrations/"));
+        assert!(
+            schema.iter().any(|f| f.contains("migrations/")),
+            "{schema:?}"
+        );
+        assert!(
+            schema
+                .iter()
+                .all(|f| f.contains("migrations/") || f.contains("models")),
+            "{schema:?}"
+        );
+        // The symphony tree is bigger: the structural sample stays bounded
+        // and the import follow-up fills the rest with what it imports.
+        let symphony_tree = fixtures::symphony_tree();
+        let primary = key_files(DiagramKind::Architecture, &symphony_tree);
+        assert!(primary.len() <= PRIMARY_KEY_FILES);
+        assert!(primary.contains(&"crates/symphony/src/main.rs".to_owned()));
+        assert!(primary.contains(&"crates/symphony-runtime/src/lib.rs".to_owned()));
+        assert!(
+            primary
+                .iter()
+                .all(|f| !f.contains("/tests/") && !f.starts_with("xtask/")),
+            "{primary:?}"
+        );
+        let ctx = fixtures::symphony_context();
+        let sampled: BTreeMap<String, String> = fixtures::symphony_files()
+            .into_iter()
+            .filter(|(p, _)| primary.contains(p))
+            .collect();
+        let more = follow_imports(
+            &input(&ctx, &symphony_tree, &sampled, ""),
+            MAX_KEY_FILES - sampled.len(),
+        );
+        assert!(more.len() <= MAX_KEY_FILES - sampled.len());
+        assert!(more.iter().all(|p| !sampled.contains_key(p)));
+        assert!(!more.is_empty(), "the sample imports files it has not read");
         let deploy = key_files(DiagramKind::Deployment, &tree);
         assert_eq!(deploy[0], "docker-compose.yml");
         assert!(deploy.iter().any(|f| f.starts_with(".github/workflows/")));

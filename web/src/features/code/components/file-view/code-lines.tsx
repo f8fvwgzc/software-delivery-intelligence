@@ -1,7 +1,13 @@
+import type { CSSProperties } from 'react'
+
 import { cn } from '@/lib/utils'
+
+import type { TokenLines } from './use-highlight'
 
 interface CodeLinesProps {
   lines: string[]
+  /** Syntax tokens per line; absent while the file renders as plain text. */
+  tokens?: TokenLines
   /** 1-based line from the `#L42` hash. */
   highlighted: number | null
 }
@@ -20,14 +26,17 @@ const GUTTER_CLASS =
 /**
  * Read-only source: 12.5px mono, no wrapping, line numbers from a CSS
  * counter (never part of a copy) that also serve as `#L<n>` anchors.
+ * With tokens, each span carries both themes' colours as CSS variables and
+ * `.code-token` (index.css) resolves them, so a theme switch needs no re-render.
  */
-export function CodeLines({ lines, highlighted }: CodeLinesProps) {
+export function CodeLines({ lines, tokens, highlighted }: CodeLinesProps) {
   return (
     <div className="overflow-x-auto" style={{ scrollbarGutter: 'stable' }}>
       <pre className="min-w-max py-2 font-mono text-[12.5px] leading-5 [counter-reset:line]" tabIndex={0}>
         {lines.map((line, index) => {
           const number = index + 1
           const isHighlighted = number === highlighted
+          const lineTokens = tokens?.[index]
           return (
             <div
               key={number}
@@ -37,7 +46,15 @@ export function CodeLines({ lines, highlighted }: CodeLinesProps) {
               className={LINE_CLASS}
             >
               <a href={`#L${number}`} aria-label={`Line ${number}`} className={GUTTER_CLASS} />
-              <code className={cn('whitespace-pre pr-6', line === '' && 'before:content-["\\00a0"]')}>{line}</code>
+              <code className={cn('whitespace-pre pr-6', line === '' && 'before:content-["\\00a0"]')}>
+                {lineTokens
+                  ? lineTokens.map((token, offset) => (
+                      <span key={offset} className="code-token" style={token.htmlStyle as CSSProperties}>
+                        {token.content}
+                      </span>
+                    ))
+                  : line}
+              </code>
             </div>
           )
         })}

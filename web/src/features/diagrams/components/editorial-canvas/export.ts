@@ -40,7 +40,7 @@ export function serialiseSvg(svg: SVGSVGElement, bounds: Box, title: string): st
   // An open menu (the export menu itself) hides the rest of the page from assistive technology.
   clone.removeAttribute('aria-hidden')
   clone.removeAttribute('data-aria-hidden')
-  clone.setAttribute('style', `font-family: var(--font-sans); background: var(--card)`)
+  clone.setAttribute('style', `font-family: var(--font-sans); background: var(--background)`)
   clone.setAttribute('role', 'img')
   clone.setAttribute('aria-label', title)
 

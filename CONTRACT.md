@@ -573,10 +573,22 @@ A `Diagram` is a `DiagramSpec` (groups, nodes, edges — the single source of
 truth for rendering) plus the Mermaid rendered from it. Generation is
 **evidence-based like gitdiagram, deterministic by default**: the
 knowledge graph (nodes, valid edges, facts), the repo tree (`GetRepoTree`)
-and a bounded sample of key files (entry points, routers, manifests via
-`GetRepoFile`) produce the spec; nodes carry the repository `path` that
-implements them and edges carry `evidence_path` (the file that shows the
-call) or are `dashed` when inferred. When `ANTHROPIC_API_KEY` is set and the
+and a bounded sample of key files via `GetRepoFile` (up to 60 files of
+24 KB: entry points, routers, module hubs, manifests and large sources
+ranked by structure, topped up with the files those import most; tests,
+fixtures, generated, vendored and CI files excluded; `db_schema` reads every
+migration and model file, up to 200) produce the spec; nodes carry the
+repository `path` that implements them and edges carry `evidence_path`
+(the file that shows the call) or are `dashed` when inferred. Imports are
+parsed per language (Rust `mod`/`use`, TS/JS `import`/`require`, Python
+`from`/`import`, Go packages, Java/C# packages) into a file-level import
+graph; files collapse into components (a directory with ≥ 3 source files,
+or a single entry point / file imported by ≥ 3 others / file over 8 KB,
+captioned with its file name) and edges follow the importer → imported
+direction with verbs read from the importing file (`tokio::spawn` /
+`Command::new` → "starts"/"runs", HTTP clients → "calls", store writes →
+"records", reads → "reads", channels/SSE → "streams", config parsing →
+"loads", validation → "validates", else "uses"). When `ANTHROPIC_API_KEY` is set and the
 reasoner is `claude`, the reasoner writes the `explanation` and may rename
 labels / regroup nodes but can only *remove* edges, never add unsupported
 ones. Limits: 34 nodes, 48 edges, 3–6 groups (split into overview + detail
@@ -586,20 +598,25 @@ Kinds and what they read:
 
 | kind | built from |
 |---|---|
-| `architecture` | graph services/libraries/datastores/external APIs + their edges; groups = top-level directories or workspace members |
+| `architecture` | packages, module components and significant files from the import graph, datastores, external APIs and the hosts the code calls; actors ("User"/"Operator", "CI"); groups = the roles bootstrap / execution / integrations / monitoring / state when the code names ≥ 3 of them, else top-level directories |
 | `high_level` | actors (users, CI, GitHub) → product → external systems; ≤ 9 nodes |
-| `data_flow` | datastores, queues, services with read/write/publish edges |
+| `data_flow` | the architecture map reduced to its data and async edges: datastores, queues and the components (packages, store modules) that read, write or publish |
 | `deployment` | environments, container images, infrastructure nodes, pipelines (`DEPLOYED_TO`, `PROVISIONS`, `RELEASES`) |
 | `dependency` | packages by ecosystem with `DEPENDS_ON` fan-in |
-| `sequence` | the principal workflow: actor → entry point → … → datastore → returns |
+| `sequence` | the principal workflow as ordered messages: participants in call order (actor, interface, entry point, the components the import graph reaches from it to depth 6, the store, its database); `edge.id` is `m01`, `m02`, … in message order, style `call` for requests and `returns` (dashed) for the replies, labels 1–3 words naming the message ("POST /runs", "load workflow", "spawn runner", "insert rows", "200 OK") |
 | `module_map` | directories/packages as a tree from the repo tree |
-| `db_schema` | tables/columns from migrations and ORM models found in the scan |
+| `db_schema` | every table with its columns after applying all migrations in path order (`CREATE TABLE`, `ALTER TABLE ADD/DROP/RENAME COLUMN`, `RENAME TO`, `DROP TABLE`) plus ORM models (sqlx/diesel/sea-orm/prisma/SQLAlchemy/Django/TypeORM/ActiveRecord); one `datastore` node per table (label = table name, caption "N columns", description one column per line as `name type [PK] [FK → table.column] [NOT NULL] [UNIQUE]`), one edge per foreign key child → parent labelled "references" with `evidence_path` = the migration that declared it; grouped by schema when there is more than one |
 | `custom` | the prompt (reasoner) or imported Mermaid |
 
 Mermaid output: `flowchart LR|TB` with `subgraph` per group, node shapes
 by kind (`[(db)]` for datastores, `([actor])`, `[[infra]]`, `>external]`),
 `-.->` for dashed edges, `click <id> "/projects/<id>/code/<path>"` for nodes
-with a path, and `%% evidence: <path>` comments per edge. `UpdateDiagram`
+with a path, and `%% evidence: <path>` comments per edge. `db_schema` is
+rendered as `erDiagram` instead: one entity per table with typed
+attributes and `PK`/`FK`/`UK` markers and one `child }o--|| parent : fk_column`
+relationship per foreign key. `sequence` is rendered as `sequenceDiagram`:
+`participant` lines in call order, `->>` for calls, `-->>` for returns and
+a `Note over` naming the workflow. `UpdateDiagram`
 with `mermaid` makes the Mermaid source authoritative (`source="mermaid"`);
 the spec is kept for the editorial renderer but marked stale in the UI.
 
@@ -610,21 +627,53 @@ Routes: `GET /projects/{id}/diagrams`, `POST /projects/{id}/diagrams {kind, prom
 ## 17. Editorial diagram renderer (web)
 
 `web/src/features/diagrams/components/editorial-canvas` renders a
-`DiagramSpec` as inline SVG in the spirit of `cathrynlavery/diagram-design`
-(`~/.claude/skills/diagram-design`: style-guide.md, output-spec.md,
-type-architecture.md, type-high-level.md, type-data-flow.md,
-type-deployment.md, type-dependency.md, semantic-patterns.md): hairline
-strokes, no shadows or gradients, the project's own tokens (brand accent
-≤ 5 placements, semantic colours only for state), Geist for labels and
-Geist Mono for captions/paths, 8 px grid, groups as tinted rounded regions
-with a small-caps label, nodes as 6 px-radius cards with a kind icon
-(lucide) and caption, edges as orthogonal-ish routed paths with open
-arrowheads and label pills, dashed for inferred, a legend only when more
-than one edge style appears. Layout via `@dagrejs/dagre` with compound
-groups; `LR` default, `TB` for sequence/module maps. Interactions: hover
-highlights a node's edges, click opens the code browser at `node.path`,
+`DiagramSpec` as inline SVG on the plain app background, colourful and
+shape-coded like gitdiagram's Mermaid output but with the project's own
+tokens: hairline strokes, no shadows or gradients, Geist for labels and
+Geist Mono for file names and captions. The diagram kind picks the
+renderer:
+
+- **Shaped graph** (every kind but `db_schema` and `sequence`): the shape
+  says the kind — actor a 64 px circle, service/module/job a 6 px-radius
+  rectangle, ui a 12 px-radius rectangle, datastore a cylinder, external a
+  stadium, queue a hexagon, infra a rectangle with doubled sides — with the
+  label (≤ 2 lines, 13 px) and a mono line (`[main.rs]` for code nodes,
+  the caption for data/external ones); nodes are ≥ 150 px wide and grow
+  with their text. The tint says the group: six hues (`--diagram-1..6`
+  and `--diagram-N-fg` in `web/src/index.css`, fills at
+  `--diagram-fill-alpha`, borders at `--diagram-stroke-alpha`, `.dark`
+  overrides) assigned to groups in order; actors are brand-tinted,
+  datastores always rose, externals always green. Groups are light
+  rectangles labelled top-centre (12 px medium, 16 px padding). Edges are
+  foreground/60 with open arrowheads, dashed when inferred or `returns`,
+  labels plain 12 px text on a background-coloured halo at dagre's label
+  position. Layout is `@dagrejs/dagre` (compound groups, ranksep 70,
+  nodesep 40, edgesep 20) and the edges follow dagre's own points as
+  rounded polylines; `TB` for every graph kind except `dependency`
+  (`LR`) and `custom` (the spec's `direction`), because the builders
+  currently write the model default `LR` rather than a choice.
+- **ER** (`db_schema`): a card per table — mono name in a tinted header,
+  a row per column parsed from `node.description` (one per line,
+  `name type [PK] [FK → table.col] [NOT NULL] [UNIQUE]`; a comma list
+  of names and `(+N more)` are read too; "N columns" from the caption
+  when empty) with PK/FK badges and the type at the right; FK edges child
+  → parent with a crow's foot at the child and a bar at the parent,
+  labelled with the FK column; dagre `LR`, ranksep 90.
+- **Sequence** (`sequence`): participants in spec order across the top
+  (actor as a head over its box, 180 px columns), dashed lifelines,
+  messages in `edge.id` order (`m01`, `m02`…) top-down at 36 px steps —
+  `call` solid with a filled head, `returns` dashed with an open head,
+  label above, self-messages as a loop — and an activation bar on the
+  callee from a call to the return that answers it.
+
+Shared by all three: a legend strip under the drawing (shapes and line
+styles in use, cardinality ends and key badges for ER, call/return/
+activation for sequence), hover highlights a node's edges and neighbours,
+click (or Enter on a focused node) opens the code browser at `node.path`,
 ⌘-scroll zoom and drag pan, fit-to-view, light/dark via tokens. Export:
-SVG (serialised with inlined computed styles) and PNG (2× canvas). The
-Mermaid tab renders the diagram's `mermaid` with `mermaid` (lazy chunk,
-theme variables mapped from the tokens) and offers an editor with live
-preview, syntax errors shown inline, and Save (`PATCH … {mermaid}`).
+SVG (serialised with the tokens resolved to the current theme) and PNG
+(2× canvas). The Mermaid tab renders the diagram's `mermaid` with
+`mermaid` (lazy chunk; its `themeVariables` take the same palette —
+primary/secondary/tertiary are the first three tints over the
+background) and offers an editor with live preview, syntax errors shown
+inline, and Save (`PATCH … {mermaid}`).

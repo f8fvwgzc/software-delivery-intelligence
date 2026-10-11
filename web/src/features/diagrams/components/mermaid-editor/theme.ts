@@ -15,10 +15,28 @@ const TOKEN_NAMES = [
   'info',
   'warning',
   'destructive',
+  'diagram-1',
+  'diagram-1-fg',
+  'diagram-2',
+  'diagram-2-fg',
+  'diagram-3',
+  'diagram-3-fg',
+  'diagram-4',
+  'diagram-4-fg',
+  'diagram-5',
+  'diagram-5-fg',
+  'diagram-6',
+  'diagram-6-fg',
 ] as const
 
 type TokenName = (typeof TOKEN_NAMES)[number]
-export type Tokens = Record<TokenName, string> & { fontSans: string; fontMono: string }
+export type Tokens = Record<TokenName, string> & {
+  fontSans: string
+  fontMono: string
+  /** The diagram palette's fill and stroke alphas, as the editorial canvas uses them. */
+  fillAlpha: number
+  strokeAlpha: number
+}
 
 let canvasContext: CanvasRenderingContext2D | null | undefined
 
@@ -63,51 +81,83 @@ export function readTokens(): Tokens {
   const style = getComputedStyle(document.documentElement)
   const read = (name: string) => style.getPropertyValue(`--${name}`).trim()
   const tokens = Object.fromEntries(TOKEN_NAMES.map((name) => [name, toHex(read(name))])) as Record<TokenName, string>
-  return { ...tokens, fontSans: read('font-sans'), fontMono: read('font-mono') }
+  return {
+    ...tokens,
+    fontSans: read('font-sans'),
+    fontMono: read('font-mono'),
+    fillAlpha: Number(read('diagram-fill-alpha')) || 0.12,
+    strokeAlpha: Number(read('diagram-stroke-alpha')) || 0.45,
+  }
 }
 
-/** Mermaid `themeVariables` for the `base` theme, mapped from the tokens. */
+function hexChannels(hex: string): [number, number, number] | null {
+  const match = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  return match ? [parseInt(match[1], 16), parseInt(match[2], 16), parseInt(match[3], 16)] : null
+}
+
+/** `colour` at `alpha` over `base`, flattened to hex: Mermaid wants opaque colours it can derive from. */
+export function blend(colour: string, base: string, alpha: number): string {
+  const top = hexChannels(colour)
+  const under = hexChannels(base)
+  if (!top || !under) return colour
+  const channel = (index: number) => Math.round(top[index] * alpha + under[index] * (1 - alpha))
+  return `#${[0, 1, 2].map((index) => channel(index).toString(16).padStart(2, '0')).join('')}`
+}
+
+/**
+ * Mermaid `themeVariables` for the `base` theme, mapped from the tokens.
+ * The editorial canvas's palette carries over: primary/secondary/tertiary
+ * are the first three group tints at their fill alpha over the background,
+ * with matching borders, so nodes and clusters in the Mermaid tab share
+ * the editorial view's colours.
+ */
 export function themeVariables(tokens: Tokens, dark: boolean) {
+  const bg = tokens.background
+  const fill = (hue: string) => blend(hue, bg, tokens.fillAlpha)
+  const border = (hue: string) => blend(hue, bg, tokens.strokeAlpha)
+  const primary = fill(tokens['diagram-1'])
+  const secondary = fill(tokens['diagram-2'])
+  const tertiary = fill(tokens['diagram-3'])
   return {
     darkMode: dark,
-    background: tokens.background,
+    background: bg,
     fontFamily: tokens.fontSans,
     fontSize: '13px',
-    primaryColor: tokens.card,
-    primaryTextColor: tokens.foreground,
-    primaryBorderColor: tokens.border,
-    secondaryColor: tokens.muted,
-    secondaryTextColor: tokens.foreground,
-    secondaryBorderColor: tokens.border,
-    tertiaryColor: tokens.muted,
-    tertiaryTextColor: tokens.foreground,
-    tertiaryBorderColor: tokens.border,
+    primaryColor: primary,
+    primaryTextColor: tokens['diagram-1-fg'],
+    primaryBorderColor: border(tokens['diagram-1']),
+    secondaryColor: secondary,
+    secondaryTextColor: tokens['diagram-2-fg'],
+    secondaryBorderColor: border(tokens['diagram-2']),
+    tertiaryColor: tertiary,
+    tertiaryTextColor: tokens['diagram-3-fg'],
+    tertiaryBorderColor: border(tokens['diagram-3']),
     lineColor: tokens['muted-foreground'],
     textColor: tokens.foreground,
-    mainBkg: tokens.card,
-    nodeBorder: tokens.border,
-    nodeTextColor: tokens.foreground,
-    clusterBkg: tokens.muted,
-    clusterBorder: tokens.border,
-    titleColor: tokens.foreground,
-    edgeLabelBackground: tokens.background,
+    mainBkg: primary,
+    nodeBorder: border(tokens['diagram-1']),
+    nodeTextColor: tokens['diagram-1-fg'],
+    clusterBkg: blend(tokens['diagram-1'], bg, tokens.fillAlpha / 2),
+    clusterBorder: blend(tokens['diagram-1'], bg, tokens.strokeAlpha * 0.7),
+    titleColor: tokens['diagram-1-fg'],
+    edgeLabelBackground: bg,
     defaultLinkColor: tokens['muted-foreground'],
     // Sequence diagrams.
-    actorBkg: tokens.card,
-    actorBorder: tokens.border,
-    actorTextColor: tokens.foreground,
+    actorBkg: primary,
+    actorBorder: border(tokens['diagram-1']),
+    actorTextColor: tokens['diagram-1-fg'],
     actorLineColor: tokens.border,
     signalColor: tokens.foreground,
     signalTextColor: tokens.foreground,
-    labelBoxBkgColor: tokens.muted,
-    labelBoxBorderColor: tokens.border,
-    labelTextColor: tokens.foreground,
-    loopTextColor: tokens.foreground,
-    noteBkgColor: tokens.muted,
-    noteBorderColor: tokens.border,
-    noteTextColor: tokens.foreground,
-    activationBkgColor: tokens.muted,
-    activationBorderColor: tokens.border,
+    labelBoxBkgColor: tertiary,
+    labelBoxBorderColor: border(tokens['diagram-3']),
+    labelTextColor: tokens['diagram-3-fg'],
+    loopTextColor: tokens['diagram-3-fg'],
+    noteBkgColor: secondary,
+    noteBorderColor: border(tokens['diagram-2']),
+    noteTextColor: tokens['diagram-2-fg'],
+    activationBkgColor: primary,
+    activationBorderColor: border(tokens['diagram-1']),
     // ER diagrams.
     attributeBackgroundColorOdd: tokens.card,
     attributeBackgroundColorEven: tokens.muted,

@@ -107,7 +107,7 @@ export function sourceMeta(source: string) {
   return DIAGRAM_SOURCE[source] ?? { label: source, tone: 'neutral' as StatusTone, description: '' }
 }
 
-/** Node kind → lucide icon (CONTRACT.md §17). */
+/** Node kind → lucide icon, for lists and tables. */
 const NODE_ICON: Record<string, LucideIcon> = {
   actor: UserIcon,
   service: ServerIcon,
@@ -136,26 +136,55 @@ export const NODE_KIND_LABEL: Record<string, string> = {
   job: 'Job',
 }
 
+/** How the editorial canvas draws a node (CONTRACT.md §17): the shape says the kind, the tint says the group. */
+export type NodeShape = 'circle' | 'rect' | 'rounded' | 'cylinder' | 'stadium' | 'hexagon' | 'subroutine'
+
+const NODE_SHAPE: Record<string, NodeShape> = {
+  actor: 'circle',
+  service: 'rect',
+  module: 'rect',
+  job: 'rect',
+  ui: 'rounded',
+  datastore: 'cylinder',
+  external: 'stadium',
+  queue: 'hexagon',
+  infra: 'subroutine',
+}
+
+export function nodeShape(kind: string): NodeShape {
+  return NODE_SHAPE[kind] ?? 'rect'
+}
+
+/** Legend wording per shape, in the order the legend lists them. */
+export const NODE_SHAPE_LABEL: Record<NodeShape, string> = {
+  circle: 'Actor',
+  rect: 'Service / module / job',
+  rounded: 'UI',
+  cylinder: 'Datastore',
+  stadium: 'External',
+  hexagon: 'Queue',
+  subroutine: 'Infrastructure',
+}
+
+export const NODE_SHAPES: readonly NodeShape[] = ['circle', 'rect', 'rounded', 'cylinder', 'stadium', 'hexagon', 'subroutine']
+
 export type EdgeStyle = 'call' | 'data' | 'async' | 'returns' | 'contains'
 
 export const EDGE_STYLES: readonly EdgeStyle[] = ['call', 'data', 'async', 'returns', 'contains']
 
 interface EdgeStyleMeta {
   label: string
-  /** CSS token the stroke reads; `currentColor` means the canvas foreground. */
-  color: string
-  opacity: number
   /** Always dashed, regardless of `edge.dashed`. */
   dashed: boolean
 }
 
-/** Stroke per edge style: call = foreground/60, data = info, async = warning, returns = muted dashed. */
+/** Every style is drawn in the foreground at 60%; `returns` is dashed like an inferred edge. */
 export const EDGE_STYLE: Record<EdgeStyle, EdgeStyleMeta> = {
-  call: { label: 'Call', color: 'var(--foreground)', opacity: 0.6, dashed: false },
-  data: { label: 'Data', color: 'var(--info)', opacity: 0.9, dashed: false },
-  async: { label: 'Async', color: 'var(--warning)', opacity: 0.9, dashed: false },
-  returns: { label: 'Returns', color: 'var(--muted-foreground)', opacity: 0.8, dashed: true },
-  contains: { label: 'Contains', color: 'var(--muted-foreground)', opacity: 0.6, dashed: false },
+  call: { label: 'Call', dashed: false },
+  data: { label: 'Data', dashed: false },
+  async: { label: 'Async', dashed: false },
+  returns: { label: 'Returns', dashed: true },
+  contains: { label: 'Contains', dashed: false },
 }
 
 export function edgeStyle(style: string | undefined): EdgeStyle {

@@ -36,7 +36,7 @@ export function CanvasSkeleton({ className }: { className?: string }) {
   return (
     <div
       aria-hidden
-      className={cn('relative w-full overflow-hidden rounded-lg bg-card ring-1 ring-border', CANVAS_HEIGHT_CLASS, className)}
+      className={cn('relative w-full overflow-hidden rounded-lg bg-background ring-1 ring-border', CANVAS_HEIGHT_CLASS, className)}
     >
       {GROUPS.map((group) => (
         <div

@@ -110,6 +110,29 @@
   --sidebar-accent-foreground: oklch(0.24 0.008 265);
   --sidebar-border: oklch(0.945 0.003 265);
   --sidebar-ring: oklch(0.74 0.03 268);
+
+  /*
+   * Diagram tints (editorial canvas and the Mermaid theme): six hues assigned
+   * to groups in order. `--diagram-N` is the hue for fills (at
+   * `--diagram-fill-alpha`) and borders (at `--diagram-stroke-alpha`);
+   * `--diagram-N-fg` is the same hue dark enough for 11–13 px text on the fill.
+   */
+  --diagram-fill-alpha: 0.12;
+  --diagram-stroke-alpha: 0.45;
+  --diagram-group-fill-alpha: 0.06;
+  --diagram-group-stroke-alpha: 0.3;
+  --diagram-1: oklch(0.58 0.15 250);
+  --diagram-1-fg: oklch(0.4 0.13 250);
+  --diagram-2: oklch(0.68 0.15 70);
+  --diagram-2-fg: oklch(0.44 0.12 70);
+  --diagram-3: oklch(0.6 0.14 150);
+  --diagram-3-fg: oklch(0.4 0.12 150);
+  --diagram-4: oklch(0.58 0.16 300);
+  --diagram-4-fg: oklch(0.42 0.14 300);
+  --diagram-5: oklch(0.62 0.17 10);
+  --diagram-5-fg: oklch(0.44 0.15 10);
+  --diagram-6: oklch(0.6 0.12 190);
+  --diagram-6-fg: oklch(0.4 0.1 190);
 }
 
 .dark {
@@ -151,6 +174,23 @@
   --sidebar-accent-foreground: oklch(0.94 0.004 265);
   --sidebar-border: oklch(1 0 0 / 6%);
   --sidebar-ring: oklch(0.55 0.05 268);
+
+  --diagram-fill-alpha: 0.18;
+  --diagram-stroke-alpha: 0.55;
+  --diagram-group-fill-alpha: 0.09;
+  --diagram-group-stroke-alpha: 0.4;
+  --diagram-1: oklch(0.72 0.12 250);
+  --diagram-1-fg: oklch(0.86 0.07 250);
+  --diagram-2: oklch(0.76 0.12 70);
+  --diagram-2-fg: oklch(0.88 0.08 70);
+  --diagram-3: oklch(0.72 0.12 150);
+  --diagram-3-fg: oklch(0.86 0.08 150);
+  --diagram-4: oklch(0.72 0.13 300);
+  --diagram-4-fg: oklch(0.87 0.08 300);
+  --diagram-5: oklch(0.72 0.14 10);
+  --diagram-5-fg: oklch(0.87 0.08 10);
+  --diagram-6: oklch(0.72 0.1 190);
+  --diagram-6-fg: oklch(0.86 0.07 190);
 }
 
 @layer base {
@@ -219,6 +259,24 @@
 }
 
 @layer components {
+  /*
+   * Syntax tokens in the code browser. shiki emits both themes' colours as
+   * variables on each span; the theme class picks one. Unset variables fall
+   * through to the surrounding text colour, so plain tokens read as body text.
+   */
+  .code-token {
+    color: var(--shiki-light);
+    font-style: var(--shiki-light-font-style, inherit);
+    font-weight: var(--shiki-light-font-weight, inherit);
+    text-decoration: var(--shiki-light-text-decoration, inherit);
+  }
+  .dark .code-token {
+    color: var(--shiki-dark);
+    font-style: var(--shiki-dark-font-style, inherit);
+    font-weight: var(--shiki-dark-font-weight, inherit);
+    text-decoration: var(--shiki-dark-text-decoration, inherit);
+  }
+
   /* Long-form generated documents. */
   .prose-sdi {
     @apply text-sm leading-relaxed text-foreground/90;

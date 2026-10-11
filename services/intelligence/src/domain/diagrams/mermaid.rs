@@ -4,7 +4,241 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{DiagramNode, DiagramSpec};
+use sdi_proto::intelligence::v1::DiagramKind;
+
+use super::model::{DiagramNode, DiagramSpec, kind, style};
+
+/// Mermaid source for a spec of the given kind: `erDiagram` for the
+/// database schema, `sequenceDiagram` for the sequence, a flowchart for
+/// everything else (CONTRACT.md §16).
+pub fn render_kind(kind: DiagramKind, spec: &DiagramSpec, project_id: &str) -> String {
+    match kind {
+        DiagramKind::DbSchema if !spec.nodes.is_empty() => render_er(spec),
+        DiagramKind::Sequence if !spec.nodes.is_empty() => render_sequence(spec),
+        _ => render(spec, project_id),
+    }
+}
+
+/// `erDiagram`: one entity per table with typed attributes and PK/FK/UK
+/// markers (read back from the node's description lines), and one
+/// `child }o--|| parent : fk_column` relationship per foreign key.
+pub fn render_er(spec: &DiagramSpec) -> String {
+    let mut out = String::from("erDiagram\n");
+    let mut taken = HashSet::new();
+    let mut names: HashMap<&str, String> = HashMap::new();
+    for node in &spec.nodes {
+        let base = sanitize(if node.label.is_empty() {
+            &node.id
+        } else {
+            &node.label
+        });
+        names.insert(node.id.as_str(), unique(&base, &mut taken));
+    }
+    for node in &spec.nodes {
+        if !node.path.is_empty() {
+            out.push_str(&format!(
+                "    %% {}: {}\n",
+                names[node.id.as_str()],
+                comment_safe(&node.path)
+            ));
+        }
+        out.push_str(&format!("    {} {{\n", names[node.id.as_str()]));
+        for line in node.description.lines() {
+            let Some(column) = parse_column_line(line) else {
+                continue;
+            };
+            out.push_str("        ");
+            out.push_str(&column.kind);
+            out.push(' ');
+            out.push_str(&column.name);
+            if !column.keys.is_empty() {
+                out.push(' ');
+                out.push_str(&column.keys.join(", "));
+            }
+            if !column.comment.is_empty() {
+                out.push_str(&format!(" \"{}\"", escape(&column.comment)));
+            }
+            out.push('\n');
+        }
+        out.push_str("    }\n");
+    }
+    for edge in &spec.edges {
+        let (Some(child), Some(parent)) = (
+            names.get(edge.source.as_str()),
+            names.get(edge.target.as_str()),
+        ) else {
+            continue;
+        };
+        let column = spec
+            .node(&edge.source)
+            .and_then(|n| {
+                fk_column(
+                    &n.description,
+                    &spec
+                        .node(&edge.target)
+                        .map(|p| p.label.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .unwrap_or_else(|| edge.label.clone());
+        if !edge.evidence_path.is_empty() {
+            out.push_str(&format!(
+                "    %% evidence: {}\n",
+                comment_safe(&edge.evidence_path)
+            ));
+        }
+        let line = if edge.dashed { "}o..||" } else { "}o--||" };
+        out.push_str(&format!(
+            "    {child} {line} {parent} : {}\n",
+            sanitize(&column)
+        ));
+    }
+    out
+}
+
+struct ErColumn {
+    name: String,
+    kind: String,
+    keys: Vec<&'static str>,
+    comment: String,
+}
+
+/// "owner_id uuid [FK → users.id] [NOT NULL]" → type `uuid`, keys `FK`, comment "not null".
+fn parse_column_line(line: &str) -> Option<ErColumn> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let (head, flags) = match line.find('[') {
+        Some(i) => (&line[..i], &line[i..]),
+        None => (line, ""),
+    };
+    let mut parts = head.split_whitespace();
+    let name = sanitize(parts.next()?);
+    let kind_text = parts.collect::<Vec<_>>().join("_").replace(",_", ",");
+    let kind = if kind_text.is_empty() {
+        "unknown".to_owned()
+    } else {
+        kind_text
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '(' | ')' | '[' | ']') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    };
+    let mut keys = Vec::new();
+    let mut comment = Vec::new();
+    if flags.contains("[PK]") {
+        keys.push("PK");
+    }
+    if flags.contains("[FK") {
+        keys.push("FK");
+    }
+    if flags.contains("[UNIQUE]") {
+        keys.push("UK");
+    }
+    if flags.contains("[NOT NULL]") {
+        comment.push("not null");
+    }
+    Some(ErColumn {
+        name,
+        kind,
+        keys,
+        comment: comment.join(", "),
+    })
+}
+
+/// The column whose `[FK → parent.col]` names `parent`.
+fn fk_column(description: &str, parent: &str) -> Option<String> {
+    let needle = format!("[FK → {parent}");
+    description
+        .lines()
+        .find(|l| l.contains(&needle))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_owned)
+}
+
+/// `sequenceDiagram`: participants in node order, messages in `edge.id`
+/// order; calls as `->>`, returns as `-->>`, with a note naming the workflow.
+pub fn render_sequence(spec: &DiagramSpec) -> String {
+    let ids = Ids::new(spec);
+    let mut out = String::from("sequenceDiagram\n");
+    for node in &spec.nodes {
+        let keyword = if node.kind == kind::ACTOR {
+            "actor"
+        } else {
+            "participant"
+        };
+        let mut label = node.label.trim().to_owned();
+        if !node.caption.trim().is_empty() && node.kind != kind::ACTOR {
+            label.push_str(&format!(" ({})", node.caption.trim()));
+        }
+        out.push_str(&format!(
+            "    {keyword} {} as {}\n",
+            ids.node(&node.id),
+            message_safe(&label)
+        ));
+    }
+    if let (Some(first), Some(last)) = (spec.nodes.first(), spec.nodes.last()) {
+        let workflow = spec
+            .edges
+            .iter()
+            .find(|e| e.style != style::RETURNS)
+            .map(|e| e.label.clone())
+            .unwrap_or_else(|| "principal workflow".to_owned());
+        out.push_str(&format!(
+            "    Note over {},{}: Principal workflow: {}\n",
+            ids.node(&first.id),
+            ids.node(&last.id),
+            message_safe(&workflow)
+        ));
+    }
+    let mut edges: Vec<&super::model::DiagramEdge> = spec.edges.iter().collect();
+    edges.sort_by(|a, b| a.id.cmp(&b.id));
+    for edge in edges {
+        if !spec.has_node(&edge.source) || !spec.has_node(&edge.target) {
+            continue;
+        }
+        if edge.evidence_path.is_empty() {
+            out.push_str("    %% evidence: none (inferred)\n");
+        } else {
+            out.push_str(&format!(
+                "    %% evidence: {}\n",
+                comment_safe(&edge.evidence_path)
+            ));
+        }
+        let arrow = if edge.style == style::RETURNS {
+            "-->>"
+        } else {
+            "->>"
+        };
+        out.push_str(&format!(
+            "    {}{arrow}{}: {}\n",
+            ids.node(&edge.source),
+            ids.node(&edge.target),
+            message_safe(edge.label.trim())
+        ));
+    }
+    for node in spec.nodes.iter().filter(|n| !n.path.is_empty()) {
+        out.push_str(&format!(
+            "    %% {}: {}\n",
+            ids.node(&node.id),
+            comment_safe(&node.path)
+        ));
+    }
+    out
+}
+
+/// Message and alias text: no line breaks or the characters that end a statement.
+fn message_safe(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+        .replace(';', ",")
+        .replace(':', " -")
+}
 
 /// Mermaid source for a spec. `project_id` builds the code-browser links.
 pub fn render(spec: &DiagramSpec, project_id: &str) -> String {
@@ -337,7 +571,7 @@ fn endpoint(text: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::diagrams::model::{DiagramEdge, DiagramGroup, kind, style};
+    use crate::domain::diagrams::model::{DiagramEdge, DiagramGroup};
 
     fn fixture() -> DiagramSpec {
         let mut spec = DiagramSpec::new("LR");
@@ -459,6 +693,119 @@ mod tests {
         assert!(!source.contains("click n_stripe"));
         // A node in an unknown group is declared at the top level.
         assert!(source.contains("\n    n_stripe>"));
+    }
+
+    #[test]
+    fn er_and_sequence_renderers_follow_the_kind() {
+        let mut er = DiagramSpec::new("LR");
+        er.add_node(DiagramNode {
+            id: "table_users".into(),
+            label: "users".into(),
+            kind: kind::DATASTORE.into(),
+            path: "db/0001.sql".into(),
+            description: "id uuid [PK]\nemail text [NOT NULL] [UNIQUE]".into(),
+            caption: "2 columns".into(),
+            ..Default::default()
+        });
+        er.add_node(DiagramNode {
+            id: "table_views".into(),
+            label: "views".into(),
+            kind: kind::DATASTORE.into(),
+            description:
+                "id uuid [PK]\nowner_id uuid [FK → users.id] [NOT NULL]\namount numeric(10, 2)"
+                    .into(),
+            ..Default::default()
+        });
+        er.add_edge(DiagramEdge {
+            source: "table_views".into(),
+            target: "table_users".into(),
+            label: "references".into(),
+            style: style::DATA.into(),
+            evidence_path: "db/0001.sql".into(),
+            ..Default::default()
+        });
+        let source = render_kind(DiagramKind::DbSchema, &er, "p");
+        check(&source).unwrap();
+        assert!(source.starts_with("erDiagram\n"));
+        assert!(
+            source.contains(
+                "    users {\n        uuid id PK\n        text email UK \"not null\"\n    }"
+            ),
+            "{source}"
+        );
+        assert!(source.contains("uuid owner_id FK \"not null\""), "{source}");
+        assert!(source.contains("numeric(10_2) amount"), "{source}");
+        assert!(source.contains("views }o--|| users : owner_id"), "{source}");
+        // An empty schema falls back to a flowchart so the renderer has something to draw.
+        assert!(
+            render_kind(DiagramKind::DbSchema, &DiagramSpec::new("LR"), "p")
+                .starts_with("flowchart")
+        );
+
+        let mut seq = DiagramSpec::new("TB");
+        seq.add_node(DiagramNode {
+            id: "actor_user".into(),
+            label: "User".into(),
+            kind: kind::ACTOR.into(),
+            ..Default::default()
+        });
+        seq.add_node(DiagramNode {
+            id: "service_api".into(),
+            label: "api".into(),
+            kind: kind::SERVICE.into(),
+            caption: "axum".into(),
+            path: "src/main.rs".into(),
+            ..Default::default()
+        });
+        seq.add_node(DiagramNode {
+            id: "pg".into(),
+            label: "PostgreSQL".into(),
+            kind: kind::DATASTORE.into(),
+            ..Default::default()
+        });
+        for (id, s, t, l, st) in [
+            ("m02", "service_api", "pg", "select rows", style::DATA),
+            (
+                "m01",
+                "actor_user",
+                "service_api",
+                "GET /api/views",
+                style::CALL,
+            ),
+            ("m03", "pg", "service_api", "rows", style::RETURNS),
+            ("m04", "service_api", "actor_user", "200 OK", style::RETURNS),
+        ] {
+            seq.add_edge(DiagramEdge {
+                id: id.into(),
+                source: s.into(),
+                target: t.into(),
+                label: l.into(),
+                style: st.into(),
+                dashed: st == style::RETURNS,
+                evidence_path: if st == style::RETURNS {
+                    String::new()
+                } else {
+                    "src/main.rs".into()
+                },
+            });
+        }
+        let source = render_kind(DiagramKind::Sequence, &seq, "p");
+        check(&source).unwrap();
+        assert!(source.starts_with("sequenceDiagram\n    actor n_actor_user as User\n    participant n_service_api as api (axum)\n"), "{source}");
+        assert!(
+            source.contains("Note over n_actor_user,n_pg: Principal workflow"),
+            "{source}"
+        );
+        let m1 = source
+            .find("n_actor_user->>n_service_api: GET /api/views")
+            .unwrap();
+        let m2 = source.find("n_service_api->>n_pg: select rows").unwrap();
+        let m3 = source.find("n_pg-->>n_service_api: rows").unwrap();
+        let m4 = source
+            .find("n_service_api-->>n_actor_user: 200 OK")
+            .unwrap();
+        assert!(m1 < m2 && m2 < m3 && m3 < m4, "{source}");
+        assert!(render_kind(DiagramKind::Architecture, &seq, "p").starts_with("flowchart TB"));
     }
 
     #[test]

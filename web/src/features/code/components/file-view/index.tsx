@@ -12,6 +12,7 @@ import { baseName } from '../../lib/path'
 import { CodeLines } from './code-lines'
 import { FactsBar } from './facts-bar'
 import { FileHeader, type MarkdownMode } from './file-header'
+import { useHighlight } from './use-highlight'
 
 interface FileViewProps {
   projectId: string
@@ -26,6 +27,7 @@ export function FileView({ projectId, path }: FileViewProps) {
   const { data: file } = useSuspenseQuery(codeQueries.file(projectId, path))
   const { hash } = useLocation()
   const [markdownMode, setMarkdownMode] = useState<MarkdownMode>('preview')
+  const tokens = useHighlight(projectId, file)
 
   const markdown = !file.binary && isMarkdown(file.language, baseName(file.path))
   const lines = file.binary ? [] : splitLines(file.content)
@@ -56,7 +58,7 @@ export function FileView({ projectId, path }: FileViewProps) {
       ) : markdown && markdownMode === 'preview' ? (
         <Markdown className="max-w-[80ch] px-5 py-4">{file.content}</Markdown>
       ) : (
-        <CodeLines lines={lines} highlighted={highlighted} />
+        <CodeLines lines={lines} tokens={tokens} highlighted={highlighted} />
       )}
     </article>
   )

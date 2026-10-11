@@ -15,9 +15,12 @@ import { normalizePath } from '../lib/path'
 import { buildTree, type TreeModel } from '../lib/tree'
 
 const GRID_CLASS = 'grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] lg:items-start'
-/** The tree pane sticks under the 48px app header and scrolls on its own. */
+/**
+ * The tree pane sticks 0.5rem under the app header (3rem) plus the project
+ * band (`--project-band`, measured by the project layout) and scrolls on its own.
+ */
 const TREE_PANE_CLASS =
-  'flex max-h-72 flex-col gap-2 rounded-lg p-2 ring-1 ring-border lg:sticky lg:top-14 lg:max-h-[calc(100dvh-4.5rem)]'
+  'flex max-h-72 flex-col gap-2 rounded-lg p-2 ring-1 ring-border lg:sticky lg:top-[calc(3.5rem+var(--project-band,0px))] lg:max-h-[calc(100dvh-4.5rem-var(--project-band,0px))]'
 /** No overflow clipping here: the file header is sticky against the window, not the pane. */
 const CONTENT_PANE_CLASS = 'min-w-0 rounded-lg ring-1 ring-border'
 

@@ -18,7 +18,8 @@ use crate::{
     convert,
     db::diagrams::{self as repo, DiagramRow},
     domain::diagrams::{
-        self, DiagramInput, DiagramSpec, Generated, MAX_FILE_BYTES, key_files, mermaid,
+        self, DiagramInput, DiagramSpec, Generated, MAX_FILE_BYTES, MAX_KEY_FILES, follow_imports,
+        key_files, mermaid,
     },
     reasoner,
 };
@@ -75,7 +76,7 @@ pub(super) async fn generate(
                 Vec::new()
             }
         };
-        let files = read_key_files(svc, &project_id, kind, &tree).await;
+        let files = read_key_files(svc, &project_id, kind, &tree, &context, &prompt).await;
         let input = DiagramInput {
             context: &context,
             tree: &tree,
@@ -87,7 +88,7 @@ pub(super) async fn generate(
         let settings = svc.settings().await?;
         let reasoner = svc.reasoner_for(&settings);
         let refined = reasoner::diagrams::refine(reasoner.as_ref(), kind, &mut generated).await;
-        let mermaid = mermaid::render(&generated.spec, &project_id);
+        let mermaid = mermaid::render_kind(kind, &generated.spec, &project_id);
         (
             generated,
             mermaid,
@@ -123,15 +124,54 @@ pub(super) async fn generate(
     Ok(convert::diagram(&row))
 }
 
-/// The key files for a kind, fetched concurrently; unreadable or binary
-/// files are skipped and every excerpt is cut at `MAX_FILE_BYTES`.
+/// The key files for a kind, fetched concurrently: first the structural
+/// sample (`key_files`), then, for the kinds that read the import graph,
+/// the files that sample imports most (`follow_imports`) up to
+/// `MAX_KEY_FILES`. Unreadable or binary files are skipped and every
+/// excerpt is cut at `MAX_FILE_BYTES`.
 async fn read_key_files(
     svc: &IntelligenceGrpc,
     project_id: &str,
     kind: DiagramKind,
     tree: &[sdi_proto::knowledge::v1::RepoTreeEntry],
+    context: &sdi_proto::knowledge::v1::ProjectContext,
+    prompt: &str,
 ) -> BTreeMap<String, String> {
-    let paths = key_files(kind, tree);
+    let mut files = fetch_files(svc, project_id, key_files(kind, tree)).await;
+    let follows = matches!(
+        kind,
+        DiagramKind::Architecture
+            | DiagramKind::Custom
+            | DiagramKind::DataFlow
+            | DiagramKind::Sequence
+            | DiagramKind::HighLevel
+    );
+    if follows && files.len() < MAX_KEY_FILES {
+        let more = {
+            let input = DiagramInput {
+                context,
+                tree,
+                files: &files,
+                prompt,
+            };
+            follow_imports(&input, MAX_KEY_FILES - files.len())
+        };
+        files.extend(fetch_files(svc, project_id, more).await);
+    }
+    tracing::debug!(
+        kind = ?kind,
+        count = files.len(),
+        paths = ?files.keys().collect::<Vec<_>>(),
+        "key files sampled"
+    );
+    files
+}
+
+async fn fetch_files(
+    svc: &IntelligenceGrpc,
+    project_id: &str,
+    paths: Vec<String>,
+) -> BTreeMap<String, String> {
     let fetched = futures::future::join_all(
         paths
             .iter()
@@ -265,7 +305,11 @@ pub(super) async fn update(
                 diagrams::model::MAX_EDGES
             )));
         }
-        row.mermaid = mermaid::render(&spec, &row.project_id);
+        row.mermaid = mermaid::render_kind(
+            convert::diagram_kind_from_str(&row.kind),
+            &spec,
+            &row.project_id,
+        );
         row.spec = Json(spec);
         row.source = "edited".to_owned();
     }

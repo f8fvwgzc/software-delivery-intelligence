@@ -30,11 +30,15 @@ function buildTabs(project: Project): ProjectTab[] {
 const TAB_CLASS =
   'relative -mb-px inline-flex h-9 shrink-0 items-center gap-1.5 border-b-2 border-transparent px-1 text-sm whitespace-nowrap text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50'
 
+/** The strip bleeds through the page gutters so its hairline closes the sticky band edge to edge. */
+const STRIP_CLASS = '-mx-4 overflow-x-auto md:-mx-6'
+const LIST_CLASS = 'flex items-center gap-4 border-b px-4 md:px-6'
+
 /** Route-backed secondary navigation styled as a tab strip. */
 export function ProjectTabs({ project }: { project: Project }) {
   return (
-    <nav aria-label="Project sections" className="-mx-1 overflow-x-auto">
-      <ul className="flex items-center gap-4 border-b px-1">
+    <nav aria-label="Project sections" className={STRIP_CLASS}>
+      <ul className={LIST_CLASS}>
         {buildTabs(project).map((tab) => (
           <li key={tab.to}>
             <NavLink
@@ -60,8 +64,8 @@ export function ProjectTabs({ project }: { project: Project }) {
 
 export function ProjectTabsSkeleton() {
   return (
-    <div className="-mx-1 border-b px-1">
-      <div className="flex h-9 items-center gap-4">
+    <div className={STRIP_CLASS}>
+      <div className={cn(LIST_CLASS, 'h-9')}>
         {Array.from({ length: 7 }, (_, index) => (
           <div key={index} className="h-4 w-20 animate-pulse rounded-md bg-muted" />
         ))}

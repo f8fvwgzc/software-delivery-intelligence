@@ -9,7 +9,8 @@ use regex::Regex;
 use sdi_proto::knowledge::v1::{GraphNode, NodeKind};
 
 use super::{
-    catalog::{Catalog, node_id},
+    catalog::{Catalog, capitalise, node_id},
+    imports::{is_generated, is_source},
     model::{DiagramEdge, style},
 };
 
@@ -48,18 +49,18 @@ static RELATIVE_API: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"fetch\(\s*[`'"]/api|axios|baseURL|VITE_API|REACT_APP_API|NEXT_PUBLIC_API|createTRPC|useQuery\("#)
         .expect("relative api regex")
 });
-static SQL_WRITE: LazyLock<Regex> = LazyLock::new(|| {
+pub static SQL_WRITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|\.create\(|\.save\(|\.insert\(|\.upsert\(|\.execute\()")
         .expect("sql write regex")
 });
-static SQL_READ: LazyLock<Regex> = LazyLock::new(|| {
+pub static SQL_READ: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(SELECT\s|\.find\w*\(|\.query\(|\.fetch_(one|all|optional)\(|\.get\(|\.filter\(|\.first\()")
         .expect("sql read regex")
 });
 static ROUTE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?x)
-        \.route\(\s*"(/[^"\s]*)"                                   # axum/warp
+        \.route\(\s*"(/[^"\s]*)"(?:\s*,\s*(get|post|put|patch|delete)\()?   # axum/warp
         | @(?:app|router|api|bp)\.(get|post|put|patch|delete)\(\s*['"](/[^'"\s]*)['"]   # fastapi/flask
         | \b(?:app|router|server|api)\.(get|post|put|patch|delete)\(\s*['"`](/[^'"`\s]*)['"`]  # express/fastify/hono
         | path\(\s*['"]([^'"\s]*)['"]                               # django urls
@@ -291,6 +292,155 @@ pub fn routes_in(text: &str, limit: usize) -> Vec<String> {
     out
 }
 
+/// An external system the sampled code reaches over HTTP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalHost {
+    /// Diagram node id (`external_linear`).
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    /// `(file, host as written)` for every sampled file that names it.
+    pub callers: Vec<(String, String)>,
+}
+
+/// Well-known API hosts and the systems they stand for.
+const KNOWN_HOSTS: [(&str, &str); 22] = [
+    ("api.linear.app", "Linear"),
+    ("api.github.com", "GitHub"),
+    ("gitlab.com", "GitLab"),
+    ("atlassian.net", "Jira"),
+    ("app.asana.com", "Asana"),
+    ("api.openai.com", "OpenAI"),
+    ("api.anthropic.com", "Anthropic"),
+    ("api.stripe.com", "Stripe"),
+    ("hooks.slack.com", "Slack"),
+    ("slack.com", "Slack"),
+    ("api.twilio.com", "Twilio"),
+    ("api.sendgrid.com", "SendGrid"),
+    ("sentry.io", "Sentry"),
+    ("amazonaws.com", "AWS"),
+    ("googleapis.com", "Google APIs"),
+    ("api.notion.com", "Notion"),
+    ("api.pagerduty.com", "PagerDuty"),
+    ("api.datadoghq.com", "Datadog"),
+    ("discord.com", "Discord"),
+    ("api.telegram.org", "Telegram"),
+    ("huggingface.co", "Hugging Face"),
+    ("api.mapbox.com", "Mapbox"),
+];
+
+/// Hosts that are documentation, schema or package registries, not systems
+/// the product calls.
+const NOISE_HOSTS: [&str; 14] = [
+    "github.com",
+    "www.github.com",
+    "docs.rs",
+    "crates.io",
+    "npmjs.com",
+    "www.npmjs.com",
+    "pypi.org",
+    "www.w3.org",
+    "json-schema.org",
+    "schemas.microsoft.com",
+    "example.com",
+    "www.example.com",
+    "localhost",
+    "developer.mozilla.org",
+];
+
+/// External systems named by URLs in the sampled source files: well-known
+/// API hosts, or `api.<name>.<tld>`-style hosts, that are not a sibling
+/// service of the product. Deterministic order by label.
+pub fn external_hosts(catalog: &Catalog<'_>) -> Vec<ExternalHost> {
+    let services: Vec<&GraphNode> = catalog.of_kind(NodeKind::Service).collect();
+    let known_externals: Vec<String> = catalog
+        .of_kind(NodeKind::ExternalApi)
+        .map(|n| n.label.to_lowercase())
+        .collect();
+    let mut hosts: std::collections::BTreeMap<String, ExternalHost> =
+        std::collections::BTreeMap::new();
+    let mut paths: Vec<&String> = catalog.input.files.keys().collect();
+    paths.sort();
+    for path in paths {
+        if !is_source(path) || Catalog::is_excluded_path(path) || is_generated(path) {
+            continue;
+        }
+        let text = &catalog.input.files[path];
+        for cap in URL.captures_iter(text) {
+            let host = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_lowercase();
+            if host.is_empty()
+                || is_local_host(&host)
+                || NOISE_HOSTS.contains(&host.as_str())
+                || host.parse::<std::net::IpAddr>().is_ok()
+                || services.iter().any(|s| same_name(&s.label, &host))
+            {
+                continue;
+            }
+            let Some(label) = external_label(&host) else {
+                continue;
+            };
+            if known_externals.iter().any(|k| k == &label.to_lowercase()) {
+                // The graph already has it (from a dependency); let that node stand.
+                continue;
+            }
+            let id = format!("external_{}", node_id(&label));
+            let entry = hosts.entry(id.clone()).or_insert_with(|| ExternalHost {
+                id,
+                label: label.clone(),
+                host: host.clone(),
+                callers: Vec::new(),
+            });
+            if !entry.callers.iter().any(|(p, _)| p == path) {
+                entry.callers.push((path.clone(), host.clone()));
+            }
+        }
+    }
+    hosts.into_values().collect()
+}
+
+/// "Linear" for `api.linear.app`, "Acme API" for `api.acme.io`; `None`
+/// for hosts that look like nothing in particular.
+pub fn external_label(host: &str) -> Option<String> {
+    for (known, label) in KNOWN_HOSTS {
+        if host == known || host.ends_with(&format!(".{known}")) {
+            return Some((*label).to_owned());
+        }
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let api_like = matches!(parts[0], "api" | "apis" | "gateway" | "hooks" | "events")
+        || host.contains("api.");
+    if !api_like {
+        return None;
+    }
+    let name = parts
+        .iter()
+        .rev()
+        .skip(1)
+        .find(|p| {
+            !matches!(
+                **p,
+                "api"
+                    | "apis"
+                    | "co"
+                    | "com"
+                    | "org"
+                    | "net"
+                    | "io"
+                    | "dev"
+                    | "app"
+                    | "gateway"
+                    | "hooks"
+                    | "events"
+            )
+        })
+        .copied()
+        .unwrap_or(parts[parts.len() - 2]);
+    Some(format!("{} API", capitalise(name)))
+}
+
 fn imports(text: &str, name: &str) -> bool {
     let name = name.trim().to_lowercase();
     if name.len() < 2 {
@@ -357,6 +507,18 @@ mod tests {
     }
 
     #[test]
+    fn external_labels_come_from_known_hosts_or_api_subdomains() {
+        assert_eq!(external_label("api.linear.app").as_deref(), Some("Linear"));
+        assert_eq!(
+            external_label("acme.atlassian.net").as_deref(),
+            Some("Jira")
+        );
+        assert_eq!(external_label("api.acme.io").as_deref(), Some("Acme API"));
+        assert_eq!(external_label("acme.io"), None);
+        assert_eq!(external_label("localhost"), None);
+    }
+
+    #[test]
     fn data_verbs_follow_the_statements() {
         assert_eq!(data_verb("SELECT * FROM users"), "reads");
         assert_eq!(data_verb("INSERT INTO users VALUES (1)"), "writes");
@@ -374,7 +536,12 @@ mod tests {
         "#;
         assert_eq!(
             routes_in(text, 10),
-            vec!["GET /api/items", "POST /api/items", "/health", "GET /price"]
+            vec![
+                "GET /api/items",
+                "POST /api/items",
+                "GET /health",
+                "GET /price"
+            ]
         );
         assert_eq!(routes_in(text, 1).len(), 1);
     }

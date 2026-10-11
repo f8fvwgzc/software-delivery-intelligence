@@ -2,7 +2,7 @@
 //! repository tree as a path set, and the classification rules that turn a
 //! graph node into a diagram node (kind, caption, implementing file).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use sdi_proto::knowledge::v1::{FactCategory, GraphEdge, GraphNode, NodeKind, ProjectContext};
 
@@ -12,7 +12,7 @@ use super::{
 };
 
 /// Directories whose contents never appear in a runtime map (CONTRACT.md §16).
-pub const EXCLUDED_DIRS: [&str; 18] = [
+pub const EXCLUDED_DIRS: [&str; 24] = [
     "test",
     "tests",
     "__tests__",
@@ -31,10 +31,16 @@ pub const EXCLUDED_DIRS: [&str; 18] = [
     "dist",
     "build",
     "vendor",
+    "xtask",
+    "scripts",
+    "hack",
+    "benches",
+    "benchmarks",
+    "ci",
 ];
 
 /// Entry points, most specific first, relative to a package directory.
-const ENTRY_POINTS: [&str; 34] = [
+pub const ENTRY_POINTS: [&str; 34] = [
     "src/main.rs",
     "src/main.ts",
     "src/main.tsx",
@@ -131,7 +137,8 @@ pub struct Catalog<'a> {
     by_id: HashMap<&'a str, &'a GraphNode>,
     by_key: HashMap<&'a str, &'a GraphNode>,
     edges: Vec<&'a GraphEdge>,
-    files: HashSet<&'a str>,
+    /// File path → size in bytes as the tree reports it.
+    files: HashMap<&'a str, u64>,
     dirs: HashSet<String>,
 }
 
@@ -146,12 +153,12 @@ impl<'a> Catalog<'a> {
             .map(|g| g.edges.iter().filter(|e| e.valid_to.is_none()).collect())
             .unwrap_or_default();
         let mut dirs = HashSet::new();
-        let mut files = HashSet::new();
+        let mut files = HashMap::new();
         for entry in input.tree {
             if entry.is_dir {
                 dirs.insert(entry.path.trim_end_matches('/').to_owned());
             } else {
-                files.insert(entry.path.as_str());
+                files.insert(entry.path.as_str(), entry.size);
                 // Trees from GitHub list directories, but a flat fixture may not.
                 let mut parent = entry.path.rsplit_once('/').map(|(d, _)| d);
                 while let Some(dir) = parent {
@@ -231,7 +238,20 @@ impl<'a> Catalog<'a> {
     // -- tree ---------------------------------------------------------------
 
     pub fn file_exists(&self, path: &str) -> bool {
-        self.files.contains(path)
+        self.files.contains_key(path)
+    }
+
+    pub fn dir_exists(&self, dir: &str) -> bool {
+        !dir.is_empty() && self.dirs.contains(dir)
+    }
+
+    /// Size the tree reports for a file (0 when unknown).
+    pub fn file_size(&self, path: &str) -> u64 {
+        self.files.get(path).copied().unwrap_or(0)
+    }
+
+    pub fn all_files(&self) -> impl Iterator<Item = &'a str> + '_ {
+        self.files.keys().copied()
     }
 
     /// Files directly or transitively under `dir` (all files for "").
@@ -242,7 +262,7 @@ impl<'a> Catalog<'a> {
             format!("{dir}/")
         };
         self.files
-            .iter()
+            .keys()
             .copied()
             .filter(move |f| f.starts_with(&prefix))
     }
@@ -381,6 +401,9 @@ impl<'a> Catalog<'a> {
         out
     }
 
+    /// A browser UI: a UI framework without a backend one, or (when the
+    /// scan attached no framework) a package whose entry point is a
+    /// component file or that is built by Vite.
     pub fn is_ui(&self, node: &GraphNode) -> bool {
         let frameworks = self.frameworks_of(node);
         let ui = frameworks
@@ -389,7 +412,38 @@ impl<'a> Catalog<'a> {
         let backend = frameworks
             .iter()
             .any(|f| BACKEND_FRAMEWORKS.iter().any(|b| f.contains(b)));
-        ui && !backend
+        if backend {
+            return false;
+        }
+        if ui {
+            return true;
+        }
+        if node.kind() != NodeKind::Service || !self.has_tree() {
+            return false;
+        }
+        let dir = self.dir_of(node);
+        let join = |rel: &str| {
+            if dir.is_empty() {
+                rel.to_owned()
+            } else {
+                format!("{dir}/{rel}")
+            }
+        };
+        let entry = self.entry_point(&dir).unwrap_or_default();
+        entry.ends_with(".tsx")
+            || entry.ends_with(".jsx")
+            || entry.ends_with(".vue")
+            || entry.ends_with(".svelte")
+            || [
+                "vite.config.ts",
+                "vite.config.js",
+                "vite.config.mts",
+                "next.config.js",
+                "next.config.mjs",
+                "next.config.ts",
+            ]
+            .iter()
+            .any(|f| self.file_exists(&join(f)))
     }
 
     pub fn is_backend_service(&self, node: &GraphNode) -> bool {
@@ -561,17 +615,6 @@ impl<'a> Catalog<'a> {
         best.map(|(n, _)| n)
     }
 
-    /// Product packages grouped by top-level directory, largest first.
-    pub fn packages_by_top_dir(&self) -> Vec<(String, Vec<&'a GraphNode>)> {
-        let mut groups: BTreeMap<String, Vec<&GraphNode>> = BTreeMap::new();
-        for node in self.nodes().filter(|n| self.is_product_node(n)) {
-            groups.entry(self.top_dir(node)).or_default().push(node);
-        }
-        let mut out: Vec<(String, Vec<&GraphNode>)> = groups.into_iter().collect();
-        out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
-        out
-    }
-
     /// Excerpted files owned by product packages: `(path, text, owner)`.
     pub fn excerpts(&self) -> Vec<(&'a str, &'a str, &'a GraphNode)> {
         self.input
@@ -722,13 +765,18 @@ pub fn capitalise(text: &str) -> String {
 /// Tree entries are what builders receive; this keeps fixtures short.
 #[cfg(test)]
 pub fn tree_entry(path: &str) -> sdi_proto::knowledge::v1::RepoTreeEntry {
+    tree_entry_sized(path, 0)
+}
+
+#[cfg(test)]
+pub fn tree_entry_sized(path: &str, size: u64) -> sdi_proto::knowledge::v1::RepoTreeEntry {
     let is_dir = path.ends_with('/');
     let clean = path.trim_end_matches('/');
     sdi_proto::knowledge::v1::RepoTreeEntry {
         path: clean.to_owned(),
         name: clean.rsplit('/').next().unwrap_or(clean).to_owned(),
         is_dir,
-        size: 0,
+        size,
         language: String::new(),
     }
 }

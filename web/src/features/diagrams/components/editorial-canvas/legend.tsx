@@ -1,63 +1,93 @@
-import { EDGE_STYLE, type EdgeStyle } from '../../lib/labels'
-import { LEGEND_HEIGHT } from './layout'
+import type { ReactNode } from 'react'
+
 import { textWidth } from './text'
 import type { Box } from './types'
 
-interface LegendProps {
-  styles: readonly EdgeStyle[]
-  bounds: Box
-  markerPrefix: string
+/** One legend entry: a 32×16 sample drawn at the origin, then its wording. */
+export interface LegendItem {
+  id: string
+  label: string
+  sample: ReactNode
 }
 
-const SAMPLE = 28
-const GAP = 24
+export const SAMPLE_WIDTH = 32
+export const SAMPLE_HEIGHT = 16
+const ROW_HEIGHT = 24
+const RULE_GAP = 12
+const BOTTOM_PAD = 4
+const ITEM_GAP = 24
+const LABEL_GAP = 8
+const LABEL_FONT = { size: 11 }
 
-/** Left edge of every item, laid out in a row. */
-function itemOffsets(styles: readonly EdgeStyle[], start: number): number[] {
-  const offsets: number[] = []
-  let x = start
-  for (const style of styles) {
-    offsets.push(x)
-    x += SAMPLE + 8 + textWidth(EDGE_STYLE[style].label, 11) + GAP
+export interface LegendRow {
+  items: { item: LegendItem; x: number }[]
+}
+
+export interface LegendLayout {
+  rows: LegendRow[]
+  /** Space the strip takes under the drawing, 0 when there is nothing to explain. */
+  height: number
+}
+
+function itemWidth(item: LegendItem) {
+  return SAMPLE_WIDTH + LABEL_GAP + textWidth(item.label, LABEL_FONT)
+}
+
+/** Flows the items into rows no wider than `width`; the strip height follows. */
+export function layoutLegend(items: readonly LegendItem[], width: number): LegendLayout {
+  if (items.length === 0) return { rows: [], height: 0 }
+  const rows: LegendRow[] = [{ items: [] }]
+  let x = 0
+  for (const item of items) {
+    const w = itemWidth(item)
+    const row = rows[rows.length - 1]
+    if (row.items.length > 0 && x + w > width) {
+      rows.push({ items: [{ item, x: 0 }] })
+      x = w + ITEM_GAP
+      continue
+    }
+    row.items.push({ item, x })
+    x += w + ITEM_GAP
   }
-  return offsets
+  return { rows, height: RULE_GAP + rows.length * ROW_HEIGHT + BOTTOM_PAD }
 }
 
-/** A strip along the bottom of the drawing, only rendered when more than one edge style is in use. */
-export function Legend({ styles, bounds, markerPrefix }: LegendProps) {
-  const top = bounds.y + bounds.h - LEGEND_HEIGHT
-  const y = top + LEGEND_HEIGHT / 2 + 4
-  const offsets = itemOffsets(styles, bounds.x + 24)
+interface LegendProps {
+  layout: LegendLayout
+  /** The whole drawing; the strip sits inside its bottom `layout.height`, inset by `inset`. */
+  bounds: Box
+  inset: number
+}
 
+/** A strip along the bottom of the drawing: a hairline, then the samples with their wording. */
+export function Legend({ layout, bounds, inset }: LegendProps) {
+  if (layout.rows.length === 0) return null
+  const top = bounds.y + bounds.h - layout.height
+  const left = bounds.x + inset
   return (
-    <g aria-hidden="true">
+    <g aria-hidden="true" style={{ fontSize: LABEL_FONT.size }}>
       <line
-        x1={bounds.x + 24}
-        x2={bounds.x + bounds.w - 24}
-        y1={top + 4}
-        y2={top + 4}
+        x1={left}
+        x2={bounds.x + bounds.w - inset}
+        y1={top + 0.5}
+        y2={top + 0.5}
         style={{ stroke: 'var(--border)', strokeWidth: 1 }}
       />
-      {styles.map((style, index) => {
-        const meta = EDGE_STYLE[style]
-        return (
-          <g key={style} transform={`translate(${offsets[index]} ${y})`}>
-            <path
-              d={`M 0 -4 H ${SAMPLE}`}
-              fill="none"
-              markerEnd={`url(#${markerPrefix}-${style})`}
-              style={{
-                stroke: meta.color,
-                strokeOpacity: meta.opacity,
-                strokeWidth: 1.2,
-                strokeDasharray: meta.dashed ? '5 4' : undefined,
-              }}
-            />
-            <text x={SAMPLE + 8} style={{ fill: 'var(--muted-foreground)', fontSize: 11 }}>
-              {meta.label}
+      {layout.rows.map((row, rowIndex) => {
+        const y = top + RULE_GAP + rowIndex * ROW_HEIGHT + (ROW_HEIGHT - SAMPLE_HEIGHT) / 2
+        return row.items.map(({ item, x }) => (
+          <g key={item.id} transform={`translate(${left + x} ${y})`}>
+            {item.sample}
+            <text
+              x={SAMPLE_WIDTH + LABEL_GAP}
+              y={SAMPLE_HEIGHT / 2}
+              dominantBaseline="central"
+              style={{ fill: 'var(--muted-foreground)' }}
+            >
+              {item.label}
             </text>
           </g>
-        )
+        ))
       })}
     </g>
   )
