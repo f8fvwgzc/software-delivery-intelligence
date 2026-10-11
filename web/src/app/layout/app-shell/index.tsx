@@ -1,3 +1,4 @@
+import type React from 'react'
 import { Outlet } from 'react-router'
 
 import { QueryBoundary } from '@/components/shared/feedback'
@@ -13,7 +14,7 @@ import { AppSidebar } from './app-sidebar'
  */
 export function AppShell() {
   return (
-    <SidebarProvider>
+    <SidebarProvider style={{ "--sidebar-width": "14.4rem" } as React.CSSProperties}>
       <AppSidebar />
       <SidebarInset className="min-w-0">
         <AppHeader />
