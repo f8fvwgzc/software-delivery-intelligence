@@ -2,9 +2,9 @@ import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { ArrowDownToLineIcon, TerminalIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { approvalKeys } from '@/features/approvals/api/keys'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ComboboxField } from '@/components/shared/form'
 import { Toggle } from '@/components/ui/toggle'
+import { approvalKeys } from '@/features/approvals/api/keys'
 import type { components } from '@/lib/api/schema'
 import { cn } from '@/lib/utils'
 
@@ -145,21 +145,20 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
           {stream.label}
           <span className="tabular-nums">· {timeline.length}</span>
         </span>
-        <Select value={stepFilter} onValueChange={setStepFilter}>
-          <SelectTrigger size="sm" className="ml-auto max-w-36 text-xs" aria-label="Filter by step">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="end">
-            <SelectGroup>
-              <SelectItem value={ALL_STEPS}>All steps</SelectItem>
-              {steps.map((step) => (
-                <SelectItem key={step.key} value={step.key} className="font-mono text-xs">
-                  {step.key}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+        <ComboboxField
+          size="sm"
+          align="end"
+          className="ml-auto w-36"
+          aria-label="Filter by step"
+          value={stepFilter}
+          onValueChange={setStepFilter}
+          options={[
+            { value: ALL_STEPS, label: 'All steps' },
+            ...steps.map((step) => ({ value: step.key, label: step.key, description: step.title })),
+          ]}
+          searchPlaceholder="Search steps"
+          emptyText="No step matches."
+        />
         <Toggle size="sm" variant="outline" pressed={follow} onPressedChange={setFollow} aria-label="Follow new events" className="text-xs">
           <ArrowDownToLineIcon data-icon="inline-start" />
           Follow

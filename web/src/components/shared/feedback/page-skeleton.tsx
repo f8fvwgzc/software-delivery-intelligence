@@ -10,7 +10,7 @@ interface PageSkeletonProps {
 /** Generic loading shape for a page: header line, then a few cards. */
 export function PageSkeleton({ blocks = 3, className }: PageSkeletonProps) {
   return (
-    <div className={cn('mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-5 md:px-6 md:py-6', className)}>
+    <div className={cn('flex w-full min-w-0 flex-col gap-6 px-4 py-5 md:px-6 md:py-6', className)}>
       <div className="flex flex-col gap-2">
         <Skeleton className="h-6 w-48" />
         <Skeleton className="h-4 w-80 max-w-full" />

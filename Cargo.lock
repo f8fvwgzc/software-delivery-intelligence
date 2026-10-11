@@ -1914,6 +1914,7 @@ dependencies = [
  "chrono",
  "futures",
  "prost-types",
+ "regex",
  "reqwest",
  "sdi-common",
  "sdi-proto",

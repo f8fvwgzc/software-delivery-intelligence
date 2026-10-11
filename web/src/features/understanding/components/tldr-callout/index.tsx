@@ -13,7 +13,7 @@ import { shortSha } from '../../lib/github'
 export function TldrCallout({ understanding }: { understanding: Understanding }) {
   return (
     <div data-testid={testIds.understanding.tldr} className="flex flex-col gap-3 rounded-lg bg-brand/5 p-4 ring-1 ring-brand/10">
-      <p className="text-base leading-snug font-medium text-balance">
+      <p className="max-w-[72ch] text-base leading-snug font-medium text-balance">
         {understanding.tldr || 'No summary was generated for this commit.'}
       </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">

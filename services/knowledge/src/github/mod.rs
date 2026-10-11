@@ -54,6 +54,15 @@ pub enum GithubError {
 
 pub type Result<T> = std::result::Result<T, GithubError>;
 
+/// What [`GithubClient::file_raw`] read: at most the requested bytes, whether
+/// the file went on past them, and the size GitHub announced, when it did.
+#[derive(Debug, Clone)]
+pub struct RawFile {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+    pub content_length: Option<u64>,
+}
+
 /// Shared between clones so the scanner, the delivery refresh and the
 /// account box all hit one cache and one switch.
 struct Shared {
@@ -138,12 +147,28 @@ impl GithubClient {
         etag: Option<&str>,
         timeout: Duration,
     ) -> Result<Response> {
+        self.request_as(path, query, etag, timeout, None).await
+    }
+
+    /// [`request`](Self::request) with an `Accept` other than the JSON
+    /// default, for the raw media types.
+    async fn request_as(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        etag: Option<&str>,
+        timeout: Duration,
+        accept: Option<&'static str>,
+    ) -> Result<Response> {
         let token = self.token.as_ref().ok_or(GithubError::NoToken)?;
         let url = format!("{}{}{}", self.base, encode_path(path), query_string(query));
         for attempt in 1..=MAX_ATTEMPTS {
             let mut builder = self.http.get(&url).bearer_auth(token).timeout(timeout);
             if let Some(etag) = etag {
                 builder = builder.header(IF_NONE_MATCH, etag);
+            }
+            if let Some(accept) = accept {
+                builder = builder.header(ACCEPT, accept);
             }
             let response = builder.send().await?;
             let status = response.status();
@@ -347,6 +372,60 @@ impl GithubClient {
             }
             _ => Ok(content.content.unwrap_or_default()),
         }
+    }
+
+    /// One file's bytes at `reference` through the contents API with the raw
+    /// media type, which serves files the JSON encoding refuses (over 1 MB)
+    /// and never base64-pads. Reading stops after `max_bytes`: the result is
+    /// then `truncated` and holds exactly the first `max_bytes` bytes.
+    /// `NotFound` when `path` is a directory, a submodule or absent.
+    pub async fn file_raw(
+        &self,
+        owner: &str,
+        name: &str,
+        path: &str,
+        reference: &str,
+        max_bytes: usize,
+    ) -> Result<RawFile> {
+        let api_path = format!("/repos/{owner}/{name}/contents/{path}");
+        let mut response = self
+            .request_as(
+                &api_path,
+                &[("ref", reference.to_owned())],
+                None,
+                TARBALL_TIMEOUT,
+                Some("application/vnd.github.raw+json"),
+            )
+            .await?;
+        // Raw content comes back as text/plain or an octet stream; JSON means
+        // GitHub described the path (a directory listing, a submodule) instead.
+        let is_json = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.starts_with("application/json"));
+        if is_json {
+            return Err(GithubError::NotFound(format!("{path} is not a file")));
+        }
+        let content_length = response.content_length();
+        let mut bytes = Vec::with_capacity(
+            content_length.map_or(64 << 10, |len| (len as usize).min(max_bytes)),
+        );
+        let mut truncated = false;
+        while let Some(chunk) = response.chunk().await? {
+            let room = max_bytes.saturating_sub(bytes.len());
+            if chunk.len() > room {
+                bytes.extend_from_slice(&chunk[..room]);
+                truncated = true;
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(RawFile {
+            bytes,
+            truncated,
+            content_length,
+        })
     }
 
     /// The repository archive at `reference` as gzipped tar bytes, or `None`

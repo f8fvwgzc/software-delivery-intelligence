@@ -51,6 +51,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         (name = "proposals", description = "Ranked proposals and negotiation"),
         (name = "decisions", description = "Decision memory with provenance"),
         (name = "documents", description = "Generated documents and reports"),
+        (name = "diagrams", description = "Evidence-based diagrams generated from the knowledge graph"),
         (name = "executions", description = "Policy-gated plan execution"),
         (name = "approvals", description = "Human approvals"),
         (name = "policies", description = "Action policies and scoped identities"),
@@ -216,8 +217,9 @@ mod tests {
         let (status, json, _) = get_json(app(), "/api/openapi.json").await;
         assert_eq!(status, StatusCode::OK);
         let paths = json["paths"].as_object().expect("paths object");
-        // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1.
-        assert_eq!(paths.len(), 55, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1, plus the
+        // two code browser routes of §15 and the two diagram routes of §16.
+        assert_eq!(paths.len(), 59, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",

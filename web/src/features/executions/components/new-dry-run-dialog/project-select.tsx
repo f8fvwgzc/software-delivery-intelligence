@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ComboboxField } from '@/components/shared/form'
 
 import { executionQueries } from '../../api/queries'
 
@@ -19,25 +19,25 @@ export function ProjectSelect({ value, onChange, disabled, invalid, id, describe
   const { data: projects, isPending, isError } = useQuery(executionQueries.projectOptions())
 
   const placeholder = isPending ? 'Loading projects' : isError ? 'Projects unavailable' : 'Choose a project'
+  const options = (projects ?? []).map((project) => ({
+    value: project.id,
+    label: project.name,
+    description: project.repoFullName,
+  }))
 
   return (
-    <Select value={value} onValueChange={onChange} disabled={disabled || isPending || isError}>
-      <SelectTrigger id={id} className="w-full" aria-invalid={invalid || undefined} aria-describedby={describedBy}>
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          {projects?.map((project) => (
-            <SelectItem key={project.id} value={project.id}>
-              <span className="truncate">{project.name}</span>
-              <span className="ml-1 font-mono text-2xs text-muted-foreground">{project.repoFullName}</span>
-            </SelectItem>
-          ))}
-          {projects?.length === 0 && (
-            <div className="px-2 py-1.5 text-xs text-muted-foreground">No projects connected yet.</div>
-          )}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+    <ComboboxField
+      id={id}
+      value={value}
+      onValueChange={onChange}
+      options={options}
+      disabled={disabled || isError}
+      loading={isPending}
+      aria-invalid={invalid}
+      aria-describedby={describedBy}
+      placeholder={placeholder}
+      searchPlaceholder="Search projects"
+      emptyText={projects?.length === 0 ? 'No projects connected yet.' : 'No project matches.'}
+    />
   )
 }

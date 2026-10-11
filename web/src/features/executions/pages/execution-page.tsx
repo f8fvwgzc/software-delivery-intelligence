@@ -25,7 +25,7 @@ function ExecutionView({ executionId }: { executionId: string }) {
   const { data: execution } = useSuspenseQuery(executionQueries.detail(executionId))
 
   return (
-    <Page wide>
+    <Page>
       <ExecutionHeader execution={execution} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]">
         <ExecutionRail execution={execution} />
@@ -42,7 +42,7 @@ function ExecutionView({ executionId }: { executionId: string }) {
 
 function ExecutionPageSkeleton() {
   return (
-    <Page wide>
+    <Page>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">

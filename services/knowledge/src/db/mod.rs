@@ -3,6 +3,7 @@
 //! can run inside the caller's transaction.
 
 pub mod chunks;
+pub mod code;
 pub mod config;
 pub mod delivery;
 pub mod dependencies;

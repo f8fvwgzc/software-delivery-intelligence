@@ -7,7 +7,9 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::state::AppState;
 
 pub mod approvals;
+pub mod code;
 pub mod decisions;
+pub mod diagrams;
 pub mod documents;
 pub mod executions;
 pub mod github;
@@ -26,10 +28,12 @@ pub fn rest() -> OpenApiRouter<AppState> {
         .merge(settings::router())
         .merge(github::router())
         .merge(projects::router())
+        .merge(code::router())
         .merge(knowledge::router())
         .merge(proposals::router())
         .merge(decisions::router())
         .merge(documents::router())
+        .merge(diagrams::router())
         .merge(executions::router())
         .merge(approvals::router())
         .merge(policies::router())

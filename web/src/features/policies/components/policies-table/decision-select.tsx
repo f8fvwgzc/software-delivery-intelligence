@@ -1,8 +1,7 @@
 import { LockIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Spinner } from '@/components/ui/spinner'
+import { ComboboxField } from '@/components/shared/form'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { components } from '@/lib/api/schema'
 import { testIds } from '@/test-ids'
@@ -17,7 +16,13 @@ interface DecisionSelectProps {
   policy: Policy
 }
 
-/** The decision cell: a select for editable rows, a locked indicator otherwise. */
+const DECISION_OPTIONS = EDITABLE_DECISIONS.map((decision) => ({
+  value: decision,
+  label: POLICY_DECISION[decision].label,
+  description: POLICY_DECISION[decision].description,
+}))
+
+/** The decision cell: a combobox for editable rows, a locked indicator otherwise. */
 export function DecisionSelect({ policy }: DecisionSelectProps) {
   const update = useUpdatePolicy()
 
@@ -48,30 +53,17 @@ export function DecisionSelect({ policy }: DecisionSelectProps) {
   }
 
   return (
-    <Select value={policy.decision} onValueChange={change} disabled={update.isPending}>
-      {/* The loader lives inside the control, like `<Button loading>`. */}
-      <SelectTrigger
-        size="sm"
-        className="w-32 text-xs data-loading:opacity-80"
-        aria-label={`Decision for ${policy.label}`}
-        aria-busy={update.isPending || undefined}
-        data-loading={update.isPending ? '' : undefined}
-      >
-        {update.isPending && <Spinner className="size-3 text-muted-foreground" />}
-        <SelectValue />
-      </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            {EDITABLE_DECISIONS.map((decision) => (
-              <SelectItem key={decision} value={decision}>
-                <span className="flex flex-col">
-                  <span>{POLICY_DECISION[decision].label}</span>
-                  <span className="text-2xs text-muted-foreground">{POLICY_DECISION[decision].description}</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-    </Select>
+    <ComboboxField
+      size="sm"
+      className="w-32"
+      aria-label={`Decision for ${policy.label}`}
+      value={policy.decision}
+      onValueChange={change}
+      options={DECISION_OPTIONS}
+      // The loader lives inside the control, like `<Button loading>`.
+      loading={update.isPending}
+      searchPlaceholder="Search decisions"
+      emptyText="No decision matches."
+    />
   )
 }

@@ -161,7 +161,7 @@ export default function ArchitecturePage() {
   const { projectId = '' } = useParams()
 
   return (
-    <Page wide className="gap-4">
+    <Page className="gap-4">
       <PageHeader
         title="Architecture"
         description="What the scan found and how it connects. Select a node to see what a change to it would touch."

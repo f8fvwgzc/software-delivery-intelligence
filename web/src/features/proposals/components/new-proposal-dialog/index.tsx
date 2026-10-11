@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router'
 
 import { routes } from '@/app/router/routes'
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,12 +16,13 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import { useGenerateProposal } from '../../api/mutations'
 import { PROPOSAL_KIND_LABEL, PROPOSAL_KINDS, type ProposalKind } from '../../lib/labels'
 import { ProjectSelect } from './project-select'
+
+const KIND_OPTIONS = PROPOSAL_KINDS.map((kind) => ({ value: kind, label: PROPOSAL_KIND_LABEL[kind] }))
 
 interface NewProposalDialogProps {
   /** When set, the project is fixed and the picker is hidden. */
@@ -108,20 +110,14 @@ function NewProposalForm({ projectId: fixedProjectId, initialKind, onDone }: New
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem]">
           <Field>
             <FieldLabel htmlFor="proposal-kind">Kind</FieldLabel>
-            <Select value={kind} onValueChange={(value) => setKind(value as ProposalKind)}>
-              <SelectTrigger id="proposal-kind" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {PROPOSAL_KINDS.map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {PROPOSAL_KIND_LABEL[option]}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <ComboboxField
+              id="proposal-kind"
+              value={kind}
+              onValueChange={(value) => setKind(value as ProposalKind)}
+              options={KIND_OPTIONS}
+              searchPlaceholder="Search kinds"
+              emptyText="No kind matches."
+            />
           </Field>
           <Field data-invalid={parsedBudget.error ? true : undefined}>
             <FieldLabel htmlFor="proposal-budget">Budget (optional)</FieldLabel>

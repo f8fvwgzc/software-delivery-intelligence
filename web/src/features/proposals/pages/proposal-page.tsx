@@ -41,7 +41,7 @@ export default function ProposalPage() {
   const budget = budgetOf(proposal)
 
   return (
-    <Page wide>
+    <Page>
       <PageHeader
         eyebrow={
           <>

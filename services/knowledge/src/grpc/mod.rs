@@ -1,6 +1,7 @@
 //! tonic implementation of `KnowledgeService`. The trait must be one `impl`
 //! block, so it only delegates; each RPC group lives in its own file.
 
+mod code;
 mod context;
 mod delivery;
 mod github;
@@ -276,6 +277,23 @@ impl KnowledgeService for KnowledgeState {
         request: Request<ListDependenciesRequest>,
     ) -> Result<Response<ListDependenciesResponse>, Status> {
         knowledge::list_dependencies(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_repo_tree(
+        &self,
+        request: Request<GetRepoTreeRequest>,
+    ) -> Result<Response<RepoTree>, Status> {
+        code::get_repo_tree(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn get_repo_file(
+        &self,
+        request: Request<GetRepoFileRequest>,
+    ) -> Result<Response<RepoFile>, Status> {
+        code::get_repo_file(self, request.into_inner())
             .await
             .map(Response::new)
     }

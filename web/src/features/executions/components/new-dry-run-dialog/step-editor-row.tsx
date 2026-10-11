@@ -1,13 +1,22 @@
 import { Trash2Icon } from 'lucide-react'
 
 import { RISK } from '@/components/shared/data/risk'
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 import { ACTION_TYPES, ADAPTERS } from '../../lib/labels'
 import type { DraftStep } from '../../lib/plan-template'
 import { DependsOnSelect } from './depends-on-select'
+
+const ACTION_TYPE_OPTIONS = ACTION_TYPES.map((action) => ({
+  value: action.actionType,
+  label: action.actionType,
+  description: `${action.label} · ${RISK[action.risk].label}`,
+  disabled: action.risk === 'blocked',
+}))
+
+const ADAPTER_OPTIONS = ADAPTERS.map((adapter) => ({ value: adapter, label: adapter }))
 
 interface StepEditorRowProps {
   index: number
@@ -41,40 +50,32 @@ export function StepEditorRow({ index, step, otherKeys, error, onChange, onRemov
           className="h-7 text-xs"
         />
         <div className="col-span-3 flex items-center gap-2 sm:col-span-1">
-          <Select value={step.actionType} onValueChange={(actionType) => onChange({ actionType })}>
-            <SelectTrigger size="sm" className="min-w-0 flex-1" aria-label={`Step ${index + 1} action type`}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {ACTION_TYPES.map((action) => (
-                  <SelectItem key={action.actionType} value={action.actionType} disabled={action.risk === 'blocked'}>
-                    <span aria-hidden className={`inline-block size-1.5 rounded-full ${RISK[action.risk].dot}`} />
-                    <span className="font-mono text-xs">{action.actionType}</span>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          <ComboboxField
+            size="sm"
+            mono
+            className="min-w-0 flex-1"
+            aria-label={`Step ${index + 1} action type`}
+            value={step.actionType}
+            onValueChange={(actionType) => onChange({ actionType })}
+            options={ACTION_TYPE_OPTIONS}
+            searchPlaceholder="Search action types"
+            emptyText="No action type matches."
+          />
         </div>
       </div>
       <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,1fr)_1.75rem] items-center gap-2">
         <span className="text-2xs text-muted-foreground">after</span>
         <DependsOnSelect options={otherKeys} value={step.dependsOn} onChange={(dependsOn) => onChange({ dependsOn })} />
-        <Select value={step.adapter} onValueChange={(adapter) => onChange({ adapter })}>
-          <SelectTrigger size="sm" className="w-full" aria-label={`Step ${index + 1} adapter`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {ADAPTERS.map((adapter) => (
-                <SelectItem key={adapter} value={adapter}>
-                  {adapter}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+        <ComboboxField
+          size="sm"
+          mono
+          aria-label={`Step ${index + 1} adapter`}
+          value={step.adapter}
+          onValueChange={(adapter) => onChange({ adapter })}
+          options={ADAPTER_OPTIONS}
+          searchPlaceholder="Search adapters"
+          emptyText="No adapter matches."
+        />
         <Button
           type="button"
           variant="ghost"

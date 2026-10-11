@@ -81,7 +81,7 @@ export default function OverviewPage() {
   }
 
   return (
-    <Page wide>
+    <Page>
       <PageHeader
         title="Overview"
         description={DESCRIPTION}

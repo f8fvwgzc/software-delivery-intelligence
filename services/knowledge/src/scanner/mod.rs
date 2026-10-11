@@ -383,7 +383,23 @@ async fn pipeline(
         },
     )
     .await?;
+    prune_code_caches(pool, project.id, &commit_sha).await;
     Ok(())
+}
+
+/// The code browser caches (§15) only ever hold the latest scanned commit;
+/// rows of older commits go once this scan is the latest. Housekeeping: a
+/// failure here is logged, not a failed scan.
+async fn prune_code_caches(pool: &PgPool, project_id: Uuid, commit_sha: &str) {
+    let pruned = match pool.acquire().await {
+        Ok(mut conn) => db::code::prune(&mut conn, project_id, commit_sha).await,
+        Err(error) => Err(error),
+    };
+    match pruned {
+        Ok(0) => {}
+        Ok(rows) => tracing::info!(rows, "pruned code browser caches of older commits"),
+        Err(error) => tracing::warn!(%error, "could not prune code browser caches"),
+    }
 }
 
 /// Runs the analyzer as of today, so runtime end-of-life findings are

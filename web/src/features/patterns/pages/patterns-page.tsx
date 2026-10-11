@@ -16,7 +16,7 @@ export default function PatternsPage() {
   const [isPending, startTransition] = useTransition()
 
   return (
-    <Page wide>
+    <Page>
       <PageHeader
         title="Patterns"
         description="Reusable, outcome-tracked ways of doing something. Catalog patterns ship with the platform; learned ones come from your deployments."

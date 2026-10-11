@@ -5,21 +5,25 @@ use sdi_common::time;
 use sdi_proto::{
     common::v1::{CostLine, PlanStep},
     intelligence::v1::{
-        Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Document,
-        DocumentKind, Evidence, EvidenceKind as ProtoEvidenceKind, IntelligenceSettings, Message,
-        MessageRole, Proposal, ProposalKind, ProposalOption, ProposalStatus, ScoreBreakdown,
-        ScoreWeights,
+        Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Diagram,
+        DiagramEdge as ProtoDiagramEdge, DiagramGroup as ProtoDiagramGroup, DiagramKind,
+        DiagramNode as ProtoDiagramNode, DiagramSpec as ProtoDiagramSpec, Document, DocumentKind,
+        Evidence, EvidenceKind as ProtoEvidenceKind, IntelligenceSettings, Message, MessageRole,
+        Proposal, ProposalKind, ProposalOption, ProposalStatus, ScoreBreakdown, ScoreWeights,
     },
 };
 
 use crate::{
     db::{
-        decisions::DecisionRow, documents::DocumentRow, messages::MessageRow,
+        decisions::DecisionRow, diagrams::DiagramRow, documents::DocumentRow, messages::MessageRow,
         proposals::ProposalRow, settings::SettingsRow,
     },
-    domain::model::{
-        ArtifactData, Breakdown, ConstraintData, CostLineData, EvidenceItem, EvidenceKind,
-        PlanStepData, RankedOption, Weights,
+    domain::{
+        diagrams::model::{DiagramEdge, DiagramGroup, DiagramNode, DiagramSpec},
+        model::{
+            ArtifactData, Breakdown, ConstraintData, CostLineData, EvidenceItem, EvidenceKind,
+            PlanStepData, RankedOption, Weights,
+        },
     },
 };
 
@@ -71,6 +75,15 @@ pub fn document_kind_to_str(kind: DocumentKind) -> String {
 
 pub fn document_kind_from_str(value: &str) -> DocumentKind {
     DocumentKind::from_str_name(&format!("DOCUMENT_KIND_{}", value.to_uppercase()))
+        .unwrap_or_default()
+}
+
+pub fn diagram_kind_to_str(kind: DiagramKind) -> String {
+    strip(kind.as_str_name(), "DIAGRAM_KIND_")
+}
+
+pub fn diagram_kind_from_str(value: &str) -> DiagramKind {
+    DiagramKind::from_str_name(&format!("DIAGRAM_KIND_{}", value.to_uppercase()))
         .unwrap_or_default()
 }
 
@@ -280,9 +293,166 @@ pub fn document(row: &DocumentRow) -> Document {
     }
 }
 
+pub fn diagram_spec(spec: &DiagramSpec) -> ProtoDiagramSpec {
+    ProtoDiagramSpec {
+        direction: spec.direction.clone(),
+        groups: spec
+            .groups
+            .iter()
+            .map(|g| ProtoDiagramGroup {
+                id: g.id.clone(),
+                label: g.label.clone(),
+                description: g.description.clone(),
+                path: g.path.clone(),
+            })
+            .collect(),
+        nodes: spec
+            .nodes
+            .iter()
+            .map(|n| ProtoDiagramNode {
+                id: n.id.clone(),
+                label: n.label.clone(),
+                kind: n.kind.clone(),
+                group_id: n.group_id.clone(),
+                path: n.path.clone(),
+                description: n.description.clone(),
+                caption: n.caption.clone(),
+            })
+            .collect(),
+        edges: spec
+            .edges
+            .iter()
+            .map(|e| ProtoDiagramEdge {
+                id: e.id.clone(),
+                source: e.source.clone(),
+                target: e.target.clone(),
+                label: e.label.clone(),
+                style: e.style.clone(),
+                dashed: e.dashed,
+                evidence_path: e.evidence_path.clone(),
+            })
+            .collect(),
+    }
+}
+
+pub fn diagram_spec_from_proto(spec: &ProtoDiagramSpec) -> DiagramSpec {
+    DiagramSpec {
+        direction: if spec.direction.trim().is_empty() {
+            "LR".to_owned()
+        } else {
+            spec.direction.trim().to_uppercase()
+        },
+        groups: spec
+            .groups
+            .iter()
+            .map(|g| DiagramGroup {
+                id: g.id.trim().to_owned(),
+                label: g.label.trim().to_owned(),
+                description: g.description.clone(),
+                path: g.path.trim().to_owned(),
+            })
+            .collect(),
+        nodes: spec
+            .nodes
+            .iter()
+            .map(|n| DiagramNode {
+                id: n.id.trim().to_owned(),
+                label: n.label.trim().to_owned(),
+                kind: n.kind.trim().to_lowercase(),
+                group_id: n.group_id.trim().to_owned(),
+                path: n.path.trim().to_owned(),
+                description: n.description.clone(),
+                caption: n.caption.trim().to_owned(),
+            })
+            .collect(),
+        edges: spec
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(i, e)| DiagramEdge {
+                id: if e.id.trim().is_empty() {
+                    format!("e{}", i + 1)
+                } else {
+                    e.id.trim().to_owned()
+                },
+                source: e.source.trim().to_owned(),
+                target: e.target.trim().to_owned(),
+                label: e.label.trim().to_owned(),
+                style: if e.style.trim().is_empty() {
+                    "call".to_owned()
+                } else {
+                    e.style.trim().to_lowercase()
+                },
+                dashed: e.dashed,
+                evidence_path: e.evidence_path.trim().to_owned(),
+            })
+            .collect(),
+    }
+}
+
+pub fn diagram(row: &DiagramRow) -> Diagram {
+    Diagram {
+        id: row.id.to_string(),
+        project_id: row.project_id.clone(),
+        kind: diagram_kind_from_str(&row.kind) as i32,
+        title: row.title.clone(),
+        explanation: row.explanation.clone(),
+        spec: Some(diagram_spec(&row.spec.0)),
+        mermaid: row.mermaid.clone(),
+        source: row.source.clone(),
+        commit_sha: row.commit_sha.clone(),
+        revision: row.revision.max(0) as u32,
+        reasoner: row.reasoner.clone(),
+        created_at: Some(time::to_proto(row.created_at)),
+        updated_at: Some(time::to_proto(row.updated_at)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagram_spec_round_trips_through_proto() {
+        let spec = DiagramSpec {
+            direction: "TB".into(),
+            groups: vec![DiagramGroup {
+                id: "g".into(),
+                label: "G".into(),
+                description: String::new(),
+                path: "src".into(),
+            }],
+            nodes: vec![DiagramNode {
+                id: "a".into(),
+                label: "A".into(),
+                kind: "service".into(),
+                group_id: "g".into(),
+                path: "src/main.rs".into(),
+                description: "d".into(),
+                caption: "axum".into(),
+            }],
+            edges: vec![DiagramEdge {
+                id: "e1".into(),
+                source: "a".into(),
+                target: "a".into(),
+                label: "calls".into(),
+                style: "call".into(),
+                dashed: true,
+                evidence_path: String::new(),
+            }],
+        };
+        assert_eq!(diagram_spec_from_proto(&diagram_spec(&spec)), spec);
+        let mut loose = diagram_spec(&spec);
+        loose.direction = " lr ".into();
+        loose.edges[0].id.clear();
+        loose.edges[0].style.clear();
+        let back = diagram_spec_from_proto(&loose);
+        assert_eq!(back.direction, "LR");
+        assert_eq!(back.edges[0].id, "e1");
+        assert_eq!(back.edges[0].style, "call");
+        assert_eq!(diagram_kind_to_str(DiagramKind::DbSchema), "db_schema");
+        assert_eq!(diagram_kind_from_str("high_level"), DiagramKind::HighLevel);
+    }
 
     #[test]
     fn enum_strings_round_trip() {

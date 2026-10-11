@@ -8,8 +8,9 @@ use sdi_proto::{
         GetExecutionRequest, execution_service_client::ExecutionServiceClient,
     },
     knowledge::v1::{
-        GetProjectContextRequest, IndexKnowledgeRequest, ListPatternsRequest,
-        ListPipelineRunsRequest, ListSimilarProjectsRequest, Pattern, PipelineRun, ProjectContext,
+        GetGraphRequest, GetProjectContextRequest, GetRepoFileRequest, GetRepoTreeRequest, Graph,
+        IndexKnowledgeRequest, ListPatternsRequest, ListPipelineRunsRequest,
+        ListSimilarProjectsRequest, Pattern, PipelineRun, ProjectContext, RepoFile, RepoTree,
         SimilarProject, knowledge_service_client::KnowledgeServiceClient,
     },
 };
@@ -64,6 +65,13 @@ pub trait KnowledgeGateway: Send + Sync {
     ) -> Result<Vec<PipelineRun>, GatewayError>;
     async fn index_knowledge(&self, request: IndexKnowledgeRequest)
     -> Result<String, GatewayError>;
+    /// The graph alone (`ProjectContext.graph` carries it too; this is the
+    /// cheaper call when nothing else is needed).
+    async fn graph(&self, project_id: &str, include_history: bool) -> Result<Graph, GatewayError>;
+    /// Code browser (CONTRACT.md §15): the whole tree at the scanned commit.
+    async fn repo_tree(&self, project_id: &str) -> Result<RepoTree, GatewayError>;
+    /// One file's text at the scanned commit.
+    async fn repo_file(&self, project_id: &str, path: &str) -> Result<RepoFile, GatewayError>;
 }
 
 #[async_trait]
@@ -173,6 +181,41 @@ impl KnowledgeGateway for GrpcKnowledge {
             .map(|r| r.into_inner().id)
             .map_err(knowledge_err)
     }
+
+    async fn graph(&self, project_id: &str, include_history: bool) -> Result<Graph, GatewayError> {
+        self.client
+            .clone()
+            .get_graph(GetGraphRequest {
+                project_id: project_id.to_owned(),
+                include_history,
+            })
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn repo_tree(&self, project_id: &str) -> Result<RepoTree, GatewayError> {
+        self.client
+            .clone()
+            .get_repo_tree(GetRepoTreeRequest {
+                project_id: project_id.to_owned(),
+            })
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn repo_file(&self, project_id: &str, path: &str) -> Result<RepoFile, GatewayError> {
+        self.client
+            .clone()
+            .get_repo_file(GetRepoFileRequest {
+                project_id: project_id.to_owned(),
+                path: path.to_owned(),
+            })
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
 }
 
 #[derive(Clone)]
@@ -225,11 +268,14 @@ impl ExecutionGateway for GrpcExecution {
 
 #[cfg(test)]
 pub mod fake {
-    use std::sync::Mutex;
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    use sdi_proto::knowledge::v1::RepoTreeEntry;
 
     use super::*;
 
-    /// In-memory knowledge: a fixed context and catalog, remembers what was indexed.
+    /// In-memory knowledge: a fixed context and catalog, a repository tree
+    /// with file contents, and a record of what was indexed.
     #[derive(Default)]
     pub struct FakeKnowledge {
         pub context: Option<ProjectContext>,
@@ -237,6 +283,10 @@ pub mod fake {
         pub similar: Vec<SimilarProject>,
         pub runs: Vec<PipelineRun>,
         pub indexed: Mutex<Vec<IndexKnowledgeRequest>>,
+        pub tree: Vec<RepoTreeEntry>,
+        pub files: BTreeMap<String, String>,
+        /// Paths asked for through `repo_file`, in order.
+        pub files_read: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -280,6 +330,47 @@ pub mod fake {
             let mut indexed = self.indexed.lock().unwrap();
             indexed.push(request);
             Ok(format!("chunk-{}", indexed.len()))
+        }
+
+        async fn graph(
+            &self,
+            project_id: &str,
+            _include_history: bool,
+        ) -> Result<Graph, GatewayError> {
+            Ok(self
+                .project_context(project_id)
+                .await?
+                .graph
+                .unwrap_or_default())
+        }
+
+        async fn repo_tree(&self, project_id: &str) -> Result<RepoTree, GatewayError> {
+            let context = self.project_context(project_id).await?;
+            Ok(RepoTree {
+                project_id: project_id.to_owned(),
+                commit_sha: context
+                    .understanding
+                    .map(|u| u.commit_sha)
+                    .unwrap_or_default(),
+                entries: self.tree.clone(),
+                truncated: false,
+            })
+        }
+
+        async fn repo_file(&self, project_id: &str, path: &str) -> Result<RepoFile, GatewayError> {
+            self.project_context(project_id).await?;
+            self.files_read.lock().unwrap().push(path.to_owned());
+            let content = self
+                .files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| knowledge_err(Status::not_found(format!("{path} not found"))))?;
+            Ok(RepoFile {
+                path: path.to_owned(),
+                size: content.len() as u64,
+                content,
+                ..Default::default()
+            })
         }
     }
 

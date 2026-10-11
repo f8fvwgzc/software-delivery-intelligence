@@ -4,7 +4,12 @@
 use sdi_common::embed::embed;
 use sdi_knowledge::{
     catalog,
-    db::{self, chunks::NewChunk, projects::NewProject},
+    db::{
+        self,
+        chunks::NewChunk,
+        code::{NewFile, TreeEntryRecord},
+        projects::NewProject,
+    },
     domain::similarity,
 };
 use sqlx::PgPool;
@@ -390,6 +395,148 @@ async fn migrations_catalog_projects_and_search() {
     assert_eq!(counts.chunks, 1);
     let p = db::patterns::get(&pool, "vm-docker-compose").await.unwrap();
     assert_eq!(p.used_by, vec!["texc-symphony"]);
+
+    drop_schema(&pool, &schema).await;
+}
+
+/// The code browser caches (§15) are keyed by commit, pruned to the latest
+/// commit and gone with the project.
+#[tokio::test]
+async fn code_browser_caches_round_trip_and_prune() {
+    let Some((pool, schema)) = connect().await else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let project = db::projects::insert(&pool, &project("f8fvwgzc/view-engine"))
+        .await
+        .unwrap();
+
+    let entries = vec![
+        TreeEntryRecord {
+            path: "src".into(),
+            is_dir: true,
+            size: 0,
+        },
+        TreeEntryRecord {
+            path: "src/main.rs".into(),
+            is_dir: false,
+            size: 1234,
+        },
+    ];
+    for commit in ["aaa", "bbb"] {
+        db::code::upsert_tree(&pool, project.id, commit, &entries, commit == "aaa")
+            .await
+            .unwrap();
+        let stored = db::code::upsert_file(
+            &pool,
+            project.id,
+            &NewFile {
+                commit_sha: commit,
+                path: "src/main.rs",
+                content: "fn main() {}\n",
+                binary: false,
+                truncated: false,
+                size: 13,
+                language: "rust",
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.commit_sha, commit);
+        assert_eq!(stored.language, "rust");
+    }
+    // Re-upserting the same key refreshes in place.
+    db::code::upsert_file(
+        &pool,
+        project.id,
+        &NewFile {
+            commit_sha: "bbb",
+            path: "src/main.rs",
+            content: "",
+            binary: true,
+            truncated: true,
+            size: 1 << 21,
+            language: "",
+        },
+    )
+    .await
+    .unwrap();
+
+    let tree = db::code::get_tree(&pool, project.id, "aaa")
+        .await
+        .unwrap()
+        .expect("tree at aaa");
+    assert!(tree.truncated);
+    assert_eq!(tree.entries.0.len(), 2);
+    assert_eq!(
+        db::code::tree_entry_size(&pool, project.id, "bbb", "src/main.rs")
+            .await
+            .unwrap(),
+        Some(1234)
+    );
+    assert_eq!(
+        db::code::tree_entry_size(&pool, project.id, "bbb", "nope")
+            .await
+            .unwrap(),
+        None
+    );
+    let file = db::code::get_file(&pool, project.id, "bbb", "src/main.rs")
+        .await
+        .unwrap()
+        .expect("file at bbb");
+    assert!(file.binary && file.truncated && file.content.is_empty());
+    assert_eq!(file.size, 1 << 21);
+    assert!(
+        db::code::get_file(&pool, project.id, "bbb", "src/other.rs")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A scan at `bbb` leaves only `bbb` rows behind.
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(
+        db::code::prune(&mut conn, project.id, "bbb").await.unwrap(),
+        2
+    );
+    assert_eq!(
+        db::code::prune(&mut conn, project.id, "bbb").await.unwrap(),
+        0
+    );
+    drop(conn);
+    assert!(
+        db::code::get_tree(&pool, project.id, "aaa")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db::code::get_tree(&pool, project.id, "bbb")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        db::code::get_file(&pool, project.id, "aaa", "src/main.rs")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // Everything cascades with the project.
+    assert!(db::projects::delete(&pool, project.id).await.unwrap());
+    assert!(
+        db::code::get_tree(&pool, project.id, "bbb")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db::code::get_file(&pool, project.id, "bbb", "src/main.rs")
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     drop_schema(&pool, &schema).await;
 }

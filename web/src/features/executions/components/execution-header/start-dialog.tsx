@@ -2,6 +2,7 @@ import { PlayIcon } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -13,12 +14,13 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { components } from '@/lib/api/schema'
 
 import { useStartExecution } from '../../api/mutations'
 import { FAILURE_CODES } from '../../lib/labels'
+
+const FAILURE_CODE_OPTIONS = FAILURE_CODES.map((code) => ({ value: code, label: code }))
 
 interface StartDialogProps {
   execution: components['schemas']['Execution']
@@ -85,38 +87,27 @@ function StartForm({ execution, onStarted }: StartFormProps) {
             <div className="grid gap-3 sm:grid-cols-2">
               <Field>
                 <FieldLabel htmlFor="fault-step">Step</FieldLabel>
-                <Select value={stepKey} onValueChange={setStepKey}>
-                  <SelectTrigger id="fault-step" className="w-full">
-                    <SelectValue placeholder="Choose a step" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {execution.steps.map((step) => (
-                        <SelectItem key={step.key} value={step.key}>
-                          <span className="font-mono text-xs text-muted-foreground">{step.key}</span>
-                          <span className="truncate">{step.title}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                <ComboboxField
+                  id="fault-step"
+                  value={stepKey}
+                  onValueChange={setStepKey}
+                  options={execution.steps.map((step) => ({ value: step.key, label: step.title, description: step.key }))}
+                  placeholder="Choose a step"
+                  searchPlaceholder="Search steps"
+                  emptyText="No step matches."
+                />
               </Field>
               <Field>
                 <FieldLabel htmlFor="fault-code">Failure code</FieldLabel>
-                <Select value={code} onValueChange={setCode}>
-                  <SelectTrigger id="fault-code" className="w-full font-mono text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {FAILURE_CODES.map((failureCode) => (
-                        <SelectItem key={failureCode} value={failureCode} className="font-mono text-xs">
-                          {failureCode}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                <ComboboxField
+                  id="fault-code"
+                  mono
+                  value={code}
+                  onValueChange={setCode}
+                  options={FAILURE_CODE_OPTIONS}
+                  searchPlaceholder="Search codes"
+                  emptyText="No code matches."
+                />
               </Field>
             </div>
           )}

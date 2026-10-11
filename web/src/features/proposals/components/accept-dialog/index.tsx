@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 
 import { routes } from '@/app/router/routes'
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -26,7 +27,6 @@ import {
   FieldTitle,
 } from '@/components/ui/field'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { components } from '@/lib/api/schema'
 
 import { useAcceptProposal, useOpenPullRequest } from '../../api/mutations'
@@ -119,22 +119,18 @@ function AcceptForm({ proposal, initialOptionId, onDone }: AcceptFormProps) {
       <FieldGroup>
         <Field>
           <FieldLabel htmlFor="accept-option">Option</FieldLabel>
-          <Select value={optionId} onValueChange={setOptionId}>
-            <SelectTrigger id="accept-option" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {ranked.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    <span className="font-mono tabular-nums text-muted-foreground">{option.rank}</span>
-                    <span className="truncate">{option.title}</span>
-                    <span className="tabular-nums text-muted-foreground">{formatPercent(option.score?.overall ?? 0)}</span>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          <ComboboxField
+            id="accept-option"
+            value={optionId}
+            onValueChange={setOptionId}
+            options={ranked.map((option) => ({
+              value: option.id,
+              label: `${option.rank}. ${option.title}`,
+              description: `${formatPercent(option.score?.overall ?? 0)} overall`,
+            }))}
+            searchPlaceholder="Search options"
+            emptyText="No option matches."
+          />
           {optionId === proposal.recommendedOptionId ? (
             <FieldDescription>This is the recommended option.</FieldDescription>
           ) : (

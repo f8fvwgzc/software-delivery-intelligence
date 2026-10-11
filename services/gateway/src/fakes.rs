@@ -272,6 +272,66 @@ pub mod knowledge {
                 }))
             }
 
+            async fn get_repo_tree(
+                &self,
+                request: Request<proto::GetRepoTreeRequest>,
+            ) -> Result<Response<proto::RepoTree>, Status> {
+                let project_id = request.into_inner().project_id;
+                match project_id.as_str() {
+                    "missing" => return Err(Status::not_found("no such project")),
+                    "unscanned" => return Err(Status::failed_precondition("not scanned yet")),
+                    _ => {}
+                }
+                Ok(Response::new(proto::RepoTree {
+                    project_id,
+                    commit_sha: "abc".into(),
+                    entries: vec![
+                        proto::RepoTreeEntry {
+                            path: "src".into(),
+                            name: "src".into(),
+                            is_dir: true,
+                            size: 0,
+                            language: String::new(),
+                        },
+                        proto::RepoTreeEntry {
+                            path: "src/main.rs".into(),
+                            name: "main.rs".into(),
+                            is_dir: false,
+                            size: 120,
+                            language: "rust".into(),
+                        },
+                    ],
+                    truncated: false,
+                }))
+            }
+
+            async fn get_repo_file(
+                &self,
+                request: Request<proto::GetRepoFileRequest>,
+            ) -> Result<Response<proto::RepoFile>, Status> {
+                let request = request.into_inner();
+                if request.path.starts_with(".env") {
+                    return Err(Status::permission_denied("secret-looking file"));
+                }
+                if request.path.starts_with("..") {
+                    return Err(Status::invalid_argument("bad path"));
+                }
+                if request.path != "src/main.rs" {
+                    return Err(Status::not_found("no such file"));
+                }
+                Ok(Response::new(proto::RepoFile {
+                    path: request.path,
+                    commit_sha: "abc".into(),
+                    content: "fn main() {}\n".into(),
+                    binary: false,
+                    truncated: false,
+                    size: 13,
+                    language: "rust".into(),
+                    html_url: "https://github.com/o/r/blob/abc/src/main.rs".into(),
+                    fact_ids: vec!["f1".into()],
+                }))
+            }
+
             async fn get_settings(
                 &self,
                 _: Request<proto::GetSettingsRequest>,
@@ -474,6 +534,11 @@ pub mod intelligence {
             list_documents: proto::ListDocumentsRequest => proto::ListDocumentsResponse,
             get_document: proto::GetDocumentRequest => proto::Document,
             get_intelligence_stats: proto::GetIntelligenceStatsRequest => proto::IntelligenceStats,
+            generate_diagram: proto::GenerateDiagramRequest => proto::Diagram,
+            list_diagrams: proto::ListDiagramsRequest => proto::ListDiagramsResponse,
+            get_diagram: proto::GetDiagramRequest => proto::Diagram,
+            update_diagram: proto::UpdateDiagramRequest => proto::Diagram,
+            delete_diagram: proto::DeleteDiagramRequest => proto::DeleteDiagramResponse,
         }
     }
 

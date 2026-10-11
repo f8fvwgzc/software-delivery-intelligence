@@ -72,3 +72,18 @@ pub async fn list(
     .fetch_all(exec)
     .await
 }
+
+/// Ids of the facts whose evidence came from `path`, in the list order.
+pub async fn ids_for_path(
+    exec: impl PgExecutor<'_>,
+    project_id: Uuid,
+    path: &str,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM facts WHERE project_id = $1 AND source_path = $2 ORDER BY category, kind, key",
+    )
+    .bind(project_id)
+    .bind(path)
+    .fetch_all(exec)
+    .await
+}

@@ -602,6 +602,279 @@
         }
       }
     },
+    "/api/v1/diagrams/{id}": {
+      "get": {
+        "tags": [
+          "diagrams"
+        ],
+        "summary": "One diagram with its spec and Mermaid.",
+        "operationId": "get_diagram",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Diagram id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diagram"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "diagrams"
+        ],
+        "summary": "Deletes a diagram.",
+        "operationId": "delete_diagram",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Diagram id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "diagrams"
+        ],
+        "summary": "Edits the title, the spec (Mermaid is regenerated, `source` = `edited`) or\nthe Mermaid source (`source` = `mermaid`, the spec is kept). Bumps the revision.",
+        "operationId": "update_diagram",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Diagram id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDiagramRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diagram"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/documents/{id}": {
       "get": {
         "tags": [
@@ -3197,6 +3470,199 @@
         }
       }
     },
+    "/api/v1/projects/{id}/diagrams": {
+      "get": {
+        "tags": [
+          "diagrams"
+        ],
+        "summary": "Diagrams of a project, without their spec and Mermaid.",
+        "operationId": "list_diagrams",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Diagram"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "diagrams"
+        ],
+        "summary": "Builds a diagram from the knowledge graph, repository tree and key files.\nFor `custom`, the prompt is free text or Mermaid source to import.",
+        "operationId": "generate_diagram",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateDiagramRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diagram"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/documents": {
       "get": {
         "tags": [
@@ -3441,6 +3907,117 @@
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/file": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "One file's text at the scanned commit, with the facts detected from it.",
+        "description": "400 for a path that is not repository-relative, 403 for a secret-looking\nfile (`.env*`, `*.pem`, `*.key`, `id_rsa*`, …), 404 when the path is not\na file at that commit, 412 when the project has not been scanned yet.",
+        "operationId": "get_repo_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Repository-relative path of the file, e.g. `src/main.rs`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The file looks like a secret and is never displayed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4435,6 +5012,98 @@
                   "items": {
                     "$ref": "#/components/schemas/SimilarProject"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/tree": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Every file and directory of the repository at the scanned commit.",
+        "description": "412 when the project has not been scanned yet.",
+        "operationId": "get_repo_tree",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoTree"
                 }
               }
             }
@@ -6843,6 +7512,238 @@
           }
         }
       },
+      "Diagram": {
+        "type": "object",
+        "description": "A generated or edited diagram.",
+        "required": [
+          "id",
+          "projectId",
+          "kind",
+          "title",
+          "explanation",
+          "source",
+          "commitSha",
+          "revision",
+          "reasoner",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "commitSha": {
+            "type": "string",
+            "description": "Commit the diagram was generated from."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was generated."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "60–150 words: what the diagram shows and its evidence limits."
+          },
+          "id": {
+            "type": "string",
+            "description": "Diagram id."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DiagramKind",
+            "description": "Kind."
+          },
+          "mermaid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mermaid rendered from the spec, or the user's edited source. `null` in list responses."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to."
+          },
+          "reasoner": {
+            "type": "string",
+            "description": "`heuristic` | `claude`."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bumped on every edit.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "`generated` | `edited` | `mermaid` (the Mermaid source is authoritative)."
+          },
+          "spec": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiagramSpec",
+                "description": "The spec. `null` in list responses."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was last edited."
+          }
+        }
+      },
+      "DiagramEdge": {
+        "type": "object",
+        "description": "A relationship between two nodes.",
+        "required": [
+          "source",
+          "target"
+        ],
+        "properties": {
+          "dashed": {
+            "type": "boolean",
+            "description": "Inferred rather than observed; drawn dashed."
+          },
+          "evidencePath": {
+            "type": "string",
+            "description": "File that shows the relationship; empty when inferred."
+          },
+          "id": {
+            "type": "string",
+            "description": "Edge id."
+          },
+          "label": {
+            "type": "string",
+            "description": "1–3 words, e.g. \"calls\", \"reads\", \"publishes\"."
+          },
+          "source": {
+            "type": "string",
+            "description": "Source node id."
+          },
+          "style": {
+            "type": "string",
+            "description": "`call` | `data` | `async` | `returns` | `contains`."
+          },
+          "target": {
+            "type": "string",
+            "description": "Target node id."
+          }
+        }
+      },
+      "DiagramGroup": {
+        "type": "object",
+        "description": "A tinted region of related nodes.",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Longer description."
+          },
+          "id": {
+            "type": "string",
+            "description": "Group id, unique within the diagram."
+          },
+          "label": {
+            "type": "string",
+            "description": "Label."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository directory the group stands for, when there is one."
+          }
+        }
+      },
+      "DiagramKind": {
+        "type": "string",
+        "description": "What a diagram shows.",
+        "enum": [
+          "unspecified",
+          "architecture",
+          "high_level",
+          "data_flow",
+          "deployment",
+          "dependency",
+          "sequence",
+          "module_map",
+          "db_schema",
+          "custom"
+        ]
+      },
+      "DiagramNode": {
+        "type": "object",
+        "description": "One component on the diagram.",
+        "required": [
+          "id",
+          "label",
+          "kind"
+        ],
+        "properties": {
+          "caption": {
+            "type": "string",
+            "description": "Short type caption under the label, e.g. \"axum\", \"PostgreSQL\"."
+          },
+          "description": {
+            "type": "string",
+            "description": "Longer description."
+          },
+          "groupId": {
+            "type": "string",
+            "description": "Group the node sits in; empty for none."
+          },
+          "id": {
+            "type": "string",
+            "description": "Node id, unique within the diagram."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`actor` | `service` | `module` | `ui` | `datastore` | `queue` | `external` | `infra` | `job`."
+          },
+          "label": {
+            "type": "string",
+            "description": "2–4 word label."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository path the node stands for; the code browser opens it. Empty for actors and external systems."
+          }
+        }
+      },
+      "DiagramSpec": {
+        "type": "object",
+        "description": "The diagram's groups, nodes and edges: the single source of truth for rendering.",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "description": "`LR` or `TB`."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiagramEdge"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiagramGroup"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiagramNode"
+            }
+          }
+        }
+      },
       "Document": {
         "type": "object",
         "description": "A document generated from the knowledge model.",
@@ -7399,6 +8300,26 @@
           "stepKey": {
             "type": "string",
             "description": "Step to fail."
+          }
+        }
+      },
+      "GenerateDiagramRequest": {
+        "type": "object",
+        "description": "Body of `POST /projects/{id}/diagrams`.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/DiagramKind",
+            "description": "Kind of diagram to build."
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free text for `custom` (a prompt, or Mermaid source to import), or a focus hint for other kinds."
           }
         }
       },
@@ -9728,6 +10649,130 @@
           }
         }
       },
+      "RepoFile": {
+        "type": "object",
+        "description": "One file's text at the scanned commit.",
+        "required": [
+          "path",
+          "commitSha",
+          "content",
+          "binary",
+          "truncated",
+          "size",
+          "language",
+          "htmlUrl",
+          "factIds"
+        ],
+        "properties": {
+          "binary": {
+            "type": "boolean",
+            "description": "The file is not text (NUL bytes or a known binary extension)."
+          },
+          "commitSha": {
+            "type": "string",
+            "description": "Commit the content belongs to."
+          },
+          "content": {
+            "type": "string",
+            "description": "UTF-8 text; empty when binary."
+          },
+          "factIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the facts detected from this file."
+          },
+          "htmlUrl": {
+            "type": "string",
+            "description": "`https://github.com/{owner}/{repo}/blob/{sha}/{path}`."
+          },
+          "language": {
+            "type": "string",
+            "description": "Lowercase language id from the extension; empty when unknown."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative path."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size in bytes on GitHub.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Content was cut at the 1 MiB limit; `size` is the real size."
+          }
+        }
+      },
+      "RepoTree": {
+        "type": "object",
+        "description": "Every entry of the repository at the scanned commit, sorted by path.",
+        "required": [
+          "projectId",
+          "commitSha",
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "commitSha": {
+            "type": "string",
+            "description": "Commit the last successful scan analysed."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoTreeEntry"
+            },
+            "description": "Files and directories, sorted by path."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project id."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "GitHub truncated the recursive tree (very large repositories)."
+          }
+        }
+      },
+      "RepoTreeEntry": {
+        "type": "object",
+        "description": "One file or directory of the repository tree.",
+        "required": [
+          "path",
+          "name",
+          "isDir",
+          "size",
+          "language"
+        ],
+        "properties": {
+          "isDir": {
+            "type": "boolean",
+            "description": "True for directories."
+          },
+          "language": {
+            "type": "string",
+            "description": "Lowercase language id from the extension, e.g. `typescript`; empty when unknown."
+          },
+          "name": {
+            "type": "string",
+            "description": "Last path component."
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative path, e.g. `web/src/App.tsx`."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size in bytes; 0 for directories.",
+            "minimum": 0
+          }
+        }
+      },
       "ResolveFailureRequest": {
         "type": "object",
         "description": "Body of `POST /executions/{id}/resolve`. One of `optionId` or `instruction` is required.",
@@ -10528,6 +11573,37 @@
           }
         }
       },
+      "UpdateDiagramRequest": {
+        "type": "object",
+        "description": "Body of `PATCH /diagrams/{id}`: every field is optional, at least one must be set.",
+        "properties": {
+          "mermaid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replaces the Mermaid source (`source` becomes `mermaid`); the spec is kept as is."
+          },
+          "spec": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiagramSpec",
+                "description": "Replaces the spec and regenerates the Mermaid (`source` becomes `edited`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New title."
+          }
+        }
+      },
       "UpdatePolicyRequest": {
         "type": "object",
         "description": "Body of `PATCH /policies/{actionType}`.",
@@ -10607,6 +11683,10 @@
     {
       "name": "documents",
       "description": "Generated documents and reports"
+    },
+    {
+      "name": "diagrams",
+      "description": "Evidence-based diagrams generated from the knowledge graph"
     },
     {
       "name": "executions",

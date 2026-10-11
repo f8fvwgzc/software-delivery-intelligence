@@ -2,6 +2,7 @@
 //! crate builds without a database.
 
 pub mod decisions;
+pub mod diagrams;
 pub mod documents;
 pub mod messages;
 pub mod proposals;

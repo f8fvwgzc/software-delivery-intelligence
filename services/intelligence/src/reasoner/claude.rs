@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::Reasoner;
+use super::{Reasoner, diagrams::RefineRequest};
 
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
@@ -69,17 +69,32 @@ impl ClaudeReasoner {
     }
 
     async fn rewrite(&self, draft: &str, context: &serde_json::Value) -> anyhow::Result<String> {
+        self.complete(
+            SYSTEM_PROMPT,
+            format!(
+                "Structured context (JSON):\n{}\n\nTemplated draft:\n{}\n\nRewrite the draft as prose.",
+                serde_json::to_string(context)?,
+                draft
+            ),
+            MAX_TOKENS,
+        )
+        .await
+    }
+
+    /// One user turn against the Messages API; the text blocks joined.
+    async fn complete(
+        &self,
+        system: &str,
+        content: String,
+        max_tokens: u32,
+    ) -> anyhow::Result<String> {
         let body = MessageRequest {
             model: &self.model,
-            max_tokens: MAX_TOKENS,
-            system: SYSTEM_PROMPT,
+            max_tokens,
+            system,
             messages: vec![ChatMessage {
                 role: "user",
-                content: format!(
-                    "Structured context (JSON):\n{}\n\nTemplated draft:\n{}\n\nRewrite the draft as prose.",
-                    serde_json::to_string(context)?,
-                    draft
-                ),
+                content,
             }],
         };
         let response = self
@@ -129,6 +144,23 @@ impl Reasoner for ClaudeReasoner {
             Err(error) => {
                 tracing::warn!(%error, "claude reasoner failed; using heuristic reply");
                 draft.to_owned()
+            }
+        }
+    }
+
+    async fn refine_diagram(&self, request: &RefineRequest) -> Option<String> {
+        match self
+            .complete(
+                super::diagrams::SYSTEM_PROMPT,
+                request.user_message(),
+                super::diagrams::MAX_TOKENS,
+            )
+            .await
+        {
+            Ok(text) => Some(text),
+            Err(error) => {
+                tracing::warn!(%error, "claude reasoner failed; keeping the templated diagram text");
+                None
             }
         }
     }

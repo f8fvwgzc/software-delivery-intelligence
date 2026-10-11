@@ -18,7 +18,7 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
         {document.markdown.trim().length === 0 ? (
           <p className="text-sm text-muted-foreground">This document is empty.</p>
         ) : (
-          <Markdown>{document.markdown}</Markdown>
+          <Markdown className="max-w-[72ch]">{document.markdown}</Markdown>
         )}
       </div>
     </article>

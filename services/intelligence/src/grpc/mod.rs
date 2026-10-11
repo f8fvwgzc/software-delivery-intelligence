@@ -1,6 +1,7 @@
 //! tonic service: one file per RPC group, the trait impl here only delegates.
 
 mod decisions;
+mod diagrams;
 mod documents;
 mod negotiation;
 mod proposals;
@@ -15,13 +16,15 @@ use sdi_common::grpc::db_status;
 use sdi_proto::{
     common::v1::{PlatformEvent, WatchEventsRequest},
     intelligence::v1::{
-        AcceptProposalRequest, CreateDecisionRequest, Decision, Document, GenerateDocumentRequest,
-        GenerateProposalRequest, GetDocumentRequest, GetIntelligenceStatsRequest,
-        GetProposalRequest, GetSettingsRequest, IntelligenceSettings, IntelligenceStats,
-        ListDecisionsRequest, ListDecisionsResponse, ListDocumentsRequest, ListDocumentsResponse,
-        ListMessagesRequest, ListMessagesResponse, ListProposalsRequest, ListProposalsResponse,
-        NegotiateRequest, NegotiateResponse, Proposal, RejectProposalRequest,
-        SupersedeDecisionRequest, UpdateSettingsRequest,
+        AcceptProposalRequest, CreateDecisionRequest, Decision, DeleteDiagramRequest,
+        DeleteDiagramResponse, Diagram, Document, GenerateDiagramRequest, GenerateDocumentRequest,
+        GenerateProposalRequest, GetDiagramRequest, GetDocumentRequest,
+        GetIntelligenceStatsRequest, GetProposalRequest, GetSettingsRequest, IntelligenceSettings,
+        IntelligenceStats, ListDecisionsRequest, ListDecisionsResponse, ListDiagramsRequest,
+        ListDiagramsResponse, ListDocumentsRequest, ListDocumentsResponse, ListMessagesRequest,
+        ListMessagesResponse, ListProposalsRequest, ListProposalsResponse, NegotiateRequest,
+        NegotiateResponse, Proposal, RejectProposalRequest, SupersedeDecisionRequest,
+        UpdateDiagramRequest, UpdateSettingsRequest,
         intelligence_service_server::IntelligenceService,
     },
 };
@@ -245,6 +248,51 @@ impl IntelligenceService for IntelligenceGrpc {
         _request: Request<GetIntelligenceStatsRequest>,
     ) -> Result<Response<IntelligenceStats>, Status> {
         stats::get(self).await.map(Response::new)
+    }
+
+    async fn generate_diagram(
+        &self,
+        request: Request<GenerateDiagramRequest>,
+    ) -> Result<Response<Diagram>, Status> {
+        diagrams::generate(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_diagrams(
+        &self,
+        request: Request<ListDiagramsRequest>,
+    ) -> Result<Response<ListDiagramsResponse>, Status> {
+        diagrams::list(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_diagram(
+        &self,
+        request: Request<GetDiagramRequest>,
+    ) -> Result<Response<Diagram>, Status> {
+        diagrams::get(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn update_diagram(
+        &self,
+        request: Request<UpdateDiagramRequest>,
+    ) -> Result<Response<Diagram>, Status> {
+        diagrams::update(self, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn delete_diagram(
+        &self,
+        request: Request<DeleteDiagramRequest>,
+    ) -> Result<Response<DeleteDiagramResponse>, Status> {
+        diagrams::delete(self, request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn get_settings(

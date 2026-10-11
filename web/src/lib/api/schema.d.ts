@@ -90,6 +90,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/diagrams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One diagram with its spec and Mermaid. */
+        get: operations["get_diagram"];
+        put?: never;
+        post?: never;
+        /** Deletes a diagram. */
+        delete: operations["delete_diagram"];
+        options?: never;
+        head?: never;
+        /**
+         * Edits the title, the spec (Mermaid is regenerated, `source` = `edited`) or
+         *     the Mermaid source (`source` = `mermaid`, the spec is kept). Bumps the revision.
+         */
+        patch: operations["update_diagram"];
+        trace?: never;
+    };
     "/api/v1/documents/{id}": {
         parameters: {
             query?: never;
@@ -552,6 +574,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/diagrams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Diagrams of a project, without their spec and Mermaid. */
+        get: operations["list_diagrams"];
+        put?: never;
+        /**
+         * Builds a diagram from the knowledge graph, repository tree and key files.
+         *     For `custom`, the prompt is free text or Mermaid source to import.
+         */
+        post: operations["generate_diagram"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{id}/documents": {
         parameters: {
             query?: never;
@@ -579,6 +622,28 @@ export interface paths {
         };
         /** Facts of a project, optionally filtered by kind and category. */
         get: operations["list_facts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One file's text at the scanned commit, with the facts detected from it.
+         * @description 400 for a path that is not repository-relative, 403 for a secret-looking
+         *     file (`.env*`, `*.pem`, `*.key`, `id_rsa*`, …), 404 when the path is not
+         *     a file at that commit, 412 when the project has not been scanned yet.
+         */
+        get: operations["get_repo_file"];
         put?: never;
         post?: never;
         delete?: never;
@@ -736,6 +801,26 @@ export interface paths {
         };
         /** Projects that look like this one, most similar first. */
         get: operations["list_similar_projects"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every file and directory of the repository at the scanned commit.
+         * @description 412 when the project has not been scanned yet.
+         */
+        get: operations["get_repo_tree"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1380,6 +1465,101 @@ export interface components {
             deployments: components["schemas"]["Deployment"][];
             stats?: components["schemas"]["DeploymentStats"] | null;
         };
+        /** @description A generated or edited diagram. */
+        Diagram: {
+            /** @description Commit the diagram was generated from. */
+            commitSha: string;
+            /**
+             * Format: date-time
+             * @description When it was generated.
+             */
+            createdAt: string;
+            /** @description 60–150 words: what the diagram shows and its evidence limits. */
+            explanation: string;
+            /** @description Diagram id. */
+            id: string;
+            /** @description Kind. */
+            kind: components["schemas"]["DiagramKind"];
+            /** @description Mermaid rendered from the spec, or the user's edited source. `null` in list responses. */
+            mermaid?: string | null;
+            /** @description Project it belongs to. */
+            projectId: string;
+            /** @description `heuristic` | `claude`. */
+            reasoner: string;
+            /**
+             * Format: int32
+             * @description Bumped on every edit.
+             */
+            revision: number;
+            /** @description `generated` | `edited` | `mermaid` (the Mermaid source is authoritative). */
+            source: string;
+            spec?: components["schemas"]["DiagramSpec"] | null;
+            /** @description Title. */
+            title: string;
+            /**
+             * Format: date-time
+             * @description When it was last edited.
+             */
+            updatedAt: string;
+        };
+        /** @description A relationship between two nodes. */
+        DiagramEdge: {
+            /** @description Inferred rather than observed; drawn dashed. */
+            dashed?: boolean;
+            /** @description File that shows the relationship; empty when inferred. */
+            evidencePath?: string;
+            /** @description Edge id. */
+            id?: string;
+            /** @description 1–3 words, e.g. "calls", "reads", "publishes". */
+            label?: string;
+            /** @description Source node id. */
+            source: string;
+            /** @description `call` | `data` | `async` | `returns` | `contains`. */
+            style?: string;
+            /** @description Target node id. */
+            target: string;
+        };
+        /** @description A tinted region of related nodes. */
+        DiagramGroup: {
+            /** @description Longer description. */
+            description?: string;
+            /** @description Group id, unique within the diagram. */
+            id: string;
+            /** @description Label. */
+            label: string;
+            /** @description Repository directory the group stands for, when there is one. */
+            path?: string;
+        };
+        /**
+         * @description What a diagram shows.
+         * @enum {string}
+         */
+        DiagramKind: "unspecified" | "architecture" | "high_level" | "data_flow" | "deployment" | "dependency" | "sequence" | "module_map" | "db_schema" | "custom";
+        /** @description One component on the diagram. */
+        DiagramNode: {
+            /** @description Short type caption under the label, e.g. "axum", "PostgreSQL". */
+            caption?: string;
+            /** @description Longer description. */
+            description?: string;
+            /** @description Group the node sits in; empty for none. */
+            groupId?: string;
+            /** @description Node id, unique within the diagram. */
+            id: string;
+            /** @description `actor` | `service` | `module` | `ui` | `datastore` | `queue` | `external` | `infra` | `job`. */
+            kind: string;
+            /** @description 2–4 word label. */
+            label: string;
+            /** @description Repository path the node stands for; the code browser opens it. Empty for actors and external systems. */
+            path?: string;
+        };
+        /** @description The diagram's groups, nodes and edges: the single source of truth for rendering. */
+        DiagramSpec: {
+            /** @description `LR` or `TB`. */
+            direction?: string;
+            edges?: components["schemas"]["DiagramEdge"][];
+            groups?: components["schemas"]["DiagramGroup"][];
+            nodes?: components["schemas"]["DiagramNode"][];
+        };
         /** @description A document generated from the knowledge model. */
         Document: {
             /** @description Commit it was generated from. */
@@ -1612,6 +1792,13 @@ export interface components {
             code: string;
             /** @description Step to fail. */
             stepKey: string;
+        };
+        /** @description Body of `POST /projects/{id}/diagrams`. */
+        GenerateDiagramRequest: {
+            /** @description Kind of diagram to build. */
+            kind: components["schemas"]["DiagramKind"];
+            /** @description Free text for `custom` (a prompt, or Mermaid source to import), or a focus hint for other kinds. */
+            prompt?: string | null;
         };
         /** @description Body of `POST /projects/{id}/documents`. */
         GenerateDocumentRequest: {
@@ -2609,6 +2796,57 @@ export interface components {
             /** @description True for the suggested option. */
             recommended: boolean;
         };
+        /** @description One file's text at the scanned commit. */
+        RepoFile: {
+            /** @description The file is not text (NUL bytes or a known binary extension). */
+            binary: boolean;
+            /** @description Commit the content belongs to. */
+            commitSha: string;
+            /** @description UTF-8 text; empty when binary. */
+            content: string;
+            /** @description Ids of the facts detected from this file. */
+            factIds: string[];
+            /** @description `https://github.com/{owner}/{repo}/blob/{sha}/{path}`. */
+            htmlUrl: string;
+            /** @description Lowercase language id from the extension; empty when unknown. */
+            language: string;
+            /** @description Repository-relative path. */
+            path: string;
+            /**
+             * Format: int64
+             * @description Size in bytes on GitHub.
+             */
+            size: number;
+            /** @description Content was cut at the 1 MiB limit; `size` is the real size. */
+            truncated: boolean;
+        };
+        /** @description Every entry of the repository at the scanned commit, sorted by path. */
+        RepoTree: {
+            /** @description Commit the last successful scan analysed. */
+            commitSha: string;
+            /** @description Files and directories, sorted by path. */
+            entries: components["schemas"]["RepoTreeEntry"][];
+            /** @description Project id. */
+            projectId: string;
+            /** @description GitHub truncated the recursive tree (very large repositories). */
+            truncated: boolean;
+        };
+        /** @description One file or directory of the repository tree. */
+        RepoTreeEntry: {
+            /** @description True for directories. */
+            isDir: boolean;
+            /** @description Lowercase language id from the extension, e.g. `typescript`; empty when unknown. */
+            language: string;
+            /** @description Last path component. */
+            name: string;
+            /** @description Repository-relative path, e.g. `web/src/App.tsx`. */
+            path: string;
+            /**
+             * Format: int64
+             * @description Size in bytes; 0 for directories.
+             */
+            size: number;
+        };
         /** @description Body of `POST /executions/{id}/resolve`. One of `optionId` or `instruction` is required. */
         ResolveFailureRequest: {
             /** @description Free-text instruction instead of an option. */
@@ -2985,6 +3223,14 @@ export interface components {
             summary: string;
             /** @description Section title. */
             title: string;
+        };
+        /** @description Body of `PATCH /diagrams/{id}`: every field is optional, at least one must be set. */
+        UpdateDiagramRequest: {
+            /** @description Replaces the Mermaid source (`source` becomes `mermaid`); the spec is kept as is. */
+            mermaid?: string | null;
+            spec?: components["schemas"]["DiagramSpec"] | null;
+            /** @description New title. */
+            title?: string | null;
         };
         /** @description Body of `PATCH /policies/{actionType}`. */
         UpdatePolicyRequest: {
@@ -3419,6 +3665,237 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeliveryStats"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_diagram: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Diagram id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Diagram"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_diagram: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Diagram id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_diagram: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Diagram id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDiagramRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Diagram"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */
@@ -5595,6 +6072,162 @@ export interface operations {
             };
         };
     };
+    list_diagrams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Diagram"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    generate_diagram: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDiagramRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Diagram"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_documents: {
         parameters: {
             query?: never;
@@ -5778,6 +6411,94 @@ export interface operations {
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_repo_file: {
+        parameters: {
+            query: {
+                /** @description Repository-relative path of the file, e.g. `src/main.rs`. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoFile"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The file looks like a secret and is never displayed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6559,6 +7280,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SimilarProject"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_repo_tree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoTree"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */

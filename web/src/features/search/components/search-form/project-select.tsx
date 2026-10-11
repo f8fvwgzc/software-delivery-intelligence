@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ComboboxField } from '@/components/shared/form'
 import { projectPickerQuery } from '@/features/proposals/api/queries'
 
 const ALL = 'all'
@@ -16,21 +16,20 @@ export function ProjectSelect({ value, onChange }: ProjectSelectProps) {
   const projects = useQuery(projectPickerQuery())
   const items = projects.data ?? []
 
+  const options = [
+    { value: ALL, label: 'All projects' },
+    ...items.map((project) => ({ value: project.id, label: project.repoFullName })),
+  ]
+
   return (
-    <Select value={value || ALL} onValueChange={(next) => onChange(next === ALL ? '' : next)}>
-      <SelectTrigger aria-label="Project" className="sm:w-56">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          <SelectItem value={ALL}>All projects</SelectItem>
-          {items.map((project) => (
-            <SelectItem key={project.id} value={project.id}>
-              {project.repoFullName}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+    <ComboboxField
+      aria-label="Project"
+      className="sm:w-56"
+      value={value || ALL}
+      onValueChange={(next) => onChange(next === ALL ? '' : next)}
+      options={options}
+      searchPlaceholder="Search projects"
+      emptyText="No project matches."
+    />
   )
 }

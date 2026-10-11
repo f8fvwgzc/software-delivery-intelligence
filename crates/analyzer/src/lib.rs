@@ -11,6 +11,7 @@ mod detectors;
 pub mod eol;
 mod files;
 mod graph;
+pub mod lang;
 mod manifests;
 pub mod maturity;
 pub mod model;
@@ -24,6 +25,7 @@ mod yaml;
 pub use config::{CONFIG_PATH, is_usable as config_is_usable, parse_config};
 pub use eol::{DEFAULT_TODAY, Day};
 pub use files::{wanted_files, wanted_files_with};
+pub use lang::language_for_path;
 pub use model::*;
 
 /// Largest file the scanner should download, in bytes.

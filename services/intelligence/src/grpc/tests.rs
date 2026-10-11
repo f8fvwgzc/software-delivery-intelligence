@@ -7,11 +7,13 @@ use std::sync::Arc;
 use sdi_proto::{
     common::v1::WatchEventsRequest,
     intelligence::v1::{
-        AcceptProposalRequest, CreateDecisionRequest, DecisionScope, DecisionSource, DocumentKind,
-        GenerateDocumentRequest, GenerateProposalRequest, GetIntelligenceStatsRequest,
-        GetProposalRequest, GetSettingsRequest, IntelligenceSettings, ListDecisionsRequest,
-        ListMessagesRequest, ListProposalsRequest, MessageRole, NegotiateRequest, ProposalKind,
-        ProposalStatus, ScoreWeights, SupersedeDecisionRequest, UpdateSettingsRequest,
+        AcceptProposalRequest, CreateDecisionRequest, DecisionScope, DecisionSource,
+        DeleteDiagramRequest, DiagramKind, DiagramSpec, DocumentKind, GenerateDiagramRequest,
+        GenerateDocumentRequest, GenerateProposalRequest, GetDiagramRequest,
+        GetIntelligenceStatsRequest, GetProposalRequest, GetSettingsRequest, IntelligenceSettings,
+        ListDecisionsRequest, ListDiagramsRequest, ListMessagesRequest, ListProposalsRequest,
+        MessageRole, NegotiateRequest, ProposalKind, ProposalStatus, ScoreWeights,
+        SupersedeDecisionRequest, UpdateDiagramRequest, UpdateSettingsRequest,
         intelligence_service_server::IntelligenceService,
     },
 };
@@ -39,6 +41,7 @@ async fn service(schema: &str) -> (IntelligenceGrpc, Arc<FakeKnowledge>, Arc<Fak
         "proposals",
         "decisions",
         "documents",
+        "diagrams",
         "settings",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("TRUNCATE {table} CASCADE")))
@@ -684,4 +687,258 @@ async fn budget_artifacts_list_and_events() {
         ("document", document.id.as_str())
     );
     assert_eq!(event.data.get("kind").map(String::as_str), Some("runbook"));
+}
+
+/// Diagrams: generate from the fake knowledge (context + tree + files),
+/// list without spec/mermaid, edit the spec, override the Mermaid, delete.
+/// Runs only when `DATABASE_URL` points at a database.
+#[tokio::test]
+async fn diagram_round_trip() {
+    if std::env::var("DATABASE_URL").is_err() {
+        eprintln!("DATABASE_URL not set; skipping diagram_round_trip");
+        return;
+    }
+    use crate::domain::diagrams::fixtures as dia;
+    let (svc, _, _) = service("intelligence_test_diagrams").await;
+    let knowledge = Arc::new(FakeKnowledge {
+        context: Some(dia::context()),
+        tree: dia::tree(),
+        files: dia::files(),
+        ..Default::default()
+    });
+    let svc = IntelligenceGrpc::new(
+        svc.pool.clone(),
+        knowledge.clone(),
+        Arc::new(FakeExecution::default()),
+        ReasonerConfig::default(),
+    );
+    let mut events = svc.events.watch();
+
+    let missing = svc
+        .generate_diagram(Request::new(GenerateDiagramRequest {
+            project_id: "nope".into(),
+            kind: DiagramKind::Architecture as i32,
+            prompt: String::new(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), Code::NotFound);
+    let unspecified = svc
+        .generate_diagram(Request::new(GenerateDiagramRequest {
+            project_id: dia::PROJECT_ID.into(),
+            kind: 0,
+            prompt: String::new(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(unspecified.code(), Code::InvalidArgument);
+
+    let diagram = svc
+        .generate_diagram(Request::new(GenerateDiagramRequest {
+            project_id: dia::PROJECT_ID.into(),
+            kind: DiagramKind::Architecture as i32,
+            prompt: String::new(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(diagram.kind(), DiagramKind::Architecture);
+    assert_eq!(diagram.title, "view-engine architecture");
+    assert_eq!(diagram.source, "generated");
+    assert_eq!(diagram.reasoner, "heuristic");
+    assert_eq!(diagram.revision, 1);
+    assert_eq!(
+        diagram.commit_sha,
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    let spec = diagram.spec.clone().expect("spec");
+    assert!(
+        spec.nodes
+            .iter()
+            .any(|n| n.id == "service_api" && n.path == "services/api/src/main.rs")
+    );
+    assert!(diagram.mermaid.starts_with("flowchart LR\n"));
+    assert!(diagram.mermaid.contains(&format!(
+        "/projects/{}/code/services/api/src/main.rs",
+        dia::PROJECT_ID
+    )));
+    let words = diagram.explanation.split_whitespace().count();
+    assert!((60..=150).contains(&words));
+    // Key files were fetched through the gateway (bounded).
+    let read = knowledge.files_read.lock().unwrap().clone();
+    assert!(!read.is_empty() && read.len() <= crate::domain::diagrams::MAX_KEY_FILES);
+    assert!(read.contains(&"services/api/src/main.rs".to_owned()));
+    let created = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (created.entity.as_str(), created.action.as_str()),
+        ("diagram", "created")
+    );
+    assert_eq!(created.entity_id, diagram.id);
+
+    // A Mermaid import is stored as is, with an empty spec.
+    let imported = svc
+        .generate_diagram(Request::new(GenerateDiagramRequest {
+            project_id: dia::PROJECT_ID.into(),
+            kind: DiagramKind::Custom as i32,
+            prompt: "flowchart TB\n  a[A] --> b[B]\n".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(imported.source, "mermaid");
+    assert!(imported.spec.as_ref().unwrap().nodes.is_empty());
+    assert!(imported.mermaid.starts_with("flowchart TB"));
+    let _ = events.next().await;
+
+    // List omits spec and mermaid, newest first.
+    let listed = svc
+        .list_diagrams(Request::new(ListDiagramsRequest {
+            project_id: dia::PROJECT_ID.into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .diagrams;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, imported.id);
+    assert!(
+        listed
+            .iter()
+            .all(|d| d.spec.is_none() && d.mermaid.is_empty())
+    );
+    assert_eq!(listed[1].title, diagram.title);
+
+    // Spec edit: Mermaid regenerated, source "edited", revision bumped.
+    let mut edited_spec = spec.clone();
+    edited_spec
+        .nodes
+        .retain(|n| n.id == "service_api" || n.id == "datastore_postgres");
+    edited_spec
+        .edges
+        .retain(|e| e.source == "service_api" && e.target == "datastore_postgres");
+    edited_spec.nodes[0].label = "HTTP API".into();
+    let edited = svc
+        .update_diagram(Request::new(UpdateDiagramRequest {
+            id: diagram.id.clone(),
+            title: "Trimmed".into(),
+            spec: Some(edited_spec),
+            mermaid: String::new(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(edited.title, "Trimmed");
+    assert_eq!(edited.source, "edited");
+    assert_eq!(edited.revision, 2);
+    assert_eq!(edited.spec.as_ref().unwrap().nodes.len(), 2);
+    assert!(edited.mermaid.contains("HTTP API"));
+    assert!(!edited.mermaid.contains("n_service_quant"));
+    let updated = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            updated.entity.as_str(),
+            updated.action.as_str(),
+            updated.status.as_str()
+        ),
+        ("diagram", "updated", "edited")
+    );
+    assert_eq!(updated.data.get("revision").map(String::as_str), Some("2"));
+
+    // Mermaid edit: source authoritative, spec kept.
+    let overridden = svc
+        .update_diagram(Request::new(UpdateDiagramRequest {
+            id: diagram.id.clone(),
+            title: String::new(),
+            spec: None,
+            mermaid: "flowchart LR\n  x[X] --> y[Y]\n".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(overridden.source, "mermaid");
+    assert_eq!(overridden.revision, 3);
+    assert_eq!(overridden.spec.as_ref().unwrap().nodes.len(), 2);
+    assert!(overridden.mermaid.starts_with("flowchart LR\n  x[X]"));
+    let _ = events.next().await;
+
+    // Invalid edits are rejected.
+    let bad_spec = svc
+        .update_diagram(Request::new(UpdateDiagramRequest {
+            id: diagram.id.clone(),
+            title: String::new(),
+            spec: Some(DiagramSpec {
+                direction: "LR".into(),
+                groups: vec![],
+                nodes: vec![],
+                edges: vec![sdi_proto::intelligence::v1::DiagramEdge {
+                    source: "a".into(),
+                    target: "b".into(),
+                    ..Default::default()
+                }],
+            }),
+            mermaid: String::new(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad_spec.code(), Code::InvalidArgument);
+    let bad_mermaid = svc
+        .update_diagram(Request::new(UpdateDiagramRequest {
+            id: diagram.id.clone(),
+            title: String::new(),
+            spec: None,
+            mermaid: "flowchart LR\n  subgraph s\n  a --> b\n".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad_mermaid.code(), Code::InvalidArgument);
+    let nothing = svc
+        .update_diagram(Request::new(UpdateDiagramRequest {
+            id: diagram.id.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(nothing.code(), Code::InvalidArgument);
+
+    let fetched = svc
+        .get_diagram(Request::new(GetDiagramRequest {
+            id: diagram.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fetched.revision, 3);
+    assert_eq!(fetched.source, "mermaid");
+
+    svc.delete_diagram(Request::new(DeleteDiagramRequest {
+        id: diagram.id.clone(),
+    }))
+    .await
+    .unwrap();
+    let deleted = events.next().await.unwrap().unwrap();
+    assert_eq!(
+        (deleted.entity.as_str(), deleted.action.as_str()),
+        ("diagram", "deleted")
+    );
+    let gone = svc
+        .get_diagram(Request::new(GetDiagramRequest {
+            id: diagram.id.clone(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(gone.code(), Code::NotFound);
+    let twice = svc
+        .delete_diagram(Request::new(DeleteDiagramRequest {
+            id: diagram.id.clone(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(twice.code(), Code::NotFound);
+    let bad_id = svc
+        .get_diagram(Request::new(GetDiagramRequest {
+            id: "not-a-uuid".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(bad_id.code(), Code::InvalidArgument);
 }

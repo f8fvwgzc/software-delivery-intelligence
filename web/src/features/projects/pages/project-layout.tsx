@@ -38,7 +38,7 @@ export default function ProjectLayout() {
   return (
     <div className="flex flex-1 flex-col">
       <div className="bg-background">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 pt-5 md:px-6 md:pt-6">
+        <div className="flex w-full min-w-0 flex-col gap-4 px-4 pt-5 md:px-6 md:pt-6">
           <QueryBoundary fallback={<ProjectBandSkeleton />}>
             <ProjectBand projectId={projectId} />
           </QueryBoundary>

@@ -1,8 +1,8 @@
 import { SearchIcon, XIcon } from 'lucide-react'
 
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 import type { EcosystemCount } from '../../api/queries'
 import { ALL_ECOSYSTEMS, ecosystemLabel } from '../../lib/labels'
@@ -19,7 +19,7 @@ interface DependencyToolbarProps {
   onClear: () => void
 }
 
-/** Ecosystem select, search, and the "n of total" count. Ghost controls only. */
+/** Ecosystem picker, search, and the "n of total" count. Ghost controls only. */
 export function DependencyToolbar({
   counts,
   ecosystem,
@@ -31,23 +31,27 @@ export function DependencyToolbar({
   isFiltered,
   onClear,
 }: DependencyToolbarProps) {
+  const options = [
+    { value: ALL_ECOSYSTEMS, label: 'All ecosystems' },
+    ...counts.map((row) => ({
+      value: row.ecosystem,
+      label: ecosystemLabel(row.ecosystem),
+      description: `${row.count.toLocaleString()} ${row.count === 1 ? 'package' : 'packages'}`,
+    })),
+  ]
+
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Select value={ecosystem} onValueChange={onEcosystemChange}>
-        <SelectTrigger size="sm" className="w-44" aria-label="Filter by ecosystem">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent position="popper">
-          <SelectGroup>
-            <SelectItem value={ALL_ECOSYSTEMS}>All ecosystems</SelectItem>
-            {counts.map((row) => (
-              <SelectItem key={row.ecosystem} value={row.ecosystem}>
-                {ecosystemLabel(row.ecosystem)}
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
+      <ComboboxField
+        size="sm"
+        className="w-44"
+        aria-label="Filter by ecosystem"
+        value={ecosystem}
+        onValueChange={onEcosystemChange}
+        options={options}
+        searchPlaceholder="Search ecosystems"
+        emptyText="No ecosystem matches."
+      />
 
       <InputGroup className="h-7 w-full sm:w-64">
         <InputGroupAddon>

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ComboboxField } from '@/components/shared/form'
 import { Skeleton } from '@/components/ui/skeleton'
 
 import { projectPickerQuery } from '../../api/queries'
@@ -15,7 +15,7 @@ interface ProjectSelectProps {
 export function ProjectSelect({ id, value, onChange }: ProjectSelectProps) {
   const projects = useQuery(projectPickerQuery())
 
-  if (projects.isPending) return <Skeleton className="h-8 w-full rounded-lg" />
+  if (projects.isPending) return <Skeleton className="h-8 w-full rounded-md" />
 
   if (projects.isError) {
     return (
@@ -33,19 +33,14 @@ export function ProjectSelect({ id, value, onChange }: ProjectSelectProps) {
   }
 
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger id={id} className="w-full">
-        <SelectValue placeholder="Choose a project" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          {projects.data.map((project) => (
-            <SelectItem key={project.id} value={project.id}>
-              {project.repoFullName}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+    <ComboboxField
+      id={id}
+      value={value}
+      onValueChange={onChange}
+      options={projects.data.map((project) => ({ value: project.id, label: project.repoFullName }))}
+      placeholder="Choose a project"
+      searchPlaceholder="Search projects"
+      emptyText="No project matches."
+    />
   )
 }

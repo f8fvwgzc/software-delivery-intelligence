@@ -2,6 +2,7 @@ import { PlusIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 
+import { ComboboxField } from '@/components/shared/form'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -14,12 +15,17 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import { useCreateDecision } from '../../api/mutations'
-import { DECISION_SCOPE_LABEL, DECISION_SCOPES, type DecisionScope } from '../../lib/labels'
+import { DECISION_SCOPE_DESCRIPTION, DECISION_SCOPE_LABEL, DECISION_SCOPES, type DecisionScope } from '../../lib/labels'
 import { ProjectField } from './project-field'
+
+const SCOPE_OPTIONS = DECISION_SCOPES.map((scope) => ({
+  value: scope,
+  label: DECISION_SCOPE_LABEL[scope],
+  description: DECISION_SCOPE_DESCRIPTION[scope],
+}))
 
 /** "Record decision": a rule the ranker must honour from now on. */
 export function RecordDecisionDialog() {
@@ -100,20 +106,14 @@ function RecordDecisionForm({ onDone }: { onDone: () => void }) {
         <div className="grid gap-4 sm:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="decision-scope">Scope</FieldLabel>
-            <Select value={scope} onValueChange={(value) => setScope(value as DecisionScope)}>
-              <SelectTrigger id="decision-scope" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {DECISION_SCOPES.map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {DECISION_SCOPE_LABEL[option]}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <ComboboxField
+              id="decision-scope"
+              value={scope}
+              onValueChange={(value) => setScope(value as DecisionScope)}
+              options={SCOPE_OPTIONS}
+              searchPlaceholder="Search scopes"
+              emptyText="No scope matches."
+            />
           </Field>
           {scope === 'project' ? (
             <ProjectField value={projectId} onChange={setProjectId} />

@@ -2,6 +2,7 @@
 //! unit-tested with fixtures.
 
 pub mod cost;
+pub mod diagrams;
 pub mod documents;
 pub mod model;
 pub mod modernization;
