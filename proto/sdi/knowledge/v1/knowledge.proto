@@ -65,6 +65,11 @@ service KnowledgeService {
   // One file's text at the scanned commit (GitHub contents API, cached).
   rpc GetRepoFile(GetRepoFileRequest) returns (RepoFile);
 
+  // --- Pull requests (code review input) ------------------------------------
+  rpc ListPullRequests(ListPullRequestsRequest) returns (ListPullRequestsResponse);
+  // One PR with its changed files and unified diff hunks (bounded).
+  rpc GetPullRequest(GetPullRequestRequest) returns (PullRequest);
+
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (KnowledgeSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (KnowledgeSettings);
@@ -944,6 +949,81 @@ message RepoFile {
   string html_url = 8;
   // Ids of facts whose source_path is this file.
   repeated string fact_ids = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Pull requests
+// ---------------------------------------------------------------------------
+
+message PullRequestSummary {
+  string project_id = 1;
+  uint64 number = 2;
+  string title = 3;
+  string author = 4;
+  string author_avatar_url = 5;
+  // "open" | "closed" | "merged" | "draft"
+  string state = 6;
+  string base_ref = 7;
+  string head_ref = 8;
+  string head_sha = 9;
+  uint32 changed_files = 10;
+  uint32 additions = 11;
+  uint32 deletions = 12;
+  string html_url = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  // Id of the latest SDI review for this PR, if any.
+  string latest_review_id = 16;
+}
+
+message DiffHunk {
+  uint32 old_start = 1;
+  uint32 old_lines = 2;
+  uint32 new_start = 3;
+  uint32 new_lines = 4;
+  // Unified-diff lines including the leading ' ', '+' or '-'.
+  repeated string lines = 5;
+}
+
+message ChangedFile {
+  string path = 1;
+  string previous_path = 2;
+  // "added" | "modified" | "removed" | "renamed"
+  string status = 3;
+  uint32 additions = 4;
+  uint32 deletions = 5;
+  string language = 6;
+  repeated DiffHunk hunks = 7;
+  // The patch was larger than the limit; hunks are empty.
+  bool truncated = 8;
+}
+
+message PullRequest {
+  PullRequestSummary summary = 1;
+  string body = 2;
+  repeated ChangedFile files = 3;
+  // Facts whose source_path is one of the changed files.
+  repeated string touched_fact_ids = 4;
+  // Graph node ids reachable from the changed files (impact).
+  repeated string impacted_node_ids = 5;
+}
+
+message ListPullRequestsRequest {
+  string project_id = 1;
+  // "open" (default) | "closed" | "all"
+  string state = 2;
+  bool refresh = 3;
+  uint32 limit = 4;
+}
+
+message ListPullRequestsResponse {
+  repeated PullRequestSummary pull_requests = 1;
+  google.protobuf.Timestamp synced_at = 2;
+}
+
+message GetPullRequestRequest {
+  string project_id = 1;
+  uint64 number = 2;
 }
 
 message GetKnowledgeStatsRequest {}

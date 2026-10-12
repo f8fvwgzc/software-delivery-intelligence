@@ -44,6 +44,20 @@ service IntelligenceService {
   rpc UpdateDiagram(UpdateDiagramRequest) returns (Diagram);
   rpc DeleteDiagram(DeleteDiagramRequest) returns (DeleteDiagramResponse);
 
+  // --- Code review ----------------------------------------------------------
+  // Reviews a pull request in steps: context → analyze → findings → summary.
+  // Returns immediately; progress arrives as diagram-style PlatformEvents and
+  // the review object moves through its states.
+  rpc StartReview(StartReviewRequest) returns (Review);
+  rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse);
+  rpc GetReview(GetReviewRequest) returns (Review);
+  // Human verdict on one finding: accept / dismiss (with reason).
+  rpc DecideFinding(DecideFindingRequest) returns (Finding);
+  // Posts the review (summary + accepted findings) to GitHub as a PR review.
+  rpc PublishReview(PublishReviewRequest) returns (Review);
+  // Recent review and finding activity, newest first.
+  rpc ListReviewActivity(ListReviewActivityRequest) returns (ListReviewActivityResponse);
+
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (IntelligenceSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
@@ -510,6 +524,152 @@ message DeleteDiagramRequest {
 }
 
 message DeleteDiagramResponse {}
+
+// ---------------------------------------------------------------------------
+// Code review (CONTRACT.md §20)
+// ---------------------------------------------------------------------------
+
+enum ReviewStatus {
+  REVIEW_STATUS_UNSPECIFIED = 0;
+  // Reading the PR, touched facts and impacted graph nodes.
+  REVIEW_STATUS_CONTEXT = 1;
+  // Running the analyzers over the diff.
+  REVIEW_STATUS_ANALYZING = 2;
+  // Findings ready; waiting for the human to accept or dismiss.
+  REVIEW_STATUS_PROPOSED = 3;
+  // Posted to GitHub.
+  REVIEW_STATUS_PUBLISHED = 4;
+  REVIEW_STATUS_FAILED = 5;
+}
+
+enum FindingSeverity {
+  FINDING_SEVERITY_UNSPECIFIED = 0;
+  FINDING_SEVERITY_INFO = 1;
+  FINDING_SEVERITY_LOW = 2;
+  FINDING_SEVERITY_MEDIUM = 3;
+  FINDING_SEVERITY_HIGH = 4;
+  FINDING_SEVERITY_CRITICAL = 5;
+}
+
+enum FindingDecision {
+  FINDING_DECISION_UNSPECIFIED = 0;
+  FINDING_DECISION_PENDING = 1;
+  FINDING_DECISION_ACCEPTED = 2;
+  FINDING_DECISION_DISMISSED = 3;
+}
+
+message Finding {
+  string id = 1;
+  string review_id = 2;
+  // "correctness" | "security" | "secrets" | "dependencies" | "ci" | "iac" | "docker" | "tests" | "docs" | "maturity" | "style"
+  string category = 3;
+  FindingSeverity severity = 4;
+  string title = 5;
+  // Markdown. States the evidence and the fix.
+  string detail = 6;
+  string path = 7;
+  uint32 line = 8;
+  uint32 end_line = 9;
+  // Optional replacement for the referenced lines (a suggestion block).
+  string suggestion = 10;
+  // Rule id, e.g. "secrets.aws_key", "docker.root_user".
+  string rule = 11;
+  FindingDecision decision = 12;
+  string decision_note = 13;
+  string decided_by = 14;
+  google.protobuf.Timestamp decided_at = 15;
+}
+
+message ReviewStep {
+  // "context" | "analyze" | "findings" | "summary" | "publish"
+  string key = 1;
+  string label = 2;
+  // "pending" | "running" | "done" | "failed"
+  string status = 3;
+  string detail = 4;
+  uint32 duration_ms = 5;
+}
+
+message Review {
+  string id = 1;
+  string project_id = 2;
+  string project_name = 3;
+  uint64 pr_number = 4;
+  string pr_title = 5;
+  string pr_author = 6;
+  string head_sha = 7;
+  ReviewStatus status = 8;
+  repeated ReviewStep steps = 9;
+  // Markdown walkthrough: what changed, why it matters, risks, impacted components.
+  string summary = 10;
+  repeated Finding findings = 11;
+  uint32 files_reviewed = 12;
+  uint32 findings_total = 13;
+  uint32 findings_accepted = 14;
+  // "heuristic" | "claude"
+  string reasoner = 15;
+  // GitHub review URL once published.
+  string published_url = 16;
+  string error = 17;
+  string requested_by = 18;
+  google.protobuf.Timestamp created_at = 19;
+  google.protobuf.Timestamp updated_at = 20;
+}
+
+message StartReviewRequest {
+  string project_id = 1;
+  uint64 pr_number = 2;
+}
+
+message ListReviewsRequest {
+  // Empty lists reviews of every project.
+  string project_id = 1;
+  uint32 limit = 2;
+}
+
+message ListReviewsResponse {
+  // Findings and summary omitted.
+  repeated Review reviews = 1;
+}
+
+message GetReviewRequest {
+  string id = 1;
+}
+
+message DecideFindingRequest {
+  string finding_id = 1;
+  FindingDecision decision = 2;
+  string note = 3;
+}
+
+message PublishReviewRequest {
+  string review_id = 1;
+  // "comment" (default) | "request_changes" | "approve"
+  string event = 2;
+}
+
+message ReviewActivity {
+  string id = 1;
+  string review_id = 2;
+  string project_id = 3;
+  string project_name = 4;
+  uint64 pr_number = 5;
+  // "review.started" | "review.proposed" | "finding.accepted" | "finding.dismissed" | "review.published" | "review.failed"
+  string action = 6;
+  string actor = 7;
+  string detail = 8;
+  google.protobuf.Timestamp at = 9;
+}
+
+message ListReviewActivityRequest {
+  string project_id = 1;
+  uint32 limit = 2;
+  google.protobuf.Timestamp before = 3;
+}
+
+message ListReviewActivityResponse {
+  repeated ReviewActivity activity = 1;
+}
 
 // Ranking defaults and the reasoner. Changed from the settings page.
 message IntelligenceSettings {

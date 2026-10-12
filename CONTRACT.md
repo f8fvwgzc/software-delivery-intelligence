@@ -909,3 +909,55 @@ self-hosting is a first-class path (`make up`) so an organisation can run
 SDI inside its own network. `TRUST.md` and `PRIVACY.md` at the repository
 root state this in plain language and point at the tables above; the
 product shows the same table on the Data & privacy page.
+
+## 20. Code review (pull requests)
+
+SDI reviews a pull request the same way it proposes: evidence first, a
+human decides, then it acts. A review is a four-step pipeline that the UI
+shows as a rail, like executions:
+
+| step | what happens |
+|---|---|
+| `context` | knowledge fetches the PR (`GetPullRequest`: files, bounded unified diff ≤ 300 KB / 200 files, touched facts, impacted graph nodes via `AnalyzeImpact` on each changed path) |
+| `analyze` | deterministic analyzers over the diff, each a pure function `fn(&ReviewInput) -> Vec<Finding>` in `intelligence/src/domain/review/rules/`: `secrets` (keys/tokens/private keys in added lines), `security` (shell injection, `eval`, SQL built by format, disabled TLS verification, `chmod 777`, hard-coded hosts), `dependencies` (new deps without lockfile change, EOL runtimes introduced, version pins loosened), `docker` (root user, `latest` tags, secrets in `ENV`, missing healthcheck), `ci` (workflows without permissions block, `pull_request_target` with checkout, unpinned actions), `iac` (public buckets/0.0.0.0/0 ingress, missing tags/state), `tests` (source changed without tests when the project has a test framework), `docs` (README/CONTRACT claims touched vs code), `correctness` (TODO/FIXME added, unwrap/expect/`!` in non-test Rust/TS, swallowed errors, `console.log`), `maturity` (the change moves a maturity axis up or down). Every finding carries `path`, `line`, `rule`, evidence in `detail` and, when mechanical, a `suggestion` block |
+| `findings` | status `proposed`; the human accepts or dismisses each (`DecideFinding`) with a note |
+| `summary` | walkthrough Markdown: intent (from title/body/commits), what changed per file group, impacted components (graph), risk, and what to verify — templated from the facts; when the workspace reasoner is `claude`, rewritten in prose from the structured context (never raw files) |
+| `publish` | `PublishReview` posts a GitHub PR review (`github` token with `pull_requests:write`) with the summary as the body and one review comment per **accepted** finding (`suggestion` blocks become GitHub suggestions); event `comment` / `request_changes` / `approve` |
+
+Rules: never publish automatically; webhooks `pull_request` (opened,
+synchronize) only *start* a review when the workspace setting
+`auto_review` is on (default off), and it stops at `proposed`. Reviews are
+per `(project, pr_number, head_sha)`; a new push creates a new review and
+links the previous one. `ListReviewActivity` is the audit of the review
+loop (started, proposed, accepted/dismissed, published, failed) and feeds the
+Activity page. Reasoner off → `reasoner=heuristic`.
+
+Routes: `GET /projects/{id}/pull-requests?state=&refresh=&limit=`,
+`GET /projects/{id}/pull-requests/{number}`, `POST /projects/{id}/pull-requests/{number}/reviews`,
+`GET /reviews?projectId=&limit=`, `GET /reviews/{id}`, `POST /findings/{id}/decide {decision, note?}`,
+`POST /reviews/{id}/publish {event?}`, `GET /activity?projectId=&before=&limit=`.
+Roles: start/decide MEMBER, publish APPROVER. PlatformEvent entity `review`
+(and `finding`) with `data["workspace_id"]`.
+
+## 21. Web performance contract
+
+- Every list endpoint returns summaries only (no bodies, specs, diffs,
+  artifacts); details are fetched per route. Lists accept `limit` (default
+  50) and cursor `before` where ordered by time.
+- The shell loads `/auth/me` and the workspace's `/system/status` only;
+  every page fetches its own data with `useSuspenseQuery` and renders
+  panels progressively behind their own `QueryBoundary`; nothing is fetched
+  for panels below the fold until they mount.
+- Live updates come from the single SSE stream; polling is the fallback
+  only. `staleTime` ≥ 30 s on everything scoped to a commit (tree, files,
+  tokens, diagrams).
+- Vite `build.rollupOptions.output.manualChunks`: `react` (react, react-dom,
+  react-router), `query` (TanStack), `ui` (radix-ui, cmdk, lucide), `charts`
+  (dagre), with `shiki`, `mermaid`, `@xyflow/react`, the editorial canvas
+  and the markdown engine as route-level lazy chunks. Budget: initial JS
+  ≤ 220 kB gzip; no route chunk > 120 kB gzip except the lazily loaded
+  engines. `pnpm build` prints the chunk table and CI fails above budget.
+- Motion: `motion` (framer-motion successor) only for layout/presence
+  transitions (page enter 150 ms fade+4 px rise, list rows 80 ms stagger,
+  rail step changes), honouring `prefers-reduced-motion`; no scroll-linked
+  animation; all transitions ≤ 250 ms.
