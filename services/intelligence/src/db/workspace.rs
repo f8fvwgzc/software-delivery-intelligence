@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 /// `(entity name, table, order)`: the order makes an export deterministic
 /// and lets a consumer stream it into a file without buffering.
-pub const TABLES: [(&str, &str, &str); 9] = [
+pub const TABLES: [(&str, &str, &str); 11] = [
     ("settings", "settings", "workspace_id"),
+    ("reasoner_usage", "reasoner_usage", "day"),
+    ("review_learning", "review_learnings", "project_id, rule"),
     ("proposal", "proposals", "id"),
     ("message", "messages", "proposal_id, created_at, id"),
     ("decision", "decisions", "id"),

@@ -65,7 +65,7 @@ pub fn parse_config(content: &str) -> ProjectConfigDraft {
     check_keys(
         &doc,
         "",
-        &["version", "deploy", "budget", "test", "scan"],
+        &["version", "deploy", "budget", "test", "scan", "review"],
         &mut warnings,
     );
 
@@ -178,6 +178,12 @@ pub fn parse_config(content: &str) -> ProjectConfigDraft {
         }
     }
 
+    if let Some(review) = yaml::get(&doc, "review")
+        && let Some(m) = require_mapping(review, "review", &mut fatal)
+    {
+        cfg.review = parse_review(m, &mut warnings, &mut fatal);
+    }
+
     if !fatal.is_empty() {
         // A half-understood file must not steer anything: keep only the diagnosis.
         cfg = ProjectConfigDraft {
@@ -192,6 +198,149 @@ pub fn parse_config(content: &str) -> ProjectConfigDraft {
     }
     cfg.errors = warnings;
     cfg
+}
+
+/// `review:` (CONTRACT.md §12). Globs are strings, severities come from
+/// [`REVIEW_SEVERITIES`], rule ids are `[a-z0-9_-]` and unique, and every
+/// `pattern` must compile as a regex: a rule that cannot run would
+/// otherwise look like a rule that found nothing.
+fn parse_review(
+    m: &Value,
+    warnings: &mut Vec<String>,
+    fatal: &mut Vec<String>,
+) -> ReviewConfigDraft {
+    let mut out = ReviewConfigDraft::default();
+    check_keys(
+        m,
+        "review.",
+        &["ignore_paths", "rules", "severity", "require_tests_for"],
+        warnings,
+    );
+    for (key, slot) in [
+        ("ignore_paths", &mut out.ignore_paths),
+        ("require_tests_for", &mut out.require_tests_for),
+    ] {
+        if let Some(v) = yaml::get(m, key) {
+            match string_list(v) {
+                Some(list) => *slot = list,
+                None => fatal.push(format!(
+                    "error: `review.{key}` must be a list of globs, got {}",
+                    describe(v)
+                )),
+            }
+        }
+    }
+    if let Some(v) = yaml::get(m, "severity") {
+        if v.is_mapping() {
+            for (rule, sev) in yaml::entries(Some(v)) {
+                match sev {
+                    Value::String(s)
+                        if REVIEW_SEVERITIES.contains(&s.trim().to_ascii_lowercase().as_str()) =>
+                    {
+                        out.severity
+                            .insert(rule.trim().to_string(), s.trim().to_ascii_lowercase());
+                    }
+                    other => fatal.push(format!(
+                        "error: `review.severity.{rule}` must be one of {}, got {}",
+                        REVIEW_SEVERITIES.join(" | "),
+                        describe(other)
+                    )),
+                }
+            }
+        } else {
+            fatal.push(format!(
+                "error: `review.severity` must be a mapping of rule id to severity, got {}",
+                describe(v)
+            ));
+        }
+    }
+    if let Some(v) = yaml::get(m, "rules") {
+        let Value::Sequence(items) = v else {
+            fatal.push(format!(
+                "error: `review.rules` must be a list, got {}",
+                describe(v)
+            ));
+            return out;
+        };
+        for (index, item) in items.iter().enumerate() {
+            let label = format!("review.rules[{index}]");
+            if !item.is_mapping() {
+                fatal.push(format!(
+                    "error: `{label}` must be a mapping, got {}",
+                    describe(item)
+                ));
+                continue;
+            }
+            check_keys(
+                item,
+                &format!("{label}."),
+                &["id", "pattern", "severity", "message", "paths"],
+                warnings,
+            );
+            let mut rule = CustomRuleDraft::default();
+            for (key, slot) in [
+                ("id", &mut rule.id),
+                ("pattern", &mut rule.pattern),
+                ("severity", &mut rule.severity),
+                ("message", &mut rule.message),
+            ] {
+                match yaml::get(item, key) {
+                    Some(Value::String(s)) => *slot = s.trim().to_string(),
+                    Some(other) => fatal.push(format!(
+                        "error: `{label}.{key}` must be a string, got {}",
+                        describe(other)
+                    )),
+                    None if key == "message" => {}
+                    None => fatal.push(format!("error: `{label}.{key}` is required")),
+                }
+            }
+            if let Some(v) = yaml::get(item, "paths") {
+                match string_list(v) {
+                    Some(list) => rule.paths = list,
+                    None => fatal.push(format!(
+                        "error: `{label}.paths` must be a list of globs, got {}",
+                        describe(v)
+                    )),
+                }
+            }
+            rule.id = rule.id.to_ascii_lowercase();
+            if !rule.id.is_empty()
+                && !rule
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                fatal.push(format!(
+                    "error: `{label}.id` may only use letters, digits, `_` and `-`, got `{}`",
+                    rule.id
+                ));
+            }
+            if out.rules.iter().any(|r| r.id == rule.id) {
+                fatal.push(format!("error: `{label}.id` `{}` is used twice", rule.id));
+            }
+            rule.severity = rule.severity.to_ascii_lowercase();
+            if !rule.severity.is_empty() && !REVIEW_SEVERITIES.contains(&rule.severity.as_str()) {
+                fatal.push(format!(
+                    "error: `{label}.severity` must be one of {}, got `{}`",
+                    REVIEW_SEVERITIES.join(" | "),
+                    rule.severity
+                ));
+            }
+            if !rule.pattern.is_empty()
+                && let Err(e) = regex::Regex::new(&rule.pattern)
+            {
+                fatal.push(format!(
+                    "error: `{label}.pattern` is not a valid regex: {}",
+                    e.to_string().lines().last().unwrap_or("").trim()
+                ));
+            }
+            if rule.message.is_empty() {
+                rule.message = format!("Matches review rule `{}`", rule.id);
+            }
+            out.rules.push(rule);
+        }
+    }
+    out
 }
 
 /// A config whose values may be used: present, and nothing fatal in it.
@@ -300,8 +449,33 @@ pub(crate) fn detect(ctx: &mut Ctx<'_>) {
                 cfg.scan_exclude.join(", "),
             ));
         }
+        if !cfg.review.rules.is_empty()
+            || !cfg.review.ignore_paths.is_empty()
+            || !cfg.review.severity.is_empty()
+            || !cfg.review.require_tests_for.is_empty()
+        {
+            facts.push((
+                "review.rules",
+                "Review configuration",
+                format!(
+                    "{} custom rule{}, {} ignored path{}, {} severity override{}, {} test requirement{}",
+                    cfg.review.rules.len(),
+                    if cfg.review.rules.len() == 1 { "" } else { "s" },
+                    cfg.review.ignore_paths.len(),
+                    if cfg.review.ignore_paths.len() == 1 { "" } else { "s" },
+                    cfg.review.severity.len(),
+                    if cfg.review.severity.len() == 1 { "" } else { "s" },
+                    cfg.review.require_tests_for.len(),
+                    if cfg.review.require_tests_for.len() == 1 { "" } else { "s" },
+                ),
+            ));
+        }
         for (path, label, value) in facts {
-            let leaf = path.rsplit('.').next().unwrap_or(path);
+            let leaf = if path == "review.rules" {
+                "review"
+            } else {
+                path.rsplit('.').next().unwrap_or(path)
+            };
             let evidence = line_with(content, &format!("{leaf}:"))
                 .unwrap_or(leaf)
                 .to_string();
@@ -433,6 +607,66 @@ mod tests {
             assert!(cfg.deploy_target.is_empty(), "{content}");
             assert!(!is_usable(&cfg), "{content}");
         }
+    }
+
+    #[test]
+    fn parses_the_review_section() {
+        let cfg = parse_config(
+            "version: 1\nreview:\n  ignore_paths: [\"gen/**\", \"vendor/**\"]\n  require_tests_for: [\"src/billing/**\"]\n  severity:\n    correctness.todo: high\n    docker.latest_tag: Info\n  rules:\n    - id: no-moment\n      pattern: \"from ['\\\"]moment['\\\"]\"\n      severity: medium\n      message: Use date-fns instead of moment\n      paths: [\"web/**\"]\n    - id: ticket_ref\n      pattern: \"JIRA-\\\\d+\"\n      severity: low\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert!(is_usable(&cfg));
+        assert_eq!(cfg.review.ignore_paths, vec!["gen/**", "vendor/**"]);
+        assert_eq!(cfg.review.require_tests_for, vec!["src/billing/**"]);
+        assert_eq!(
+            cfg.review
+                .severity
+                .get("correctness.todo")
+                .map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            cfg.review
+                .severity
+                .get("docker.latest_tag")
+                .map(String::as_str),
+            Some("info")
+        );
+        assert_eq!(cfg.review.rules.len(), 2);
+        let first = &cfg.review.rules[0];
+        assert_eq!(first.id, "no-moment");
+        assert_eq!(first.severity, "medium");
+        assert_eq!(first.message, "Use date-fns instead of moment");
+        assert_eq!(first.paths, vec!["web/**"]);
+        assert!(
+            regex::Regex::new(&first.pattern)
+                .unwrap()
+                .is_match("import m from 'moment'")
+        );
+        let second = &cfg.review.rules[1];
+        assert!(second.paths.is_empty());
+        assert_eq!(second.message, "Matches review rule `ticket_ref`");
+    }
+
+    #[test]
+    fn review_section_is_strict() {
+        for content in [
+            "version: 1\nreview: []\n",
+            "version: 1\nreview:\n  ignore_paths: 7\n",
+            "version: 1\nreview:\n  severity:\n    x.y: loud\n",
+            "version: 1\nreview:\n  rules:\n    - id: a\n      pattern: \"(\"\n      severity: low\n",
+            "version: 1\nreview:\n  rules:\n    - id: a\n      pattern: x\n      severity: huge\n",
+            "version: 1\nreview:\n  rules:\n    - pattern: x\n      severity: low\n",
+            "version: 1\nreview:\n  rules:\n    - id: a\n      pattern: x\n      severity: low\n    - id: a\n      pattern: y\n      severity: low\n",
+            "version: 1\nreview:\n  rules:\n    - id: \"bad id\"\n      pattern: x\n      severity: low\n",
+        ] {
+            let cfg = parse_config(content);
+            assert!(!is_usable(&cfg), "{content}");
+            assert!(cfg.review.rules.is_empty(), "{content}");
+        }
+        let cfg = parse_config("version: 1\nreview:\n  colour: blue\n");
+        assert!(is_usable(&cfg));
+        assert!(cfg.errors.iter().any(|e| e.contains("review.colour")));
     }
 
     #[test]

@@ -5,10 +5,13 @@
 pub mod decisions;
 pub mod diagrams;
 pub mod documents;
+pub mod learnings;
 pub mod messages;
+pub mod osv;
 pub mod proposals;
 pub mod reviews;
 pub mod settings;
+pub mod usage;
 pub mod workspace;
 
 use sqlx::{FromRow, PgPool};

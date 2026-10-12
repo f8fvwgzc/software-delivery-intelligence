@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 
 import { useGrantPermission } from '../../api/mutations'
 import { PERMISSIONS, isExpired } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 interface GrantDialogProps {
   identity: components['schemas']['Identity']
@@ -83,7 +84,7 @@ function GrantForm({ identity, onDone }: GrantFormProps) {
       { identityId: identity.id, permissions: selected, ttlMinutes },
       {
         onSuccess: () => {
-          toast.success(`Granted ${selected.length} ${selected.length === 1 ? 'permission' : 'permissions'} for ${ttlMinutes} min`)
+          toast.success(`Granted ${count(selected.length, 'permission', 'permissions')} for ${ttlMinutes} min`)
           onDone()
         },
       },

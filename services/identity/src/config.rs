@@ -7,7 +7,11 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use sdi_common::config;
 
 pub const SCHEMA: &str = "identity";
+/// The public GitHub API; every other host is a GitHub Enterprise Server
+/// reached at `https://<host>/api/v3`.
 pub const DEFAULT_GITHUB_API: &str = "https://api.github.com";
+/// Host users of the public API sign in to.
+pub const PUBLIC_HOST: &str = "github.com";
 
 /// Registered GitHub OAuth app (individual sign-in).
 #[derive(Debug, Clone)]
@@ -84,9 +88,7 @@ impl Settings {
         Ok(Self {
             listen: config::listen_addr("IDENTITY_LISTEN", "0.0.0.0:50054")?,
             database_url: config::database_url(),
-            public_url: config::env_or("SDI_PUBLIC_URL", "http://127.0.0.1:5173")
-                .trim_end_matches('/')
-                .to_owned(),
+            public_url: config::public_url(),
             session_secret,
             oauth,
             app,
@@ -97,14 +99,22 @@ impl Settings {
         })
     }
 
-    /// The `https://<host>` users are sent to for OAuth.
+    /// The `https://<host>` users are sent to for OAuth (`/login/oauth/...`
+    /// lives on the web host, not under `/api/v3`, on GHES too).
     pub fn github_web_url(&self) -> String {
-        if self.github_host == "github.com" {
-            "https://github.com".to_owned()
-        } else {
-            format!("https://{}", self.github_host)
-        }
+        github_web_url_of(&self.github_api_url, &self.github_host)
     }
+}
+
+/// `<scheme>://<host>`: the scheme is the API base's (a fake API over plain
+/// `http` in a test keeps `http`; every real host is `https`).
+pub fn github_web_url_of(api_url: &str, host: &str) -> String {
+    let scheme = if api_url.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    format!("{scheme}://{host}")
 }
 
 /// `GITHUB_APP_PRIVATE_KEY` is the PEM itself or the PEM base64-encoded on
@@ -132,7 +142,7 @@ pub fn host_of(api_url: &str) -> String {
         .trim_start_matches("http://");
     let host = without_scheme.split('/').next().unwrap_or_default();
     match host.strip_prefix("api.") {
-        Some("github.com") => "github.com".to_owned(),
+        Some(PUBLIC_HOST) => PUBLIC_HOST.to_owned(),
         _ => host.to_owned(),
     }
 }
@@ -146,6 +156,22 @@ mod tests {
         assert_eq!(host_of("https://api.github.com"), "github.com");
         assert_eq!(host_of("https://ghe.example.com/api/v3"), "ghe.example.com");
         assert_eq!(host_of("http://127.0.0.1:5555"), "127.0.0.1:5555");
+    }
+
+    #[test]
+    fn oauth_lives_on_the_web_host_of_an_enterprise_server() {
+        assert_eq!(
+            github_web_url_of(DEFAULT_GITHUB_API, "github.com"),
+            "https://github.com"
+        );
+        assert_eq!(
+            github_web_url_of("https://ghe.corp.example/api/v3", "ghe.corp.example"),
+            "https://ghe.corp.example"
+        );
+        assert_eq!(
+            github_web_url_of("http://fake.test:5555", "fake.test:5555"),
+            "http://fake.test:5555"
+        );
     }
 
     #[test]

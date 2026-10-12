@@ -19,7 +19,7 @@ export const codeQueries = {
   tree: (projectId: string) =>
     queryOptions({
       queryKey: codeKeys.tree(projectId),
-      queryFn: () => unwrap(api.GET('/api/v1/projects/{id}/tree', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}/tree', { params: { path: { id: projectId } }, signal })),
       staleTime: COMMIT_STALE_MS,
     }),
 
@@ -27,8 +27,8 @@ export const codeQueries = {
   file: (projectId: string, path: string) =>
     queryOptions({
       queryKey: codeKeys.file(projectId, path),
-      queryFn: () =>
-        unwrap(api.GET('/api/v1/projects/{id}/file', { params: { path: { id: projectId }, query: { path } } })),
+      queryFn: ({ signal }) =>
+        unwrap(api.GET('/api/v1/projects/{id}/file', { params: { path: { id: projectId }, query: { path } }, signal })),
       staleTime: COMMIT_STALE_MS,
     }),
 }

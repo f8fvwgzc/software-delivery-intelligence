@@ -91,10 +91,39 @@ pub struct Tree {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TreeNode {
     pub path: String,
+    /// `blob` | `tree` | `commit` (a submodule).
     #[serde(rename = "type")]
     pub kind: String,
+    /// Git mode: `100644`/`100755` files, `040000` trees, `120000` symlinks,
+    /// `160000` submodules.
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub sha: String,
     #[serde(default)]
     pub size: Option<u64>,
+}
+
+impl TreeNode {
+    pub fn is_dir(&self) -> bool {
+        self.kind == "tree"
+    }
+
+    /// A symbolic link: its "content" is the link target, never a file
+    /// worth reading, and following it could point outside the tree.
+    pub fn is_symlink(&self) -> bool {
+        self.mode == "120000"
+    }
+
+    /// A submodule: another repository, with no content here.
+    pub fn is_submodule(&self) -> bool {
+        self.kind == "commit" || self.mode == "160000"
+    }
+
+    /// A regular file the scanner and the code browser may read.
+    pub fn is_file(&self) -> bool {
+        self.kind == "blob" && !self.is_symlink()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

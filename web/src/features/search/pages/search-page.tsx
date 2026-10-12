@@ -10,6 +10,7 @@ import { SearchForm } from '../components/search-form'
 import { SearchIdle, SearchResults } from '../components/search-results'
 import { SearchResultsSkeleton } from '../components/search-results/skeleton'
 import { MIN_QUERY_LENGTH } from '../lib/labels'
+import { count } from '@/lib/intl'
 
 /** /knowledge/search — semantic search over everything indexed. */
 export default function SearchPage() {
@@ -49,7 +50,7 @@ export default function SearchPage() {
         meta={
           active && results.data ? (
             <span className="text-2xs tabular-nums text-muted-foreground" aria-live="polite">
-              {results.data.length} {results.data.length === 1 ? 'hit' : 'hits'}
+              {count(results.data.length, 'hit', 'hits')}
             </span>
           ) : undefined
         }

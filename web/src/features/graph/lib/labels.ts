@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 import type { NodeKind, RelationCategory } from './types'
+import { count } from '@/lib/intl'
 
 export interface NodeKindMeta {
   label: string
@@ -92,5 +93,5 @@ export function relationLabel(relation: string) {
 
 /** "1 hop" / "3 hops" */
 export function hopsLabel(distance: number) {
-  return distance === 1 ? '1 hop' : `${distance} hops`
+  return count(distance, 'hop', 'hops')
 }

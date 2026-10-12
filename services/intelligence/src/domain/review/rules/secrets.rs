@@ -83,6 +83,66 @@ static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("assignment pattern")
 });
 
+/// `password: hunter2`, `"token": "abcd1234"`, `API_KEY=...` in a
+/// configuration file: the key names above with any literal value (quoted
+/// or not) of four or more characters.
+static CONFIG_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)^\s*-?\s*["']?(?:[\w.-]*(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret|private[_-]?key|secret[_-]?key|credentials?))["']?\s*[:=]\s*["']?([^"'\s#][^"'#]*?)["']?\s*[,;]?\s*(?:#.*)?$"#,
+    )
+    .expect("config key pattern")
+});
+
+/// Configuration formats the config-credential check reads.
+fn is_config_file(file: &crate::domain::review::input::ChangedFile) -> bool {
+    let name = file.file_name();
+    if name.ends_with(".example")
+        || name.ends_with(".sample")
+        || name.ends_with(".template")
+        || name.ends_with(".dist")
+        || name.contains("example")
+    {
+        return false;
+    }
+    matches!(
+        file.extension(),
+        "yml" | "yaml" | "json" | "toml" | "ini" | "cfg" | "conf" | "properties" | "env"
+    ) || name == ".env"
+        || name.starts_with(".env.")
+}
+
+/// Values that reference a secret instead of holding one.
+fn reference(value: &str) -> bool {
+    let v = value.trim();
+    v.starts_with('$')
+        || v.starts_with('%')
+        || v.contains("${")
+        || v.contains("{{")
+        || v.contains("<%")
+        || v.starts_with("vault:")
+        || v.starts_with("op://")
+        || v.starts_with("sops")
+        || v.starts_with("ENC[")
+        || v.starts_with("AQI")
+        || v.starts_with("projects/")
+        || v.starts_with("arn:")
+        || v.starts_with("@")
+        || v.starts_with("file:")
+        || v.starts_with('/')
+        || v.contains("secretKeyRef")
+        || v.contains("valueFrom")
+        || v.eq_ignore_ascii_case("null")
+        || v.eq_ignore_ascii_case("none")
+        || v.eq_ignore_ascii_case("true")
+        || v.eq_ignore_ascii_case("false")
+        || v == "~"
+        || v == "\"\""
+        || v == "''"
+        || v.starts_with('[')
+        || v.starts_with('{')
+        || v.chars().all(|c| c.is_ascii_digit())
+}
+
 fn placeholder(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.contains("example")
@@ -136,6 +196,34 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
                         ),
                     ));
                 }
+            }
+            if is_config_file(file)
+                && let Some(captures) = CONFIG_KEY.captures(line)
+                && captures[1].trim().len() >= 4
+                && !placeholder(&captures[1])
+                && !reference(&captures[1])
+                && !PATTERNS.iter().any(|p| p.regex.is_match(line))
+            {
+                let severity = if downgrade {
+                    Severity::Low
+                } else {
+                    Severity::High
+                };
+                findings.push(Finding::new(
+                    "secrets",
+                    "config_credential",
+                    severity,
+                    &file.path,
+                    line_no,
+                    "Credential written into configuration",
+                    format!(
+                        "Line {line_no} of `{}` sets a credential-looking key to a literal value. Configuration files \
+                         travel with the repository and its images: reference the secret (`${{VAR}}`, a secret store, \
+                         `secretKeyRef`) and keep only a placeholder in a committed example file.",
+                        file.path
+                    ),
+                ));
+                continue;
             }
             if let Some(captures) = ASSIGNMENT.captures(line)
                 && !placeholder(&captures[1])
@@ -207,6 +295,56 @@ mod tests {
             vec!["secrets.private_key", "secrets.hardcoded_credential"]
         );
         assert_eq!(findings[1].severity, Severity::High);
+    }
+
+    #[test]
+    fn config_credentials_are_literal_values_only() {
+        let findings = analyze(&input(vec![
+            added(
+                "config/production.yml",
+                &[
+                    "database:",
+                    "  password: hunter2secret",
+                    "  user: app",
+                    "  token: ${DB_TOKEN}",
+                    "  api_key: \"\"",
+                    "  secret_name: db-secret",
+                ],
+            ),
+            added(
+                "appsettings.json",
+                &[
+                    "  \"ConnectionPassword\": \"P@ssw0rd!\",",
+                    "  \"Debug\": true,",
+                ],
+            ),
+            added(
+                "settings.toml",
+                &["secret = \"${VAULT_SECRET}\"", "pwd = 's3cr3t-value-here'"],
+            ),
+            added(".env.example", &["API_KEY=replace-me-please"]),
+            added(".env", &["API_KEY=live-key-value-123", "PORT=8080"]),
+            added(
+                "k8s/secret.yml",
+                &["  valueFrom:", "    secretKeyRef:", "      key: password"],
+            ),
+        ]));
+        let hits: Vec<(&str, u32)> = findings
+            .iter()
+            .filter(|f| f.rule == "secrets.config_credential")
+            .map(|f| (f.path.as_str(), f.line))
+            .collect();
+        assert_eq!(
+            hits,
+            vec![
+                ("config/production.yml", 2),
+                ("appsettings.json", 1),
+                ("settings.toml", 2),
+                (".env", 1),
+            ],
+            "{findings:?}"
+        );
+        assert!(findings.iter().all(|f| !f.detail.contains("hunter2")));
     }
 
     #[test]

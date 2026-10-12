@@ -31,6 +31,8 @@ export function isScanActive(status: ScanStatus | undefined) {
 
 const BUSY_POLL_MS = 5_000
 export const SCAN_POLL_MS = 2_000
+/** Maturity, config and scan history only move with a rescan, which invalidates the project family. */
+const COMMIT_STALE_MS = 5 * 60_000
 
 /**
  * Query options for projects. The platform event stream keeps these fresh;
@@ -43,7 +45,7 @@ export const projectQueries = {
   list: () =>
     queryOptions({
       queryKey: projectKeys.list(),
-      queryFn: () => unwrap(api.GET('/api/v1/projects')),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects', { signal })),
       refetchInterval: (query) =>
         query.state.data?.some((project) => isProjectBusy(project.status)) ? fallbackPoll(BUSY_POLL_MS) : false,
     }),
@@ -51,21 +53,22 @@ export const projectQueries = {
   detail: (projectId: string) =>
     queryOptions({
       queryKey: projectKeys.detail(projectId),
-      queryFn: () => unwrap(api.GET('/api/v1/projects/{id}', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}', { params: { path: { id: projectId } }, signal })),
       refetchInterval: (query) => (isProjectBusy(query.state.data?.status) ? fallbackPoll(BUSY_POLL_MS) : false),
     }),
 
   scans: (projectId: string) =>
     queryOptions({
       queryKey: projectKeys.scans(projectId),
-      queryFn: () => unwrap(api.GET('/api/v1/projects/{id}/scans', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}/scans', { params: { path: { id: projectId } }, signal })),
+      staleTime: COMMIT_STALE_MS,
     }),
 
   /** One scan. Its own SSE stream (`/scans/{id}/stream`) is consumed by ScanProgress; this only polls as a fallback. */
   scan: (scanId: string) =>
     queryOptions({
       queryKey: projectKeys.scan(scanId),
-      queryFn: () => unwrap(api.GET('/api/v1/scans/{id}', { params: { path: { id: scanId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/scans/{id}', { params: { path: { id: scanId } }, signal })),
       refetchInterval: (query) => (isScanActive(query.state.data?.status) ? fallbackPoll(SCAN_POLL_MS) : false),
     }),
 
@@ -73,13 +76,15 @@ export const projectQueries = {
   maturity: (projectId: string) =>
     queryOptions({
       queryKey: projectKeys.maturity(projectId),
-      queryFn: () => unwrap(api.GET('/api/v1/projects/{id}/maturity', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}/maturity', { params: { path: { id: projectId } }, signal })),
+      staleTime: COMMIT_STALE_MS,
     }),
 
   /** What `.sdi.yml` declares (CONTRACT.md §12), or `present: false`. */
   config: (projectId: string) =>
     queryOptions({
       queryKey: projectKeys.config(projectId),
-      queryFn: () => unwrap(api.GET('/api/v1/projects/{id}/config', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}/config', { params: { path: { id: projectId } }, signal })),
+      staleTime: COMMIT_STALE_MS,
     }),
 }

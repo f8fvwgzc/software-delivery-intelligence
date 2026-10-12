@@ -10,6 +10,7 @@ mod gateway;
 mod generators;
 mod github;
 mod grpc;
+mod osv;
 mod reasoner;
 
 use std::sync::Arc;
@@ -38,15 +39,15 @@ async fn main() -> Result<()> {
     let identity = Arc::new(gateway::GrpcIdentity::new(sdi_common::grpc::lazy_channel(
         &settings.identity_url,
     )?));
-    if settings.anthropic_api_key.is_some() {
+    if settings.reasoner.api_key.is_some() || !settings.reasoner.base_url.is_empty() {
         tracing::info!(
-            model = %settings.anthropic_model,
-            "ANTHROPIC_API_KEY set: dev fallback for workspaces that allow the reasoner but hold no key"
+            provider = %crate::reasoner::Provider::parse(&settings.reasoner.provider, &settings.reasoner.base_url).label(),
+            model = %settings.reasoner.model,
+            "LLM_* / ANTHROPIC_* set: dev fallback for workspaces that allow the reasoner but configured none"
         );
     }
     let reasoner = grpc::ReasonerConfig {
-        anthropic_api_key: settings.anthropic_api_key.clone(),
-        anthropic_model: settings.anthropic_model.clone(),
+        env: settings.reasoner.clone(),
     };
 
     let github_token = sdi_common::config::env_opt("GITHUB_TOKEN");
@@ -55,8 +56,14 @@ async fn main() -> Result<()> {
             "GITHUB_TOKEN set: reviews are published with it while identity is unreachable (dev mode)"
         );
     }
+    let osv_url = sdi_common::config::env_or("OSV_API_URL", osv::DEFAULT_BASE_URL);
+    let osv = osv::OsvClient::new(&osv_url, pool.clone()).map(Arc::new);
+    if osv.is_none() {
+        tracing::info!("OSV_API_URL=off: the dependency vulnerability check is disabled");
+    }
     let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, identity, reasoner)
-        .with_github_dev_token(github_token);
+        .with_github_dev_token(github_token)
+        .with_osv(osv);
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<IntelligenceServiceServer<grpc::IntelligenceGrpc>>()

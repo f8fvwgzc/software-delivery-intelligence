@@ -403,6 +403,14 @@ pub struct IntelligenceSettings {
     pub cost_ceiling_usd: f64,
     /// `pull_request` webhooks (opened, synchronize) start a review that stops at `proposed` (CONTRACT.md §20). Default off.
     pub auto_review: bool,
+    /// Which API the reasoner speaks (CONTRACT.md §19): `anthropic` (Messages API) or `openai_compatible` (chat completions: OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter). Empty reads `LLM_PROVIDER`, else `anthropic`.
+    pub reasoner_provider: String,
+    /// Base URL of an OpenAI-compatible endpoint (e.g. `http://ollama:11434/v1`). Empty reads `LLM_BASE_URL`, else the provider's public endpoint.
+    pub reasoner_base_url: String,
+    /// Model name next to provider and base URL (same value as `model`).
+    pub reasoner_model: String,
+    /// Tokens (input + output) the workspace may spend per UTC day before the reasoner falls back to the heuristic. Default 200000.
+    pub reasoner_daily_token_cap: u64,
 }
 
 impl From<proto::IntelligenceSettings> for IntelligenceSettings {
@@ -414,6 +422,10 @@ impl From<proto::IntelligenceSettings> for IntelligenceSettings {
             api_key_configured: settings.api_key_configured,
             cost_ceiling_usd: settings.cost_ceiling_usd,
             auto_review: settings.auto_review,
+            reasoner_provider: settings.reasoner_provider,
+            reasoner_base_url: settings.reasoner_base_url,
+            reasoner_model: settings.reasoner_model,
+            reasoner_daily_token_cap: settings.reasoner_daily_token_cap,
         }
     }
 }
@@ -427,6 +439,10 @@ impl From<IntelligenceSettings> for proto::IntelligenceSettings {
             api_key_configured: settings.api_key_configured,
             cost_ceiling_usd: settings.cost_ceiling_usd,
             auto_review: settings.auto_review,
+            reasoner_provider: settings.reasoner_provider,
+            reasoner_base_url: settings.reasoner_base_url,
+            reasoner_model: settings.reasoner_model,
+            reasoner_daily_token_cap: settings.reasoner_daily_token_cap,
         }
     }
 }
@@ -446,6 +462,14 @@ pub struct IntelligenceSettingsPatch {
     pub cost_ceiling_usd: Option<f64>,
     /// Whether `pull_request` webhooks start a review.
     pub auto_review: Option<bool>,
+    /// `anthropic` or `openai_compatible`.
+    pub reasoner_provider: Option<String>,
+    /// Base URL of an OpenAI-compatible endpoint.
+    pub reasoner_base_url: Option<String>,
+    /// Model name for the reasoner.
+    pub reasoner_model: Option<String>,
+    /// Daily token budget of the reasoner.
+    pub reasoner_daily_token_cap: Option<u64>,
 }
 
 impl IntelligenceSettingsPatch {
@@ -458,6 +482,12 @@ impl IntelligenceSettingsPatch {
             api_key_configured: current.api_key_configured,
             cost_ceiling_usd: self.cost_ceiling_usd.unwrap_or(current.cost_ceiling_usd),
             auto_review: self.auto_review.unwrap_or(current.auto_review),
+            reasoner_provider: self.reasoner_provider.unwrap_or(current.reasoner_provider),
+            reasoner_base_url: self.reasoner_base_url.unwrap_or(current.reasoner_base_url),
+            reasoner_model: self.reasoner_model.unwrap_or(current.reasoner_model),
+            reasoner_daily_token_cap: self
+                .reasoner_daily_token_cap
+                .unwrap_or(current.reasoner_daily_token_cap),
         }
     }
 }
@@ -733,6 +763,12 @@ pub struct IntelligenceStats {
     pub documents: u32,
     /// Negotiation messages.
     pub messages: u32,
+    /// Reasoner tokens (input + output) spent today, UTC (CONTRACT.md §19).
+    pub reasoner_tokens_today: u64,
+    /// The workspace's daily token budget.
+    pub reasoner_daily_token_cap: u64,
+    /// Reasoner calls made today, UTC.
+    pub reasoner_calls_today: u32,
 }
 
 impl From<proto::IntelligenceStats> for IntelligenceStats {
@@ -744,6 +780,9 @@ impl From<proto::IntelligenceStats> for IntelligenceStats {
             decisions_active: stats.decisions_active,
             documents: stats.documents,
             messages: stats.messages,
+            reasoner_tokens_today: stats.reasoner_tokens_today,
+            reasoner_daily_token_cap: stats.reasoner_daily_token_cap,
+            reasoner_calls_today: stats.reasoner_calls_today,
         }
     }
 }
@@ -798,6 +837,10 @@ mod tests {
             api_key_configured: true,
             cost_ceiling_usd: 500.0,
             auto_review: false,
+            reasoner_provider: "anthropic".into(),
+            reasoner_base_url: "https://llm.example".into(),
+            reasoner_model: "m".into(),
+            reasoner_daily_token_cap: 42,
         };
         let patch: IntelligenceSettingsPatch = serde_json::from_str(
             r#"{"reasoner": "claude", "apiKeyConfigured": false, "autoReview": true}"#,
@@ -809,5 +852,17 @@ mod tests {
         assert!(merged.api_key_configured);
         assert_eq!(merged.cost_ceiling_usd, 500.0);
         assert!(merged.auto_review);
+        // Unpatched reasoner fields keep their value; patched ones change.
+        assert_eq!(merged.reasoner_base_url, "https://llm.example");
+        assert_eq!(merged.reasoner_daily_token_cap, 42);
+        let patch: IntelligenceSettingsPatch = serde_json::from_str(
+            r#"{"reasonerProvider": "openai_compatible", "reasonerBaseUrl": "http://ollama:11434/v1", "reasonerDailyTokenCap": 7}"#,
+        )
+        .unwrap();
+        let merged = patch.apply(merged);
+        assert_eq!(merged.reasoner_provider, "openai_compatible");
+        assert_eq!(merged.reasoner_base_url, "http://ollama:11434/v1");
+        assert_eq!(merged.reasoner_daily_token_cap, 7);
+        assert_eq!(merged.reasoner_model, "m");
     }
 }

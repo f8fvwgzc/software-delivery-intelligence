@@ -415,6 +415,21 @@ pub fn option_id(pattern_id: &str) -> String {
 
 /// Ranks every visible candidate and returns the top `MAX_OPTIONS`.
 pub fn rank(input: &RankingInput<'_>) -> Vec<RankedOption> {
+    let mut options = rank_options(input);
+    attach_artifacts(
+        &mut options,
+        input.kind,
+        input.patterns,
+        input.context,
+        input.constraints,
+    );
+    options
+}
+
+/// The ranked options without their generated files: what a proposal needs
+/// to be shown (CONTRACT.md §6 Realtime); [`attach_artifacts`] fills the
+/// files in afterwards, in the background.
+pub fn rank_options(input: &RankingInput<'_>) -> Vec<RankedOption> {
     let project = input.context.project.as_ref();
     let profile = embed::embed(&input.context.profile_text);
     let mut options: Vec<RankedOption> = input
@@ -437,15 +452,28 @@ pub fn rank(input: &RankingInput<'_>) -> Vec<RankedOption> {
     for (index, option) in options.iter_mut().enumerate() {
         option.rank = index as u32 + 1;
     }
-    if carries_artifacts(input.kind) {
-        let params = model::params_of(input.constraints);
-        for option in &mut options {
-            if let Some(pattern) = input.patterns.iter().find(|p| p.id == option.pattern_id) {
-                option.artifacts = artifacts_for(pattern, input.context, &params, option);
-            }
+    options
+}
+
+/// Generates the files of every option (CONTRACT.md §6 Artifacts) for the
+/// kinds that carry them. Pure and deterministic, so the same options with
+/// the same constraints always get the same files.
+pub fn attach_artifacts(
+    options: &mut [RankedOption],
+    kind: ProposalKind,
+    patterns: &[Pattern],
+    context: &ProjectContext,
+    constraints: &[ConstraintData],
+) {
+    if !carries_artifacts(kind) {
+        return;
+    }
+    let params = model::params_of(constraints);
+    for option in options.iter_mut() {
+        if let Some(pattern) = patterns.iter().find(|p| p.id == option.pattern_id) {
+            option.artifacts = artifacts_for(pattern, context, &params, option);
         }
     }
-    options
 }
 
 /// With a budget, the cheapest option that fits it (or the cheapest overall

@@ -120,7 +120,7 @@ impl Identity {
         let request = Self::request(caller, RecordAuditRequest { entry: Some(entry) });
         let (action, entity_id) = (action.to_owned(), entity_id.to_owned());
         let mut client = client;
-        tokio::spawn(async move {
+        sdi_common::tasks::spawn("audit-entry", async move {
             if let Err(error) = timed(client.record_audit(request)).await {
                 tracing::warn!(%error, action, entity_id, "audit entry not recorded");
             }

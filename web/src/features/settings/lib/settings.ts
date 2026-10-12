@@ -44,6 +44,55 @@ export const WEIGHT_FIELDS: readonly { key: WeightKey; label: string }[] = [
 export const REASONERS = ['heuristic', 'claude'] as const
 export type Reasoner = (typeof REASONERS)[number]
 
+/** Where the reasoner's model is served from (intelligence settings). */
+export const REASONER_PROVIDERS = ['anthropic', 'openai_compatible'] as const
+export type ReasonerProvider = (typeof REASONER_PROVIDERS)[number]
+
+export const REASONER_PROVIDER_LABEL: Record<ReasonerProvider, string> = {
+  anthropic: 'Anthropic',
+  openai_compatible: 'OpenAI-compatible',
+}
+
+export const REASONER_PROVIDER_DESCRIPTION: Record<ReasonerProvider, string> = {
+  anthropic: 'Claude through the Anthropic API; needs ANTHROPIC_API_KEY on the service.',
+  openai_compatible: 'Any server that speaks the OpenAI chat API: OpenAI, Azure OpenAI, Ollama, OpenRouter, vLLM.',
+}
+
+/** Base URLs people paste for the common OpenAI-compatible servers, shown as help under the field. */
+export const OPENAI_COMPATIBLE_EXAMPLES: readonly { name: string; url: string }[] = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1' },
+  { name: 'Azure OpenAI', url: 'https://<resource>.openai.azure.com/openai/v1' },
+  { name: 'Ollama', url: 'http://ollama:11434/v1' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
+]
+
+export function isReasonerProvider(value: string): value is ReasonerProvider {
+  return (REASONER_PROVIDERS as readonly string[]).includes(value)
+}
+
+/** A base URL is required for an OpenAI-compatible provider and must be http(s). */
+export function baseUrlError(provider: string, baseUrl: string): string | null {
+  const trimmed = baseUrl.trim()
+  if (provider !== 'openai_compatible') return null
+  if (trimmed === '') return 'Enter the base URL of the OpenAI-compatible server.'
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'The base URL must start with http:// or https://.'
+  } catch {
+    return 'Enter a full URL, for example https://api.openai.com/v1.'
+  }
+  return null
+}
+
+/** A whole number of tokens; empty or 0 means no cap. */
+export function parseTokenCap(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return 0
+  if (!/^\d+$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
 /** Floating point sums of seven weights are never exactly 1. */
 const SUM_TOLERANCE = 0.0005
 
@@ -99,6 +148,10 @@ function mergeIntelligence(current: IntelligenceSettings, patch: IntelligenceSet
     defaultWeights: patch.defaultWeights ?? current.defaultWeights,
     model: patch.model ?? current.model,
     reasoner: patch.reasoner ?? current.reasoner,
+    reasonerProvider: patch.reasonerProvider ?? current.reasonerProvider,
+    reasonerBaseUrl: patch.reasonerBaseUrl ?? current.reasonerBaseUrl,
+    reasonerModel: patch.reasonerModel ?? current.reasonerModel,
+    reasonerDailyTokenCap: patch.reasonerDailyTokenCap ?? current.reasonerDailyTokenCap,
   }
 }
 

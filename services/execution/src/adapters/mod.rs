@@ -142,6 +142,25 @@ pub fn truncate_line(line: &str) -> String {
     format!("{}...", &line[..end])
 }
 
+/// The GitHub credentials a run reads and writes with: the workspace's
+/// token and the API base of its host (CONTRACT.md §18), minted by
+/// identity per workspace. `None` on the context means the adapter falls
+/// back to the process-wide `GITHUB_TOKEN` / `GITHUB_API_URL` (dev mode).
+#[derive(Clone, PartialEq, Eq)]
+pub struct GithubAccess {
+    pub token: String,
+    pub api_base_url: String,
+}
+
+impl std::fmt::Debug for GithubAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The token never reaches a log line.
+        f.debug_struct("GithubAccess")
+            .field("api_base_url", &self.api_base_url)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Per-run context: who the run is, what it already produced, what a pull
 /// request must commit, and the dry-run fault to honour.
 #[derive(Debug, Clone, Default)]
@@ -155,6 +174,8 @@ pub struct RunContext {
     /// Files a `repo.open_pull_request` step commits, keyed by repository path.
     pub artifacts: BTreeMap<String, String>,
     pub logs: LogSink,
+    /// The workspace's GitHub access, when identity could mint it.
+    pub github: Option<GithubAccess>,
 }
 
 impl RunContext {

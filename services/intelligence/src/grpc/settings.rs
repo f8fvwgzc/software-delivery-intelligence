@@ -22,11 +22,12 @@ pub(super) async fn get(
     caller: &Caller,
 ) -> Result<IntelligenceSettings, Status> {
     let row = svc.settings(caller).await?;
-    let access = svc.reasoner_access(caller).await;
+    let access = svc.reasoner_access(caller, &row).await;
     Ok(convert::settings(
         &row,
         access.configured(),
         svc.effective_model(&row, &access),
+        access.provider.label(),
     ))
 }
 
@@ -60,16 +61,52 @@ pub(super) async fn update(
 
     let reasoner = incoming.reasoner.trim().to_lowercase();
     if !reasoner.is_empty() {
-        if !matches!(reasoner.as_str(), "heuristic" | "claude") {
+        if !matches!(reasoner.as_str(), "heuristic" | "claude" | "llm") {
             return Err(Status::invalid_argument(
-                "reasoner must be \"heuristic\" or \"claude\"",
+                "reasoner must be \"heuristic\" or \"llm\"",
             ));
         }
         row.reasoner = reasoner;
     }
-    let model = incoming.model.trim();
+    // `reasoner_model` is the explicit spelling of `model`; either sets it.
+    let model = if incoming.reasoner_model.trim().is_empty() {
+        incoming.model.trim()
+    } else {
+        incoming.reasoner_model.trim()
+    };
     if !model.is_empty() {
         row.model = model.to_owned();
+    }
+    let provider = incoming.reasoner_provider.trim().to_lowercase();
+    if !provider.is_empty() {
+        if !matches!(
+            provider.as_str(),
+            "anthropic" | "openai_compatible" | "openai-compatible" | "openai"
+        ) {
+            return Err(Status::invalid_argument(
+                "reasoner_provider must be \"anthropic\" or \"openai_compatible\"",
+            ));
+        }
+        row.reasoner_provider = if provider == "anthropic" {
+            provider
+        } else {
+            "openai_compatible".to_owned()
+        };
+    }
+    let base_url = incoming.reasoner_base_url.trim();
+    if !base_url.is_empty() {
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            return Err(Status::invalid_argument(
+                "reasoner_base_url must start with http:// or https://",
+            ));
+        }
+        row.reasoner_base_url = base_url.trim_end_matches('/').to_owned();
+    }
+    if incoming.reasoner_daily_token_cap != 0 {
+        row.reasoner_daily_token_cap =
+            i64::try_from(incoming.reasoner_daily_token_cap).unwrap_or(i64::MAX);
+    } else if row.reasoner_daily_token_cap <= 0 {
+        row.reasoner_daily_token_cap = repo::DEFAULT_DAILY_TOKEN_CAP;
     }
     if incoming.cost_ceiling_usd != 0.0 {
         if incoming.cost_ceiling_usd <= 0.0 || !incoming.cost_ceiling_usd.is_finite() {

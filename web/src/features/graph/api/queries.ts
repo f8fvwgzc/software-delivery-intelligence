@@ -16,7 +16,8 @@ export const graphQueries = {
             signal,
           }),
         ),
-      staleTime: 60_000,
+      // Built at the scanned commit; a rescan invalidates `graphKeys.project`.
+      staleTime: 5 * 60_000,
     }),
 
   /**

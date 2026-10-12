@@ -2,12 +2,12 @@
 //! the trait to them and holds the shared state and helpers.
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use chrono::{DateTime, Utc};
-use sdi_common::{grpc::db_status, principal::Role};
+use sdi_common::{cache::TtlCache, grpc::db_status, principal::Role};
 use sdi_proto::identity::v1::{
     AuthorizeRequest, BeginLoginRequest, BeginLoginResponse, CompleteLoginRequest, DataControls,
     GetDataControlsRequest, GetInstallationTokenRequest, GetReasonerKeyRequest, GetSessionRequest,
@@ -45,13 +45,19 @@ pub struct CachedToken {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Installations whose token is held at once; the rest are re-minted.
+pub const TOKEN_CACHE_CAPACITY: usize = 4096;
+/// Installation tokens live an hour; nothing is kept past that.
+const TOKEN_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+
 pub struct IdentityState {
     pub pool: PgPool,
     pub settings: Settings,
     pub keys: Keys,
     pub github: GithubClient,
-    /// Installation tokens by installation id (CONTRACT.md §19: in memory only).
-    pub tokens: Mutex<HashMap<i64, CachedToken>>,
+    /// Installation tokens by installation id (CONTRACT.md §19: in memory
+    /// only), bounded and dropped before they expire.
+    pub tokens: Mutex<TtlCache<i64, CachedToken>>,
 }
 
 impl IdentityState {
@@ -61,8 +67,13 @@ impl IdentityState {
             keys: Keys::from_secret(&settings.session_secret),
             settings,
             github: GithubClient::new(),
-            tokens: Mutex::new(HashMap::new()),
+            tokens: Mutex::new(TtlCache::new(TOKEN_CACHE_CAPACITY, TOKEN_CACHE_TTL)),
         }
+    }
+
+    /// Tokens held right now (diagnostics, tests).
+    pub fn cached_tokens(&self) -> usize {
+        self.tokens.lock().expect("token cache lock").len()
     }
 }
 

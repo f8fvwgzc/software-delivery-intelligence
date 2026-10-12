@@ -8,7 +8,6 @@ pub mod rules;
 pub mod summary;
 
 pub use input::ReviewInput;
-pub use rules::analyze_all;
 
 /// The five steps of the pipeline, in order, with their labels.
 pub const STEPS: [(&str, &str); 5] = [

@@ -3,6 +3,7 @@ import { Section } from '@/components/shared/page'
 
 import type { Diagram } from '../../api/queries'
 import { EvidenceTable } from './evidence-table'
+import { count } from '@/lib/intl'
 
 interface ExplanationPanelProps {
   diagram: Diagram
@@ -27,7 +28,7 @@ export function ExplanationPanel({ diagram }: ExplanationPanelProps) {
       </Section>
       <Section
         title="Evidence"
-        description={`${edges.length} ${edges.length === 1 ? 'edge' : 'edges'}; each names the file that shows it, or is inferred.`}
+        description={`${count(edges.length, 'edge', 'edges')}; each names the file that shows it, or is inferred.`}
       >
         <EvidenceTable projectId={diagram.projectId} edges={edges} nodes={nodes} />
       </Section>

@@ -1,0 +1,43 @@
+# One host: `/api/` to the gateway pool, everything else to the web pods.
+# The annotations are for ingress-nginx; the SSE routes need buffering off
+# and an hour of read timeout (CONTRACT.md §10), which this applies to the
+# API prefix as a whole (the gateway sends a keep-alive every 15 s). No
+# session affinity: gateway replicas are stateless.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sdi
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    # X-Forwarded-Proto reaches the gateway, which marks the session
+    # cookie Secure behind TLS termination.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-connections: "32"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [sdi.example.com]
+      secretName: sdi-tls
+  rules:
+    - host: sdi.example.com
+      http:
+        paths:
+          - path: /api/
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  name: http

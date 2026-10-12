@@ -11,8 +11,6 @@ use serde::Deserialize;
 use super::Reasoner;
 use crate::domain::diagrams::{Generated, kind_label, word_count};
 
-pub const MAX_TOKENS: u32 = 1200;
-
 pub const SYSTEM_PROMPT: &str = "You refine an automatically generated software architecture diagram for an engineer. \
 You receive the diagram as JSON (groups, nodes with kind/label/caption/path, edges with their evidence file) and a \
 templated explanation. Reply with ONE JSON object and nothing else: \
@@ -40,12 +38,19 @@ impl RefineRequest {
         }
     }
 
-    pub fn user_message(&self) -> String {
+    /// The structured context: the diagram under its own key so the token
+    /// budget can cut it (CONTRACT.md §19).
+    pub fn context_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind_label(self.kind),
+            "title": self.title,
+            "diagram": self.diagram,
+        })
+    }
+
+    pub fn instruction(&self) -> String {
         format!(
-            "Diagram kind: {}\nTitle: {}\n\nDiagram (JSON):\n{}\n\nTemplated explanation:\n{}\n\nReply with the JSON object.",
-            kind_label(self.kind),
-            self.title,
-            self.diagram,
+            "Templated explanation:\n{}\n\nReply with the JSON object.",
             self.draft_explanation
         )
     }
@@ -262,7 +267,16 @@ mod tests {
         let ok = format!("{{\"explanation\": \"{}\"}}", long_text());
         assert!(refine(&Scripted(Some(ok)), DiagramKind::Architecture, &mut g).await);
         let request = RefineRequest::new(DiagramKind::DataFlow, &g);
-        assert!(request.user_message().contains("data flow"));
-        assert!(request.user_message().contains("\"pg\""));
+        assert_eq!(request.context_json()["kind"], "data flow");
+        assert!(
+            request.context_json()["diagram"]
+                .to_string()
+                .contains("\"pg\"")
+        );
+        assert!(
+            request
+                .instruction()
+                .ends_with("Reply with the JSON object.")
+        );
     }
 }

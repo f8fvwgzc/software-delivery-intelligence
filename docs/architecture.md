@@ -85,11 +85,12 @@ list of `Evidence` (facts, decisions, prior outcomes) so the UI can show
 Negotiation never touches the signals. A message is interpreted into one of
 three edits: a `Constraint` (re-rank with a filter), a change of
 `ScoreWeights` ("cheaper" raises the cost weight) or a `Decision` with tags
-(`cloud:*`, `runtime:*`, `iac:*`) that feeds the policy signal. When
-`ANTHROPIC_API_KEY` is set the assistant's prose is written by Claude from
-that structured context; without it a template writes the same facts. Either
-way the ordering of options is the same, which is what makes the proposal
-auditable.
+(`cloud:*`, `runtime:*`, `iac:*`) that feeds the policy signal. When the
+workspace's reasoner is on, the assistant's prose is written by the
+configured LLM (Anthropic or any OpenAI-compatible endpoint, CONTRACT.md
+§19) from that structured context, trimmed to a token budget; without it a
+template writes the same facts. Either way the ordering of options is the
+same, which is what makes the proposal auditable.
 
 ## 4. Execution state machine
 

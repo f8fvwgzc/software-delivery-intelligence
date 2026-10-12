@@ -17,6 +17,10 @@ service KnowledgeService {
   // Connects a repository and queues its first scan.
   rpc ConnectProject(ConnectProjectRequest) returns (Project);
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  // Connected-project counts for several workspaces in one call (the
+  // gateway's workspace switcher). Internal: only the `system` principal
+  // may ask across workspaces; anyone else gets their own workspace only.
+  rpc CountProjects(CountProjectsRequest) returns (CountProjectsResponse);
   rpc GetProject(GetProjectRequest) returns (Project);
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
   rpc SetProjectMode(SetProjectModeRequest) returns (Project);
@@ -186,6 +190,16 @@ message ListProjectsRequest {}
 
 message ListProjectsResponse {
   repeated Project projects = 1;
+}
+
+message CountProjectsRequest {
+  // At most 100 ids; empty means the caller's workspace.
+  repeated string workspace_ids = 1;
+}
+
+message CountProjectsResponse {
+  // workspace id -> connected projects (absent means zero).
+  map<string, uint32> counts = 1;
 }
 
 message GetProjectRequest {

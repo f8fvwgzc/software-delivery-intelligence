@@ -5,21 +5,32 @@
 //! deployments, pull requests and the repository list every few seconds is
 //! free when nothing changed. The cache is per process and small: 256
 //! entries at a few hundred KB each is the worst case, and the oldest entry
-//! is evicted first because the UI revisits the same few projects.
+//! is evicted first because the UI revisits the same few projects. An entry
+//! also expires after [`TTL`]: a list nobody asked about for an hour is
+//! not worth the memory, and a body that old is re-fetched rather than
+//! trusted against a stale ETag.
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::{Duration, Instant},
+};
 
 pub const CAPACITY: usize = 256;
+/// How long an entry may sit unused before it is a miss.
+pub const TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub etag: String,
     pub body: Vec<u8>,
+    /// When the entry was stored or last refreshed.
+    pub at: Instant,
 }
 
 #[derive(Debug)]
 pub struct EtagCache {
     capacity: usize,
+    ttl: Duration,
     entries: HashMap<String, Entry>,
     /// Insertion order; the front is evicted first.
     order: VecDeque<String>,
@@ -33,10 +44,29 @@ impl Default for EtagCache {
 
 impl EtagCache {
     pub fn new(capacity: usize) -> Self {
+        Self::with_ttl(capacity, TTL)
+    }
+
+    pub fn with_ttl(capacity: usize, ttl: Duration) -> Self {
         Self {
             capacity: capacity.max(1),
+            ttl,
             entries: HashMap::new(),
             order: VecDeque::new(),
+        }
+    }
+
+    fn live(&self, url: &str) -> bool {
+        self.entries
+            .get(url)
+            .is_some_and(|entry| entry.at.elapsed() < self.ttl)
+    }
+
+    /// Forgets `url` when its entry expired.
+    fn expire(&mut self, url: &str) {
+        if self.entries.contains_key(url) && !self.live(url) {
+            self.entries.remove(url);
+            self.order.retain(|u| u != url);
         }
     }
 
@@ -48,11 +78,13 @@ impl EtagCache {
         self.entries.is_empty()
     }
 
-    pub fn get(&self, url: &str) -> Option<&Entry> {
+    pub fn get(&mut self, url: &str) -> Option<&Entry> {
+        self.expire(url);
         self.entries.get(url)
     }
 
-    pub fn etag(&self, url: &str) -> Option<String> {
+    pub fn etag(&mut self, url: &str) -> Option<String> {
+        self.expire(url);
         self.entries.get(url).map(|e| e.etag.clone())
     }
 
@@ -66,9 +98,17 @@ impl EtagCache {
             // A refresh keeps its slot; only a new url can push something out.
             entry.etag = etag.to_owned();
             entry.body = body;
+            entry.at = Instant::now();
             self.order.retain(|u| u != url);
             self.order.push_back(url.to_owned());
             return;
+        }
+        // Expired entries go before anything live is pushed out.
+        if self.entries.len() >= self.capacity {
+            let ttl = self.ttl;
+            self.entries.retain(|_, entry| entry.at.elapsed() < ttl);
+            let entries = &self.entries;
+            self.order.retain(|u| entries.contains_key(u));
         }
         while self.entries.len() >= self.capacity {
             let Some(oldest) = self.order.pop_front() else {
@@ -82,6 +122,7 @@ impl EtagCache {
             Entry {
                 etag: etag.to_owned(),
                 body,
+                at: Instant::now(),
             },
         );
     }
@@ -148,6 +189,25 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert!(cache.get("ws2|/a").is_some());
         assert_eq!(cache.remove_prefix("ws1|"), 0);
+    }
+
+    #[test]
+    fn entries_expire_after_the_ttl() {
+        let mut cache = EtagCache::with_ttl(2, Duration::from_millis(20));
+        cache.insert("a", "\"1\"", b"A".to_vec());
+        assert!(cache.etag("a").is_some());
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(cache.etag("a").is_none(), "an old entry is a miss");
+        assert!(cache.is_empty(), "and is dropped on the way");
+
+        // When full, expired entries make room before live ones are evicted.
+        cache.insert("old", "\"1\"", Vec::new());
+        std::thread::sleep(Duration::from_millis(30));
+        cache.insert("live", "\"2\"", Vec::new());
+        cache.insert("new", "\"3\"", Vec::new());
+        assert!(cache.get("live").is_some());
+        assert!(cache.get("new").is_some());
+        assert!(cache.get("old").is_none());
     }
 
     #[test]

@@ -266,6 +266,49 @@ mod tests {
         assert_eq!(safe_return_to(public, "/\\evil.io"), "/");
     }
 
+    /// On GitHub Enterprise Server the authorize URL is
+    /// `https://<host>/login/oauth/authorize` with the public callback; no
+    /// database is touched to build it.
+    #[tokio::test]
+    async fn enterprise_sign_in_goes_to_the_enterprise_web_host() {
+        use crate::config::{OAuthApp, Settings};
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .unwrap();
+        let settings = Settings {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            database_url: String::new(),
+            public_url: "https://sdi.corp.example".into(),
+            session_secret: b"test-secret-test-secret-test-secret!".to_vec(),
+            oauth: Some(OAuthApp {
+                client_id: "Iv1.enterprise".into(),
+                client_secret: "s".into(),
+            }),
+            app: None,
+            dev_login: false,
+            github_token: None,
+            github_api_url: "https://ghe.corp.example/api/v3".into(),
+            github_host: crate::config::host_of("https://ghe.corp.example/api/v3"),
+        };
+        let state = IdentityState::new(pool, settings);
+        let begin = begin(
+            &state,
+            BeginLoginRequest {
+                return_to: "/projects".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            begin.authorize_url.starts_with(
+                "https://ghe.corp.example/login/oauth/authorize?client_id=Iv1.enterprise&redirect_uri=https%3A%2F%2Fsdi.corp.example%2Fapi%2Fv1%2Fauth%2Fcallback&scope="
+            ),
+            "{}",
+            begin.authorize_url
+        );
+        assert!(!begin.authorize_url.contains("/api/v3/"));
+        assert!(!begin.authorize_url.contains("github.com"));
+    }
+
     #[test]
     fn percent_encoding_covers_reserved_characters() {
         assert_eq!(percent_encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");

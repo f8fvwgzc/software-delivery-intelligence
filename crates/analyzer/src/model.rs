@@ -1,7 +1,7 @@
 //! Input and output types of the analyzer.
 //!
 //! These are plain data: the knowledge service fills a [`RepoSnapshot`] from
-//! the provider API, calls [`crate::analyze`], and persists the [`Analysis`].
+//! the provider API, calls [`crate::analyze_at`], and persists the [`Analysis`].
 //! Field names deliberately mirror `sdi.knowledge.v1` so the mapping is 1:1.
 
 use std::collections::BTreeMap;
@@ -311,9 +311,42 @@ pub struct ProjectConfigDraft {
     pub health_path: String,
     pub port: u32,
     pub scan_exclude: Vec<String>,
+    /// The `review:` section (CONTRACT.md §12), applied by the code review.
+    #[serde(default)]
+    pub review: ReviewConfigDraft,
     /// Parse problems, in plain words. The config is ignored when non-empty.
     pub errors: Vec<String>,
 }
+
+/// `.sdi.yml` `review:` — how the repository tunes its pull request reviews.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewConfigDraft {
+    /// Globs of paths no rule looks at (generated code, vendored trees).
+    pub ignore_paths: Vec<String>,
+    /// Repository-defined regex rules over added lines.
+    pub rules: Vec<CustomRuleDraft>,
+    /// Severity overrides by rule id (`secrets.aws_key: critical`).
+    pub severity: BTreeMap<String, String>,
+    /// Globs of source paths whose change must come with a test change,
+    /// whether or not a test framework was detected.
+    pub require_tests_for: Vec<String>,
+}
+
+/// One custom review rule. `pattern` is a regex (validated at parse time)
+/// matched against every added line of the files `paths` select (all files
+/// when empty); the finding carries `message` with the severity given.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomRuleDraft {
+    pub id: String,
+    pub pattern: String,
+    /// info | low | medium | high | critical
+    pub severity: String,
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+/// The severities a `.sdi.yml` review rule or override may name.
+pub const REVIEW_SEVERITIES: &[&str] = &["info", "low", "medium", "high", "critical"];
 
 // ---------------------------------------------------------------------------
 // Output

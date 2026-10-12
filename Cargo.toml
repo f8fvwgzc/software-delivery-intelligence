@@ -17,6 +17,7 @@ sdi-analyzer = { path = "crates/analyzer" }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
 
@@ -54,6 +55,8 @@ base64 = "0.22"
 # Repository tarballs (knowledge scanner downloads one archive instead of one request per file)
 tar = "0.4"
 flate2 = "1"
+# Streamed downloads land in a temporary file instead of memory
+tempfile = "3"
 
 # Identity: GitHub App JWTs (RS256), HMAC state/webhook signatures, AES-GCM at rest
 jsonwebtoken = "9"

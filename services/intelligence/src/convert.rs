@@ -197,14 +197,19 @@ pub fn settings(
     row: &SettingsRow,
     api_key_configured: bool,
     effective_model: String,
+    provider: &str,
 ) -> IntelligenceSettings {
     IntelligenceSettings {
         default_weights: Some(weights(&row.default_weights.0)),
         reasoner: row.reasoner.clone(),
-        model: effective_model,
+        model: effective_model.clone(),
         api_key_configured,
         cost_ceiling_usd: row.cost_ceiling_usd,
         auto_review: row.auto_review,
+        reasoner_provider: provider.to_owned(),
+        reasoner_base_url: row.reasoner_base_url.clone(),
+        reasoner_model: effective_model,
+        reasoner_daily_token_cap: row.daily_token_cap(),
     }
 }
 

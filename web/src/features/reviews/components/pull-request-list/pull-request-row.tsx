@@ -14,6 +14,7 @@ import { hasRole } from '@/features/auth/lib/roles'
 import { useStartReview } from '../../api/mutations'
 import type { PullRequestSummary } from '../../api/types'
 import { prState, shortSha } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 export function PullRequestRow({ pullRequest }: { pullRequest: PullRequestSummary }) {
   const navigate = useNavigate()
@@ -63,7 +64,7 @@ export function PullRequestRow({ pullRequest }: { pullRequest: PullRequestSummar
           </span>
           <span className="font-mono">{shortSha(pullRequest.headSha)}</span>
           <span className="tabular-nums">
-            {pullRequest.changedFiles} {pullRequest.changedFiles === 1 ? 'file' : 'files'}
+            {count(pullRequest.changedFiles, 'file', 'files')}
           </span>
           <span>
             updated <RelativeTime value={pullRequest.updatedAt} />

@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 import type { ImpactAnalysis, ImpactedNode } from '../../lib/types'
 import { ImpactGroup } from './impact-group'
+import { count } from '@/lib/intl'
 
 interface ImpactAnalysisSectionProps {
   projectId: string
@@ -57,7 +58,7 @@ export function ImpactAnalysisSection({ projectId, impact, onSelectNode }: Impac
         </h3>
         {impact.data ? (
           <span className="text-2xs tabular-nums text-muted-foreground">
-            {impact.data.impacted.length === 1 ? '1 node' : `${impact.data.impacted.length} nodes`}
+            {count(impact.data.impacted.length, 'node', 'nodes')}
           </span>
         ) : null}
       </div>

@@ -81,7 +81,7 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 /// directory pattern excludes everything below it, which is what people
 /// mean when they write `vendor`. No dependency: the grammar is tiny and the
 /// analyzer must stay I/O- and surprise-free.
-pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
+pub fn glob_match(pattern: &str, path: &str) -> bool {
     let pattern = pattern
         .trim()
         .trim_start_matches("./")
@@ -124,6 +124,11 @@ fn glob(p: &[char], s: &[char]) -> bool {
 
 /// True when any exclude pattern matches.
 pub(crate) fn excluded(path: &str, patterns: &[String]) -> bool {
+    matches_any_glob(path, patterns)
+}
+
+/// True when any of the patterns matches the path ([`glob_match`]).
+pub fn matches_any_glob(path: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|p| glob_match(p, path))
 }
 

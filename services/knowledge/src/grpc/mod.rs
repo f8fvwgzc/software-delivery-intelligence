@@ -40,7 +40,7 @@ use crate::{
     events::EventBus,
     github::{Github, GithubClient, GithubError},
     identity::Identity,
-    scanner::ScanInputs,
+    scanner::{ScanInputs, ScanLimits},
 };
 
 /// Server-streaming responses are boxed: the concrete stream types differ
@@ -115,6 +115,7 @@ impl KnowledgeState {
             github,
             settings,
             controls,
+            limits: ScanLimits::from_env(),
         })
     }
 }
@@ -167,6 +168,7 @@ fn github_status(error: GithubError) -> Status {
         GithubError::Unauthorized => Status::unauthenticated(error.to_string()),
         GithubError::Forbidden(_) => Status::permission_denied(error.to_string()),
         GithubError::NotFound(_) => Status::not_found(error.to_string()),
+        GithubError::EmptyRepository(_) => Status::failed_precondition(error.to_string()),
         GithubError::RateLimited { .. } => Status::resource_exhausted(error.to_string()),
         GithubError::Api { .. } | GithubError::Transport(_) | GithubError::Decode(_) => {
             tracing::warn!(%error, "GitHub call failed");
@@ -184,6 +186,7 @@ fn anyhow_status(error: anyhow::Error) -> Status {
                 GithubError::Unauthorized => GithubError::Unauthorized,
                 GithubError::Forbidden(m) => GithubError::Forbidden(m.clone()),
                 GithubError::NotFound(m) => GithubError::NotFound(m.clone()),
+                GithubError::EmptyRepository(m) => GithubError::EmptyRepository(m.clone()),
                 GithubError::RateLimited { retry_after } => GithubError::RateLimited {
                     retry_after: *retry_after,
                 },
@@ -247,6 +250,15 @@ impl KnowledgeService for KnowledgeState {
     ) -> Result<Response<Project>, Status> {
         let caller = caller(&request)?;
         projects::get_project(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn count_projects(
+        &self,
+        request: Request<CountProjectsRequest>,
+    ) -> Result<Response<CountProjectsResponse>, Status> {
+        let caller = caller(&request)?;
+        projects::count_projects(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

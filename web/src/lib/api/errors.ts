@@ -57,3 +57,19 @@ export class ApiError extends Error {
     return REQUIRED_ROLE.exec(this.message)?.[1] ?? null
   }
 }
+
+/**
+ * `fetch` itself failed: the browser is offline, the gateway is down, DNS
+ * failed, or the request was blocked. The gateway never produced a response,
+ * so there is no status to read; the copy must say "could not reach".
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (error instanceof ApiError) return false
+  if (error instanceof TypeError) return true
+  return error instanceof Error && /failed to fetch|networkerror|load failed|network request failed/i.test(error.message)
+}
+
+/** `AbortError`: the query was cancelled (route change, unmount), never a failure to show. */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}

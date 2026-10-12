@@ -23,7 +23,7 @@ use crate::{
         knowledge::Scan,
     },
     error::{ApiError, ApiPath, ApiQuery, ApiResult, ErrorResponses},
-    state::{AppState, Scoped},
+    state::{AppState, Scoped, StreamSlot},
 };
 
 /// Proxies in between (nginx, browsers) drop idle connections; a comment
@@ -38,6 +38,27 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 
 /// The `data` key every service stamps its events with (CONTRACT.md §18).
 pub const WORKSPACE_KEY: &str = "workspace_id";
+
+/// Claims a stream slot for the caller's workspace or answers 429: a
+/// workspace may hold `SSE_MAX_PER_WORKSPACE` open streams per replica,
+/// which is one tab's worth fifty times over and far below what would pin
+/// a replica's connections (each stream is a gRPC watch per service).
+fn claim(state: &Scoped) -> ApiResult<StreamSlot> {
+    state.state.open_stream(state.workspace_id()).ok_or_else(|| {
+        ApiError::too_many_requests(format!(
+            "this workspace already holds {} open event streams on this replica; close a tab and retry",
+            state.state.settings.sse_max_per_workspace
+        ))
+    })
+}
+
+/// Keeps the slot alive for as long as the stream is polled; the slot (and
+/// with it the workspace's count) goes when the stream is dropped.
+fn hold<S: Stream>(slot: StreamSlot, stream: S) -> impl Stream<Item = S::Item> {
+    stream::unfold((slot, Box::pin(stream)), |(slot, mut stream)| async move {
+        stream.next().await.map(|item| (item, (slot, stream)))
+    })
+}
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -64,6 +85,7 @@ async fn watch_execution(
     ApiPath(id): ApiPath<String>,
     ApiQuery(query): ApiQuery<WatchEventsQuery>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let slot = claim(&state)?;
     let upstream = state
         .execution()
         .watch_execution(execution::WatchExecutionRequest {
@@ -73,12 +95,15 @@ async fn watch_execution(
         .await?
         .into_inner();
 
-    Ok(finite(upstream.map(|item| {
-        item.map(|event| {
-            let event = ExecutionEvent::from(event);
-            (Some(event.seq.to_string()), event)
-        })
-    })))
+    Ok(finite(hold(
+        slot,
+        upstream.map(|item| {
+            item.map(|event| {
+                let event = ExecutionEvent::from(event);
+                (Some(event.seq.to_string()), event)
+            })
+        }),
+    )))
 }
 
 /// Streams a scan's progress live. Each `data:` line is the whole `Scan`
@@ -99,15 +124,17 @@ async fn watch_scan(
     state: Scoped,
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let slot = claim(&state)?;
     let upstream = state
         .knowledge()
         .watch_scan(knowledge::WatchScanRequest { id })
         .await?
         .into_inner();
 
-    Ok(finite(
+    Ok(finite(hold(
+        slot,
         upstream.map(|item| item.map(|scan| (None, Scan::from(scan)))),
-    ))
+    )))
 }
 
 /// Every change in the caller's workspace as it happens, merged from the
@@ -122,11 +149,13 @@ async fn watch_scan(
     tag = "system",
     responses(
         (status = 200, description = "Server-Sent Events, one PlatformEvent per message; never ends", content_type = "text/event-stream", body = PlatformEvent),
+        (status = 429, description = "The workspace holds too many open streams on this replica", body = crate::dto::common::ErrorBody),
     ),
 )]
 async fn watch_platform_events(
     state: Scoped,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let slot = claim(&state)?;
     let knowledge = resilient("knowledge", {
         let state = state.clone();
         move || {
@@ -172,7 +201,7 @@ async fn watch_platform_events(
         .map(|event| Ok(data_event(None, &PlatformEvent::from(event))))
         .take_until(sdi_common::shutdown::cancelled());
 
-    Sse::new(merged).keep_alive(keep_alive())
+    Ok(Sse::new(hold(slot, merged)).keep_alive(keep_alive()))
 }
 
 /// Wraps a finite upstream (a watch that ends with its subject) into the SSE

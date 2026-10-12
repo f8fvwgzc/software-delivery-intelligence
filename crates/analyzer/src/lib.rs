@@ -3,7 +3,8 @@
 //! No network, no database, no clock. The knowledge service owns all I/O and
 //! calls in here, which keeps every detector unit-testable with plain strings.
 //! The only time-dependent judgement, runtime end of life, takes `today` as
-//! a parameter ([`analyze_at`]).
+//! a parameter ([`analyze_at`]); there is no default date, so a service can
+//! never analyse against a day baked into the binary.
 
 mod capabilities;
 mod config;
@@ -23,21 +24,17 @@ mod util;
 mod yaml;
 
 pub use config::{CONFIG_PATH, is_usable as config_is_usable, parse_config};
-pub use eol::{DEFAULT_TODAY, Day};
+pub use eol::Day;
 pub use files::{wanted_files, wanted_files_with};
 pub use lang::language_for_path;
 pub use model::*;
+pub use util::{glob_match, matches_any_glob};
 
 /// Largest file the scanner should download, in bytes.
 pub const MAX_FILE_BYTES: u64 = 200_000;
 
 /// Upper bound on how many files one scan downloads.
 pub const MAX_FILES: usize = 150;
-
-/// [`analyze_at`] with [`DEFAULT_TODAY`], for callers that have no date.
-pub fn analyze(snapshot: &RepoSnapshot) -> Analysis {
-    analyze_at(snapshot, DEFAULT_TODAY)
-}
 
 /// Turns a snapshot into the project knowledge model as of `today`.
 ///

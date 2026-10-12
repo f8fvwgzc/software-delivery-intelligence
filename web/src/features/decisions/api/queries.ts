@@ -7,7 +7,7 @@ import { decisionKeys, type DecisionFilters } from './keys'
 export const decisionsQuery = (filters: DecisionFilters = {}) =>
   queryOptions({
     queryKey: decisionKeys.list(filters),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       unwrap(
         api.GET('/api/v1/decisions', {
           params: {
@@ -16,6 +16,7 @@ export const decisionsQuery = (filters: DecisionFilters = {}) =>
               ...(filters.includeSuperseded ? { includeSuperseded: true } : {}),
             },
           },
+          signal,
         }),
       ),
   })

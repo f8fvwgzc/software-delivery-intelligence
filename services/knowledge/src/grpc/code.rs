@@ -43,16 +43,17 @@ pub(super) async fn get_repo_tree(
             let (owner, name) = repo_parts(&project)?;
             let github = state.github(caller).await?;
             let tree = github
-                .tree(owner, name, &commit_sha)
+                .full_tree(owner, name, &commit_sha)
                 .await
                 .map_err(github_status)?;
             let entries: Vec<TreeEntryRecord> = tree
                 .tree
                 .into_iter()
-                // Submodules (`commit`) have no content here; the UI cannot open them.
-                .filter(|node| node.kind == "blob" || node.kind == "tree")
+                // Submodules have no content here and symlinks only a
+                // target; the UI cannot open either.
+                .filter(|node| node.is_file() || node.is_dir())
                 .map(|node| TreeEntryRecord {
-                    is_dir: node.kind == "tree",
+                    is_dir: node.is_dir(),
                     size: node.size.unwrap_or(0),
                     path: node.path,
                 })

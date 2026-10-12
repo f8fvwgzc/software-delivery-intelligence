@@ -8,6 +8,13 @@ use tonic::{
     transport::{Channel, Endpoint},
 };
 
+/// Largest gRPC message a service accepts or sends (16 MiB). Trees of big
+/// monorepos and export records are the largest payloads; anything beyond
+/// this is a bug or an attack, and tonic's 4 MiB default was too small for
+/// the former. Every generated server and client applies it through its
+/// `max_decoding_message_size` / `max_encoding_message_size` setters.
+pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 /// A lazily connected channel: the service starts even when its peers are
 /// not up yet, and reconnects on its own once they are.
 pub fn lazy_channel(url: &str) -> Result<Channel> {

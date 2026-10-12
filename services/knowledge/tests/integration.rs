@@ -1444,3 +1444,189 @@ async fn pull_request_caches_round_trip_filter_and_expire() {
     drop(conn);
     drop_schema(&pool, &schema).await;
 }
+
+/// A 50k-file monorepo produces thousands of rows per table; the batched
+/// `UNNEST` inserts must land every row, upsert on rescan and keep the
+/// graph's keys mapped to ids across batch boundaries.
+#[tokio::test]
+async fn batched_inserts_store_thousands_of_rows_in_few_statements() {
+    use sdi_analyzer::{
+        DependencyDraft, EdgeDraft, FactCategory, FactDraft, FactKind, NodeDraft, NodeKind,
+        RelationCategory,
+    };
+    let Some((pool, schema)) = connect().await else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let ws = Uuid::now_v7();
+    let project = db::projects::insert(&pool, ws, &project("acme/monorepo"))
+        .await
+        .unwrap();
+    let n = 1_234; // not a multiple of the batch size on purpose
+
+    let facts: Vec<FactDraft> = (0..n)
+        .map(|i| FactDraft {
+            kind: FactKind::Detected,
+            category: FactCategory::Dependency,
+            key: format!("dep:npm:pkg-{i}"),
+            label: format!("pkg-{i}"),
+            value: "1.0".into(),
+            confidence: 1.0,
+            source_path: format!("packages/pkg-{}/package.json", i % 97),
+            evidence: "\"pkg\": \"1.0\"".into(),
+        })
+        .collect();
+    let nodes: Vec<NodeDraft> = (0..n)
+        .map(|i| NodeDraft {
+            kind: NodeKind::Library,
+            key: format!("library:pkg-{i}"),
+            label: format!("pkg {i}"),
+            description: String::new(),
+            source_path: String::new(),
+            attributes: std::collections::BTreeMap::from([("i".to_owned(), i.to_string())]),
+        })
+        .collect();
+    let edges: Vec<EdgeDraft> = (1..n)
+        .map(|i| EdgeDraft {
+            source_key: format!("library:pkg-{i}"),
+            target_key: format!("library:pkg-{}", i - 1),
+            relation: "DEPENDS_ON".into(),
+            category: RelationCategory::Structure,
+            attributes: Default::default(),
+        })
+        .collect();
+    let deps: Vec<DependencyDraft> = (0..n)
+        .map(|i| DependencyDraft {
+            ecosystem: "npm".into(),
+            name: format!("pkg-{i}"),
+            version: "1.0.0".into(),
+            manifest_path: "package.json".into(),
+            scope: "runtime".into(),
+        })
+        .collect();
+    let chunks: Vec<NewChunk> = (0..n)
+        .map(|i| NewChunk {
+            kind: "file".into(),
+            project_id: Some(project.id),
+            ref_id: String::new(),
+            title: format!("chunk {i}"),
+            path: format!("src/{i}.rs"),
+            content: format!("content of module alpha{i}"),
+            embedding: embed(&format!("content of module alpha{i}")),
+        })
+        .collect();
+
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        db::facts::replace(&mut tx, ws, project.id, &facts)
+            .await
+            .unwrap(),
+        n
+    );
+    let (stored_nodes, stored_edges) = db::graph::sync(&mut tx, ws, project.id, &nodes, &edges)
+        .await
+        .unwrap();
+    assert_eq!((stored_nodes, stored_edges), (n, n - 1));
+    db::dependencies::replace(&mut tx, ws, project.id, &deps)
+        .await
+        .unwrap();
+    db::chunks::replace_kinds(&mut tx, ws, project.id, &["file".to_owned()], &chunks)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let facts_stored = db::facts::list(&pool, ws, project.id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(facts_stored.len(), n);
+    assert_eq!(
+        db::facts::ids_for_path(&pool, ws, project.id, "packages/pkg-3/package.json")
+            .await
+            .unwrap()
+            .len(),
+        n.div_ceil(97).min(13)
+    );
+    assert_eq!(
+        db::graph::nodes(&pool, ws, project.id).await.unwrap().len(),
+        n
+    );
+    let edge_rows = db::graph::edges(&pool, ws, project.id, false)
+        .await
+        .unwrap();
+    assert_eq!(edge_rows.len(), n - 1);
+    assert_eq!(
+        db::dependencies::list(&pool, ws, project.id)
+            .await
+            .unwrap()
+            .len(),
+        n
+    );
+    let hits = db::chunks::search(&pool, ws, &embed("module alpha7"), Some(project.id), &[], 3)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 3);
+    assert!(hits.iter().any(|h| h.path == "src/7.rs"), "{hits:?}");
+
+    // A rescan with fewer nodes closes the vanished edges and keeps ids
+    // stable for the ones that stayed.
+    let before: std::collections::HashMap<String, Uuid> = db::graph::nodes(&pool, ws, project.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|n| (n.key, n.id))
+        .collect();
+    let mut tx = pool.begin().await.unwrap();
+    let (kept, live) = db::graph::sync(&mut tx, ws, project.id, &nodes[..600], &edges[..599])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((kept, live), (600, 599));
+    let after = db::graph::nodes(&pool, ws, project.id).await.unwrap();
+    assert_eq!(after.len(), 600);
+    assert!(
+        after.iter().all(|n| before[&n.key] == n.id),
+        "ids are stable"
+    );
+    // Edges of vanished nodes went with them (cascade); the rest stay live.
+    let history = db::graph::edges(&pool, ws, project.id, true).await.unwrap();
+    assert_eq!(history.len(), 599);
+    assert!(history.iter().all(|e| e.valid_to.is_none()));
+
+    drop_schema(&pool, &schema).await;
+}
+
+/// A restart re-seeds the catalog; what the platform learned about a
+/// pattern's cost and security score must survive it.
+#[tokio::test]
+async fn catalog_reseed_keeps_learned_cost_and_security_score() {
+    let Some((pool, schema)) = connect().await else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    catalog::seed(&pool).await.unwrap();
+    let id = catalog::catalog()[0].id.clone();
+    sqlx::query(
+        "UPDATE patterns SET estimated_monthly_cost_usd = 123.5, security_score = 0.91 WHERE id = $1",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    catalog::seed(&pool).await.unwrap();
+    let (cost, score): (f64, f64) = sqlx::query_as(
+        "SELECT estimated_monthly_cost_usd, security_score FROM patterns WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((cost, score), (123.5, 0.91), "insert-only columns");
+    // Everything else follows the release: the name is reasserted.
+    let (name,): (String,) = sqlx::query_as("SELECT name FROM patterns WHERE id = $1")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(name, catalog::catalog()[0].name);
+    drop_schema(&pool, &schema).await;
+}

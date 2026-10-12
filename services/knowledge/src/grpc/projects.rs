@@ -1,6 +1,13 @@
-use sdi_common::{grpc::db_status, principal::Role};
+use sdi_common::{
+    grpc::db_status,
+    principal::{Role, SYSTEM_USER},
+};
 use sdi_proto::knowledge::v1::*;
 use tonic::Status;
+use uuid::Uuid;
+
+/// Workspaces one `CountProjects` call may ask about.
+pub const MAX_COUNTED_WORKSPACES: usize = 100;
 
 use super::{KnowledgeState, github_status, parse_id};
 use crate::{
@@ -93,6 +100,47 @@ pub(super) async fn get_project(
     req: GetProjectRequest,
 ) -> Result<Project, Status> {
     state.project(caller, &req.id).await.map(convert::project)
+}
+
+/// Connected projects per workspace in one query. A user may only count
+/// their own workspace; the gateway's workspace switcher asks as `system`
+/// (CONTRACT.md §18) for every workspace the user belongs to, which is the
+/// one read that legitimately spans tenants. Ids that are not uuids or
+/// hold no projects are simply absent from the answer.
+pub(super) async fn count_projects(
+    state: &KnowledgeState,
+    caller: &Caller,
+    req: CountProjectsRequest,
+) -> Result<CountProjectsResponse, Status> {
+    let mut ids: Vec<Uuid> = req
+        .workspace_ids
+        .iter()
+        .filter_map(|raw| Uuid::parse_str(raw.trim()).ok())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        ids.push(caller.workspace_id);
+    }
+    if ids.len() > MAX_COUNTED_WORKSPACES {
+        return Err(Status::invalid_argument(format!(
+            "at most {MAX_COUNTED_WORKSPACES} workspace ids per call"
+        )));
+    }
+    if caller.user_id != SYSTEM_USER && ids.iter().any(|id| *id != caller.workspace_id) {
+        return Err(Status::permission_denied(
+            "only the system principal may count projects across workspaces",
+        ));
+    }
+    let counts = db::projects::count_by_workspaces(&state.pool, &ids)
+        .await
+        .map_err(db_status)?;
+    Ok(CountProjectsResponse {
+        counts: counts
+            .into_iter()
+            .map(|(id, count)| (id.to_string(), u32::try_from(count).unwrap_or(u32::MAX)))
+            .collect(),
+    })
 }
 
 /// Disconnecting a project purges its code caches explicitly (the cascade

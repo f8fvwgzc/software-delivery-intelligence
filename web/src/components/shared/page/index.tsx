@@ -1,9 +1,9 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 
 import { Frame } from '@/components/system/frame'
 import { cn } from '@/lib/utils'
 
-interface PageProps {
+interface PageProps extends ComponentProps<'div'> {
   children: ReactNode
   className?: string
 }
@@ -13,9 +13,9 @@ interface PageProps {
  * and a 16px rhythm between frames. Long-form readers cap their own text
  * column; the frame never does.
  */
-export function Page({ children, className }: PageProps) {
+export function Page({ children, className, ...props }: PageProps) {
   return (
-    <div className={cn('flex w-full min-w-0 flex-1 flex-col gap-4 px-4 py-4 md:px-6 md:py-5', className)}>
+    <div className={cn('flex w-full min-w-0 flex-1 flex-col gap-4 px-4 py-4 md:px-6 md:py-5', className)} {...props}>
       {children}
     </div>
   )

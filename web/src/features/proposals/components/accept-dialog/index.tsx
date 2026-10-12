@@ -32,6 +32,7 @@ import type { components } from '@/lib/api/schema'
 import { useAcceptProposal, useOpenPullRequest } from '../../api/mutations'
 import { ADAPTER_CHOICES, type Adapter } from '../../lib/adapters'
 import { formatPercent } from '../../lib/format'
+import { count } from '@/lib/intl'
 
 type Proposal = components['schemas']['Proposal']
 
@@ -167,7 +168,7 @@ function AcceptForm({ proposal, initialOptionId, onDone }: AcceptFormProps) {
               <FieldDescription className={noFiles ? 'text-warning' : undefined}>
                 {noFiles
                   ? 'This option has no generated files, so there is nothing to commit. Pick another runtime.'
-                  : `Commits ${chosen?.artifactCount ?? 0} generated ${chosen?.artifactCount === 1 ? 'file' : 'files'} to a new branch.`}
+                  : `Commits ${count(chosen?.artifactCount ?? 0, 'generated file', 'generated files')} to a new branch.`}
               </FieldDescription>
             ) : null}
           </FieldSet>

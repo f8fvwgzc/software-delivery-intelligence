@@ -23,7 +23,7 @@ use crate::{
     adapters::{DockerAdapter, GithubAdapter, Registry, SimulatedAdapter},
     config::{SCHEMA, Settings},
     grpc::ExecutionGrpc,
-    identity::GrpcAudit,
+    identity::{GrpcAudit, GrpcGithubAccess},
     knowledge::GrpcPatternOutcomes,
     runner::Runtime,
 };
@@ -46,11 +46,14 @@ async fn main() -> anyhow::Result<()> {
 
     let adapters = Registry::new(
         Arc::new(SimulatedAdapter::new(settings.sim_delay_ms)),
-        Arc::new(DockerAdapter::new(
-            settings.run_dir.clone(),
-            settings.github_token.clone(),
-            &settings.github_api_url,
-        )),
+        Arc::new(
+            DockerAdapter::new(
+                settings.run_dir.clone(),
+                settings.github_token.clone(),
+                &settings.github_api_url,
+            )
+            .with_publish_host(&settings.docker_publish_host),
+        ),
         Arc::new(GithubAdapter::new(
             settings.github_token.clone(),
             &settings.github_api_url,
@@ -58,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let outcomes = Arc::new(GrpcPatternOutcomes::new(&settings.knowledge_url)?);
     let audit = Arc::new(GrpcAudit::new(&settings.identity_url)?);
+    let github_access = Arc::new(GrpcGithubAccess::new(&settings.identity_url)?);
     let rt = Runtime::new(
         pool,
         adapters,
@@ -65,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         audit,
         Duration::from_millis(settings.sim_delay_ms / 2),
         settings.github_token.is_some(),
+        github_access,
     );
     let resumed = rt.recover().await.context("could not resume executions")?;
 
@@ -82,9 +87,17 @@ async fn main() -> anyhow::Result<()> {
     );
     Server::builder()
         .add_service(health)
-        .add_service(ExecutionServiceServer::new(ExecutionGrpc::new(rt)))
+        .add_service(
+            ExecutionServiceServer::new(ExecutionGrpc::new(rt))
+                .max_decoding_message_size(sdi_common::grpc::MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(sdi_common::grpc::MAX_MESSAGE_BYTES),
+        )
         .serve_with_shutdown(settings.listen, sdi_common::shutdown::signal())
         .await
         .context("gRPC server failed")?;
+    // Runners checkpoint every step; whatever is mid-step when the grace
+    // period ends is resumed by `recover` on the next start.
+    let abandoned = sdi_common::tasks::shutdown(sdi_common::config::shutdown_grace()).await;
+    tracing::info!(abandoned, "execution service stopped");
     Ok(())
 }

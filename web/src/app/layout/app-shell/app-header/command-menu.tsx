@@ -1,31 +1,31 @@
 import { SearchIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { lazy, Suspense, useEffect, useState } from 'react'
 
-import { visibleNavigation } from '@/app/layout/app-shell/app-sidebar/navigation'
 import { Button } from '@/components/ui/button'
-import {
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command'
 import { Kbd } from '@/components/ui/kbd'
-import { useAuth } from '@/features/auth/lib/auth-context'
+
+/**
+ * The palette (cmdk and its list) is its own chunk, loaded on intent: hover
+ * or focus on the trigger, or the first ⌘K. The header renders without it.
+ */
+const loadPalette = () => import('./command-palette')
+const CommandPalette = lazy(loadPalette)
 
 /** ⌘K navigation. Pages only; project-level search lives on the Search page. */
 export function CommandMenu() {
   const [open, setOpen] = useState(false)
-  const navigate = useNavigate()
-  const { currentWorkspace } = useAuth()
-  const groups = visibleNavigation(currentWorkspace.myRole)
+  const [wanted, setWanted] = useState(false)
+
+  const warm = () => {
+    setWanted(true)
+    void loadPalette()
+  }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
+        setWanted(true)
         setOpen((value) => !value)
       }
     }
@@ -33,17 +33,14 @@ export function CommandMenu() {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const go = (to: string) => {
-    setOpen(false)
-    navigate(to)
-  }
-
   return (
     <>
       <Button
         variant="outline"
         size="sm"
         className="hidden h-7 w-48 justify-start gap-2 border-border bg-muted/40 font-normal text-muted-foreground shadow-none hover:bg-muted md:inline-flex"
+        onMouseEnter={warm}
+        onFocus={warm}
         onClick={() => setOpen(true)}
       >
         <SearchIcon data-icon="inline-start" />
@@ -55,26 +52,17 @@ export function CommandMenu() {
         size="icon-sm"
         className="text-muted-foreground md:hidden"
         aria-label="Go to page"
+        onMouseEnter={warm}
+        onFocus={warm}
         onClick={() => setOpen(true)}
       >
         <SearchIcon />
       </Button>
-      <CommandDialog open={open} onOpenChange={setOpen} title="Go to" description="Jump to a page">
-        <CommandInput placeholder="Type a page name…" />
-        <CommandList>
-          <CommandEmpty>No pages found.</CommandEmpty>
-          {groups.map((group) => (
-            <CommandGroup key={group.label} heading={group.label}>
-              {group.items.map((item) => (
-                <CommandItem key={item.to} value={`${group.label} ${item.label}`} onSelect={() => go(item.to)}>
-                  <item.icon />
-                  {item.label}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          ))}
-        </CommandList>
-      </CommandDialog>
+      {wanted || open ? (
+        <Suspense fallback={null}>
+          <CommandPalette open={open} onOpenChange={setOpen} />
+        </Suspense>
+      ) : null}
     </>
   )
 }

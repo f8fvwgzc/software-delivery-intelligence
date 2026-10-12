@@ -18,13 +18,13 @@ export type DiagramGroup = components['schemas']['DiagramGroup']
 export const diagramsQuery = (projectId: string) =>
   queryOptions({
     queryKey: diagramKeys.list(projectId),
-    queryFn: () => unwrap(api.GET('/api/v1/projects/{id}/diagrams', { params: { path: { id: projectId } } })),
+    queryFn: ({ signal }) => unwrap(api.GET('/api/v1/projects/{id}/diagrams', { params: { path: { id: projectId } }, signal })),
   })
 
 /** One diagram with its spec, Mermaid and explanation. Edits go through the mutations, which update this entry. */
 export const diagramQuery = (diagramId: string) =>
   queryOptions({
     queryKey: diagramKeys.detail(diagramId),
-    queryFn: () => unwrap(api.GET('/api/v1/diagrams/{id}', { params: { path: { id: diagramId } } })),
+    queryFn: ({ signal }) => unwrap(api.GET('/api/v1/diagrams/{id}', { params: { path: { id: diagramId } }, signal })),
     staleTime: 30_000,
   })

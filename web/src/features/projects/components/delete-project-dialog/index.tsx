@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { focusPageTitle } from '@/lib/focus'
 
 import { useDeleteProject } from '../../api/mutations'
 import type { Project } from '../../api/queries'
@@ -31,15 +32,24 @@ interface DeleteProjectDialogProps {
 /** Disconnects a project. Everything known about it goes with it, so the verb is explicit. */
 export function DeleteProjectDialog({ project, trigger, tooltip, onDeleted }: DeleteProjectDialogProps) {
   const [open, setOpen] = useState(false)
+  const [deleted, setDeleted] = useState(false)
   const deleteProject = useDeleteProject(project)
 
   const handleConfirm = () => {
     deleteProject.mutate(undefined, {
       onSuccess: () => {
+        setDeleted(true)
         setOpen(false)
         onDeleted?.()
       },
     })
+  }
+
+  // The trigger (the row's button) is gone with the row: focus lands on the page title instead.
+  const onCloseAutoFocus = (event: Event) => {
+    if (!deleted) return
+    event.preventDefault()
+    focusPageTitle()
   }
 
   // Both triggers merge their props onto the one button, the Radix way.
@@ -55,7 +65,7 @@ export function DeleteProjectDialog({ project, trigger, tooltip, onDeleted }: De
       ) : (
         dialogTrigger
       )}
-      <AlertDialogContent>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogMedia className="bg-destructive/10 text-destructive">
             <Trash2Icon />

@@ -113,7 +113,7 @@ pub fn export(
     check_workspace(caller, &req.workspace_id)?;
     let mut rows = db::workspace::export(rt.pool.clone(), caller.workspace);
     let (tx, rx) = mpsc::channel(EXPORT_BUFFER);
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("workspace-export", async move {
         while let Some(row) = rows.next().await {
             let item = row
                 .map(|(entity, json)| WorkspaceDataRecord {

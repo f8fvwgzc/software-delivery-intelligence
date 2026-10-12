@@ -1,6 +1,7 @@
 import { SearchIcon, XIcon } from 'lucide-react'
 
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
+import { count } from '@/lib/intl'
 
 interface TreeFilterProps {
   value: string
@@ -37,7 +38,7 @@ export function TreeFilter({ value, onChange, matches }: TreeFilterProps) {
       </InputGroup>
       {matches !== null ? (
         <p className="px-1 text-2xs tabular-nums text-muted-foreground" aria-live="polite">
-          {matches === 0 ? 'No path matches' : `${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'}`}
+          {matches === 0 ? 'No path matches' : `${count(matches, 'match', 'matches')}`}
         </p>
       ) : null}
     </div>

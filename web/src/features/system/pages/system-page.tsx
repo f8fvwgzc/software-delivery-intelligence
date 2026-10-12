@@ -3,6 +3,7 @@ import { usePrefetchQuery, useSuspenseQuery } from '@tanstack/react-query'
 import { Page, PageHeader } from '@/components/shared/page'
 import { Panel } from '@/components/system/panel'
 import { githubQueries } from '@/features/github/api/queries'
+import { ReasonerUsageStat } from '@/features/settings/components/reasoner-usage'
 
 import { systemQueries } from '../api/queries'
 import { DeliverySummary } from '../components/delivery-summary'
@@ -94,6 +95,7 @@ export default function SystemPage() {
           <Panel title="Intelligence store" description="Proposals, decisions and documents." skeleton={<KeyValueSkeleton rows={6} />}>
             <IntelligencePanel />
           </Panel>
+          <ReasonerUsageStat />
         </div>
       </div>
     </Page>

@@ -3,11 +3,13 @@ import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
 import { Page, PageHeader } from '@/components/shared/page'
 import { Panel } from '@/components/system/panel'
 import { githubQueries } from '@/features/github/api/queries'
+import { systemQueries } from '@/features/system/api/queries'
 
 import { settingsQueries } from '../api/queries'
 import { EnvironmentBlock } from '../components/environment-block'
 import { EnvironmentSkeleton, FormSkeleton } from '../components/form-skeleton'
 import { RankingForm } from '../components/ranking-form'
+import { ReasonerUsageStat } from '../components/reasoner-usage'
 import { ScannerForm } from '../components/scanner-form'
 
 /* Panels: the three share one query; each suspends inside its own boundary. */
@@ -19,7 +21,9 @@ function ScannerPanel() {
 
 function RankingPanel() {
   const { data } = useSuspenseQuery(settingsQueries.settings())
-  return <RankingForm settings={data.intelligence} />
+  // Today's spend is a nicety under the cap field; the form renders without it.
+  const stats = useQuery(systemQueries.intelligenceStats())
+  return <RankingForm settings={data.intelligence} tokensToday={stats.data?.reasonerTokensToday} />
 }
 
 function EnvironmentPanel() {
@@ -50,9 +54,12 @@ export default function SettingsPage() {
             <RankingPanel />
           </Panel>
         </div>
-        <Panel title="Environment" description="Read from the running services." padding="none" skeleton={<EnvironmentSkeleton />} className="lg:col-span-4">
-          <EnvironmentPanel />
-        </Panel>
+        <div className="flex flex-col gap-4 lg:col-span-4">
+          <ReasonerUsageStat />
+          <Panel title="Environment" description="Read from the running services." padding="none" skeleton={<EnvironmentSkeleton />}>
+            <EnvironmentPanel />
+          </Panel>
+        </div>
       </div>
     </Page>
   )

@@ -10,7 +10,9 @@ import { cn } from '@/lib/utils'
 import { useUpdateSettings } from '../../api/mutations'
 import type { IntelligenceSettings, IntelligenceSettingsPatch, ScoreWeights } from '../../api/queries'
 import {
+  baseUrlError,
   EMPTY_WEIGHTS,
+  parseTokenCap,
   REASONERS,
   sumWeights,
   WEIGHT_FIELDS,
@@ -19,11 +21,11 @@ import {
   type Reasoner,
   type WeightKey,
 } from '../../lib/settings'
+import { ReasonerFields, type ReasonerDraft } from './reasoner-fields'
 
-interface Draft {
+interface Draft extends ReasonerDraft {
   weights: Record<WeightKey, string>
   reasoner: string
-  model: string
   costCeilingUsd: string
   autoReview: boolean
 }
@@ -36,7 +38,10 @@ function toDraft(settings: IntelligenceSettings): Draft {
       string
     >,
     reasoner: settings.reasoner,
-    model: settings.model,
+    reasonerProvider: settings.reasonerProvider || 'anthropic',
+    reasonerBaseUrl: settings.reasonerBaseUrl ?? '',
+    reasonerModel: settings.reasonerModel || settings.model,
+    reasonerDailyTokenCap: settings.reasonerDailyTokenCap ? String(settings.reasonerDailyTokenCap) : '',
     costCeilingUsd: String(settings.costCeilingUsd),
     autoReview: settings.autoReview,
   }
@@ -63,13 +68,20 @@ function toPatch(draft: Draft, settings: IntelligenceSettings): IntelligenceSett
   if (!weightsInRange(weights) || !weightsSumToOne(weights)) return null
   const cost = parseCost(draft.costCeilingUsd)
   if (cost === null) return null
-  const model = draft.model.trim()
+  const model = draft.reasonerModel.trim()
   if (!model) return null
+  if (baseUrlError(draft.reasonerProvider, draft.reasonerBaseUrl)) return null
+  const cap = parseTokenCap(draft.reasonerDailyTokenCap)
+  if (cap === null) return null
+  const baseUrl = draft.reasonerProvider === 'openai_compatible' ? draft.reasonerBaseUrl.trim() : ''
 
   const patch: IntelligenceSettingsPatch = {}
   if (!sameWeights(weights, settings.defaultWeights)) patch.defaultWeights = weights
   if (draft.reasoner !== settings.reasoner) patch.reasoner = draft.reasoner
-  if (model !== settings.model) patch.model = model
+  if (draft.reasonerProvider !== settings.reasonerProvider) patch.reasonerProvider = draft.reasonerProvider
+  if (baseUrl !== (settings.reasonerBaseUrl ?? '')) patch.reasonerBaseUrl = baseUrl
+  if (model !== settings.reasonerModel) patch.reasonerModel = model
+  if (cap !== settings.reasonerDailyTokenCap) patch.reasonerDailyTokenCap = cap
   if (cost !== settings.costCeilingUsd) patch.costCeilingUsd = cost
   if (draft.autoReview !== settings.autoReview) patch.autoReview = draft.autoReview
   return patch
@@ -77,8 +89,14 @@ function toPatch(draft: Draft, settings: IntelligenceSettings): IntelligenceSett
 
 const REASONER_LABEL: Record<Reasoner, string> = { heuristic: 'Heuristic', claude: 'Claude' }
 
-/** Ranking defaults of the intelligence service: the seven weights, the reasoner, its model, the cost ceiling and auto review. */
-export function RankingForm({ settings }: { settings: IntelligenceSettings }) {
+interface RankingFormProps {
+  settings: IntelligenceSettings
+  /** Tokens the reasoner spent today, when known; shown under the cap field. */
+  tokensToday?: number
+}
+
+/** Ranking defaults of the intelligence service: the seven weights, the reasoner and its provider, the cost ceiling and auto review. */
+export function RankingForm({ settings, tokensToday }: RankingFormProps) {
   const id = useId()
   const [draft, setDraft] = useState<Draft>(() => toDraft(settings))
   const update = useUpdateSettings()
@@ -175,20 +193,14 @@ export function RankingForm({ settings }: { settings: IntelligenceSettings }) {
           </FieldDescription>
         </Field>
 
+        <ReasonerFields
+          id={id}
+          draft={draft}
+          onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+          tokensToday={tokensToday}
+        />
+
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field data-invalid={draft.model.trim() === '' || undefined}>
-            <FieldLabel htmlFor={`${id}-model`}>Model</FieldLabel>
-            <Input
-              id={`${id}-model`}
-              value={draft.model}
-              onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
-              spellCheck={false}
-              autoComplete="off"
-              aria-invalid={draft.model.trim() === '' || undefined}
-              className="font-mono"
-            />
-            <FieldDescription className="text-xs">Used by the Claude reasoner.</FieldDescription>
-          </Field>
           <Field data-invalid={parseCost(draft.costCeilingUsd) === null || undefined}>
             <FieldLabel htmlFor={`${id}-cost`}>Cost ceiling</FieldLabel>
             <Input

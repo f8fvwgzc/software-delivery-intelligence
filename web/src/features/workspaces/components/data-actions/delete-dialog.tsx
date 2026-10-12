@@ -19,6 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type { Workspace } from '@/features/auth/api/types'
 
 import { useDeleteWorkspace } from '../../api/mutations'
+import { count } from '@/lib/intl'
 
 interface DeleteDialogProps {
   workspace: Pick<Workspace, 'id' | 'slug' | 'name' | 'projectCount'>
@@ -79,8 +80,8 @@ export function DeleteDialog({ workspace, isOwner }: DeleteDialogProps) {
             </AlertDialogMedia>
             <AlertDialogTitle>Delete {workspace.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Every row this workspace owns in every service is deleted in one go: {workspace.projectCount}{' '}
-              {workspace.projectCount === 1 ? 'project' : 'projects'}, facts, proposals, decisions, executions, members,
+              Every row this workspace owns in every service is deleted in one go:{' '}
+              {count(workspace.projectCount, 'project', 'projects')}, facts, proposals, decisions, executions, members,
               settings and the audit trail. GitHub is not touched. You are signed out afterwards.
             </AlertDialogDescription>
           </AlertDialogHeader>

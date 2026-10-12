@@ -11,6 +11,8 @@ pub mod token;
 pub mod types;
 
 use std::{
+    collections::VecDeque,
+    io::{Seek, Write},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -31,6 +33,11 @@ use crate::auth::Caller;
 
 const USER_AGENT: &str = "sdi-knowledge";
 const MAX_ATTEMPTS: u32 = 3;
+/// Subtree requests spent completing a tree GitHub truncated (the recursive
+/// endpoint stops at 100 000 entries / 7 MB). Each request lists one
+/// directory, so this bounds both the quota and the time a scan of a huge
+/// monorepo may spend on its tree.
+pub const TREE_FALLBACK_MAX_REQUESTS: usize = 400;
 /// Longest secondary-rate-limit pause we honour inline; beyond it the caller gets the error.
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 /// JSON calls are small; the archive download gets its own, longer budget.
@@ -47,6 +54,8 @@ pub enum GithubError {
     Forbidden(String),
     #[error("not found on GitHub: {0}")]
     NotFound(String),
+    #[error("the repository is empty (no commits yet): {0}")]
+    EmptyRepository(String),
     #[error("GitHub rate limit reached, retry after {retry_after}s")]
     RateLimited { retry_after: u64 },
     #[error("GitHub answered {status}: {message}")]
@@ -254,6 +263,9 @@ impl GithubClient {
             match status {
                 StatusCode::UNAUTHORIZED => return Err(GithubError::Unauthorized),
                 StatusCode::NOT_FOUND => return Err(GithubError::NotFound(path.to_owned())),
+                // GitHub's answer for commits, trees and archives of a
+                // repository without a single commit.
+                StatusCode::CONFLICT => return Err(GithubError::EmptyRepository(path.to_owned())),
                 StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS => {
                     let retry_after = retry_after(&response);
                     let exhausted =
@@ -448,6 +460,88 @@ impl GithubClient {
         .await
     }
 
+    /// One level of a tree (no `recursive`): what the fallback walks when
+    /// the recursive listing was truncated.
+    pub async fn tree_shallow(&self, owner: &str, name: &str, sha: &str) -> Result<Tree> {
+        self.get_json(&format!("/repos/{owner}/{name}/git/trees/{sha}"), &[])
+            .await
+    }
+
+    /// The whole tree at `reference`. GitHub truncates the recursive
+    /// listing of very large repositories; when it does, the directories
+    /// the listing did reach are walked one level at a time until the tree
+    /// is complete or [`TREE_FALLBACK_MAX_REQUESTS`] were spent, in which
+    /// case `truncated` stays set and the scan works with what it has.
+    pub async fn full_tree(&self, owner: &str, name: &str, reference: &str) -> Result<Tree> {
+        let mut tree = self.tree(owner, name, reference).await?;
+        if !tree.truncated {
+            return Ok(tree);
+        }
+        tracing::info!(
+            entries = tree.tree.len(),
+            "GitHub truncated the recursive tree; completing it per directory"
+        );
+        let complete = self
+            .complete_tree(owner, name, &mut tree.tree, TREE_FALLBACK_MAX_REQUESTS)
+            .await?;
+        tree.truncated = !complete;
+        Ok(tree)
+    }
+
+    /// Lists every directory of `nodes` that has no entries yet, breadth
+    /// first, until `budget` requests were spent. Returns whether the tree
+    /// is complete. Paths with spaces or non-ASCII characters are kept as
+    /// GitHub gives them (the request goes by sha, never by path).
+    async fn complete_tree(
+        &self,
+        owner: &str,
+        name: &str,
+        nodes: &mut Vec<TreeNode>,
+        budget: usize,
+    ) -> Result<bool> {
+        use std::collections::HashSet;
+        let mut listed: HashSet<String> = HashSet::new();
+        for node in nodes.iter() {
+            if let Some((dir, _)) = node.path.rsplit_once('/') {
+                listed.insert(dir.to_owned());
+            }
+        }
+        let mut pending: VecDeque<TreeNode> = nodes
+            .iter()
+            .filter(|n| n.is_dir() && !listed.contains(&n.path) && !n.sha.is_empty())
+            .cloned()
+            .collect();
+        let mut requests = 0;
+        while let Some(dir) = pending.pop_front() {
+            if requests >= budget {
+                tracing::warn!(
+                    requests,
+                    left = pending.len() + 1,
+                    "tree fallback budget spent; the tree stays truncated"
+                );
+                return Ok(false);
+            }
+            requests += 1;
+            let level = match self.tree_shallow(owner, name, &dir.sha).await {
+                Ok(level) => level,
+                // A directory that vanished between calls is not worth failing a scan over.
+                Err(GithubError::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            listed.insert(dir.path.clone());
+            for mut child in level.tree {
+                child.path = format!("{}/{}", dir.path, child.path);
+                if child.is_dir() && !listed.contains(&child.path) {
+                    pending.push_back(child.clone());
+                }
+                nodes.push(child);
+            }
+        }
+        nodes.sort_by(|a, b| a.path.cmp(&b.path));
+        nodes.dedup_by(|a, b| a.path == b.path);
+        Ok(true)
+    }
+
     /// File contents at `reference`, base64-decoded. Binary bytes are replaced lossily.
     pub async fn file(
         &self,
@@ -533,17 +627,19 @@ impl GithubClient {
         })
     }
 
-    /// The repository archive at `reference` as gzipped tar bytes, or `None`
-    /// when it is larger than `max_bytes` (the caller falls back to per-file
-    /// downloads). GitHub redirects to codeload, which streams the archive
-    /// without a Content-Length, so the size is enforced while reading.
+    /// The repository archive at `reference`, streamed into an anonymous
+    /// temporary file (never held in memory), or `None` when it is larger
+    /// than `max_bytes` (the caller falls back to per-file downloads).
+    /// GitHub redirects to codeload, which streams the archive without a
+    /// Content-Length, so the size is enforced while reading. The file is
+    /// positioned at its start and unlinked already: it goes with the handle.
     pub async fn tarball(
         &self,
         owner: &str,
         name: &str,
         reference: &str,
         max_bytes: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<std::fs::File>> {
         let path = format!("/repos/{owner}/{name}/tarball/{reference}");
         let mut response = self.request(&path, &[], None, TARBALL_TIMEOUT).await?;
         if response
@@ -552,18 +648,25 @@ impl GithubClient {
         {
             return Ok(None);
         }
-        let mut body = Vec::with_capacity(
-            response
-                .content_length()
-                .map_or(4 << 20, |len| len as usize),
-        );
+        let mut file = tokio::task::spawn_blocking(tempfile::tempfile)
+            .await
+            .map_err(|e| GithubError::Decode(format!("temp file: {e}")))?
+            .map_err(|e| GithubError::Decode(format!("temp file: {e}")))?;
+        let mut written = 0usize;
         while let Some(chunk) = response.chunk().await? {
-            if body.len() + chunk.len() > max_bytes {
+            written += chunk.len();
+            if written > max_bytes {
                 return Ok(None);
             }
-            body.extend_from_slice(&chunk);
+            // Writes of a few hundred KB to a temp file are fast enough to
+            // stay on the runtime thread; the unpack later is what blocks.
+            file.write_all(&chunk)
+                .map_err(|e| GithubError::Decode(format!("temp file: {e}")))?;
         }
-        Ok(Some(body))
+        file.flush()
+            .and_then(|()| file.rewind())
+            .map_err(|e| GithubError::Decode(format!("temp file: {e}")))?;
+        Ok(Some(file))
     }
 
     pub async fn workflow_runs(

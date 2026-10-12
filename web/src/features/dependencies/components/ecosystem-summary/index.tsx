@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils'
 
 import type { EcosystemCount } from '../../api/queries'
 import { ALL_ECOSYSTEMS, ecosystemLabel } from '../../lib/labels'
+import { count, plural } from '@/lib/intl'
 
 interface EcosystemSummaryProps {
   counts: EcosystemCount[]
@@ -24,8 +25,7 @@ export function EcosystemSummary({ counts, total, selected, onSelect }: Ecosyste
       <p className="text-sm">
         <span className="text-lg font-semibold tabular-nums">{total.toLocaleString()}</span>{' '}
         <span className="text-muted-foreground">
-          {total === 1 ? 'dependency' : 'dependencies'} across {sorted.length}{' '}
-          {sorted.length === 1 ? 'ecosystem' : 'ecosystems'}
+          {plural(total, 'dependency', 'dependencies')} across {count(sorted.length, 'ecosystem', 'ecosystems')}
         </span>
       </p>
       <ul className="flex flex-col gap-1.5">

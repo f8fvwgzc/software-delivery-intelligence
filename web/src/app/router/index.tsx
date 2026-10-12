@@ -50,6 +50,7 @@ const SettingsPage = lazy(() => import('@/features/settings/pages/settings-page'
 const MembersPage = lazy(() => import('@/features/workspaces/pages/members-page'))
 const AuditPage = lazy(() => import('@/features/workspaces/pages/audit-page'))
 const DataPrivacyPage = lazy(() => import('@/features/workspaces/pages/data-privacy-page'))
+const TrustDocPage = lazy(() => import('@/features/auth/pages/trust-doc-page'))
 
 // Breadcrumbs that need data (a project name, an execution number) are
 // components, loaded lazily like everything else.
@@ -150,6 +151,12 @@ const shellRoutes: RouteObject[] = [
   { path: 'system', Component: SystemPage, handle: crumb('System') },
   { path: 'settings', Component: SettingsPage, handle: crumb('Settings') },
 
+  // Development only: the worst-case stress page. `import.meta.env.DEV` is a
+  // build-time constant, so the chunk is never emitted for production.
+  ...(import.meta.env.DEV
+    ? [{ path: 'dev/stress', Component: lazy(() => import('@/dev/stress/stress-page')), handle: crumb('Stress') }]
+    : []),
+
   { path: '*', Component: NotFoundPage, handle: crumb('Not found') },
 ]
 
@@ -163,6 +170,8 @@ export const router = createBrowserRouter([
         Component: RedirectIfSignedIn,
         children: [{ path: 'login', Component: LoginPage }],
       },
+      // The trust documents, readable before and after signing in.
+      { path: 'docs/:doc', Component: TrustDocPage },
       // The shell: needs a session and a workspace; opens the event stream.
       {
         Component: RequireSession,

@@ -19,9 +19,12 @@ import { COLUMN_CLASS } from './columns'
 
 interface ProjectRowProps {
   project: Project
+  /** Position in the list and the measurer, when the table is windowed. */
+  index?: number
+  measure?: (element: HTMLElement | null) => void
 }
 
-export function ProjectRow({ project }: ProjectRowProps) {
+export function ProjectRow({ project, index, measure }: ProjectRowProps) {
   const queryClient = useQueryClient()
 
   // The detail page opens instantly when its data is already in the cache.
@@ -30,7 +33,7 @@ export function ProjectRow({ project }: ProjectRowProps) {
   }
 
   return (
-    <TableRow className="group/row">
+    <TableRow className="group/row" data-index={index} ref={measure}>
       <TableCell className={COLUMN_CLASS.name}>
         <Link
           to={routes.project(project.id)}

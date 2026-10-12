@@ -23,8 +23,13 @@ pub struct Settings {
     /// The connected token (`GITHUB_TOKEN`); `None` disables the github
     /// adapter and withdraws the `github-token` identity.
     pub github_token: Option<String>,
-    /// GitHub API base (`GITHUB_API_URL`); only tests and GHES change it.
+    /// GitHub API base (`GITHUB_API_URL`); the dev fallback when identity
+    /// cannot mint a workspace token (organisation workspaces carry their
+    /// own host's base, GHES included).
     pub github_api_url: String,
+    /// Host address the docker adapter publishes container ports on
+    /// (`SDI_DOCKER_PUBLISH_HOST`, default loopback).
+    pub docker_publish_host: String,
 }
 
 impl Settings {
@@ -38,6 +43,10 @@ impl Settings {
             run_dir: PathBuf::from(config::env_or("SDI_RUN_DIR", ".run")),
             github_token: config::env_opt("GITHUB_TOKEN").map(|t| t.trim().to_owned()),
             github_api_url: config::env_or("GITHUB_API_URL", DEFAULT_API),
+            docker_publish_host: config::env_or(
+                "SDI_DOCKER_PUBLISH_HOST",
+                crate::adapters::docker::DEFAULT_PUBLISH_HOST,
+            ),
         })
     }
 }

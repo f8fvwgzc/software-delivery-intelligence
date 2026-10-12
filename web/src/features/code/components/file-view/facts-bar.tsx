@@ -6,6 +6,7 @@ import { routes } from '@/app/router/routes'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { understandingQueries } from '@/features/understanding/api/queries'
+import { count } from '@/lib/intl'
 
 interface FactsBarProps {
   projectId: string
@@ -45,7 +46,7 @@ export function FactsBar({ projectId, factIds }: FactsBarProps) {
             ))}
         {!isPending && unlisted > 0 ? (
           <li className="text-2xs tabular-nums text-muted-foreground">
-            {matched.length > 0 ? `+${unlisted} more` : `${unlisted} ${unlisted === 1 ? 'fact' : 'facts'}`}
+            {matched.length > 0 ? `+${unlisted} more` : `${count(unlisted, 'fact', 'facts')}`}
           </li>
         ) : null}
       </ul>

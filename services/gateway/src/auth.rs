@@ -354,7 +354,7 @@ pub async fn audit(State(state): State<AppState>, request: Request, next: Next) 
         ..Default::default()
     };
     let mut client = state.identity();
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("audit-entry", async move {
         if let Err(error) = client
             .record_audit(identity::RecordAuditRequest { entry: Some(entry) })
             .await

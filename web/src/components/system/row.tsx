@@ -8,6 +8,8 @@ export interface RowProps {
   to?: string
   /** Makes the row a button. */
   onClick?: () => void
+  /** Fires on hover and focus, before the click: prefetch the destination here. */
+  onIntent?: () => void
   /** Icon, avatar or status dot, 16px. */
   leading?: ReactNode
   title: ReactNode
@@ -33,7 +35,7 @@ const SIZE_CLASS = { sm: 'min-h-9 py-1.5', md: 'min-h-11 py-2' }
  * the right. Interactive when `to` or `onClick` is set; the hover is a
  * faint muted wash, the active row is tinted with the brand at 5%.
  */
-export function Row({ to, onClick, leading, title, meta, trailing, active = false, size = 'md', mono = false, className, ...rest }: RowProps) {
+export function Row({ to, onClick, onIntent, leading, title, meta, trailing, active = false, size = 'md', mono = false, className, ...rest }: RowProps) {
   const interactive = Boolean(to || onClick)
   const body = (
     <>
@@ -55,14 +57,31 @@ export function Row({ to, onClick, leading, title, meta, trailing, active = fals
 
   if (to) {
     return (
-      <Link data-slot="row" to={to} className={classes} aria-current={active ? 'true' : undefined} {...rest}>
+      <Link
+        data-slot="row"
+        to={to}
+        className={classes}
+        aria-current={active ? 'true' : undefined}
+        onMouseEnter={onIntent}
+        onFocus={onIntent}
+        {...rest}
+      >
         {body}
       </Link>
     )
   }
   if (onClick) {
     return (
-      <button data-slot="row" type="button" onClick={onClick} className={classes} aria-pressed={active || undefined} {...rest}>
+      <button
+        data-slot="row"
+        type="button"
+        onClick={onClick}
+        onMouseEnter={onIntent}
+        onFocus={onIntent}
+        className={classes}
+        aria-pressed={active || undefined}
+        {...rest}
+      >
         {body}
       </button>
     )

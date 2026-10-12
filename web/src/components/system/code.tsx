@@ -14,8 +14,10 @@ export function Code({ wrap = false, size = 'md', className, children, ...props 
   return (
     <pre
       data-slot="code"
+      // A block that scrolls sideways must be reachable from the keyboard.
+      tabIndex={wrap ? undefined : 0}
       className={cn(
-        'min-w-0 rounded-md bg-muted/60 font-mono text-xs leading-5 text-foreground/90 ring-1 ring-border ring-inset',
+        'min-w-0 rounded-md bg-muted/60 font-mono text-xs leading-5 text-foreground/90 ring-1 ring-border ring-inset outline-none focus-visible:ring-ring/50',
         size === 'md' ? 'px-3 py-2' : 'px-2 py-1',
         wrap ? 'break-words whitespace-pre-wrap' : 'overflow-x-auto',
         className,

@@ -15,6 +15,10 @@ pub(super) async fn get(
     let row = crate::db::stats(&svc.pool, caller.workspace)
         .await
         .map_err(db_status)?;
+    let usage = crate::db::usage::today_for(&svc.pool, caller.workspace)
+        .await
+        .map_err(db_status)?;
+    let settings = svc.settings(caller).await?;
     Ok(IntelligenceStats {
         proposals: count(row.proposals),
         proposals_open: count(row.proposals_open),
@@ -22,5 +26,8 @@ pub(super) async fn get(
         decisions_active: count(row.decisions_active),
         documents: count(row.documents),
         messages: count(row.messages),
+        reasoner_tokens_today: usage.total(),
+        reasoner_daily_token_cap: settings.daily_token_cap(),
+        reasoner_calls_today: count(i64::from(usage.calls)),
     })
 }

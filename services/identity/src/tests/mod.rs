@@ -183,6 +183,13 @@ fn fake_github() -> Router {
 
 impl Harness {
     async fn new() -> Option<Self> {
+        Self::new_at("", "").await
+    }
+
+    /// The fake GitHub mounted under `prefix` (`/api/v3` for an enterprise
+    /// server) and the deployment signing in to `host` (empty: the fake's
+    /// own address, like github.com's `api.` host maps to github.com).
+    async fn new_at(prefix: &'static str, host: &str) -> Option<Self> {
         let Some(url) = std::env::var("DATABASE_URL")
             .ok()
             .filter(|u| !u.trim().is_empty())
@@ -207,9 +214,19 @@ impl Harness {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let app = if prefix.is_empty() {
+            fake_github()
+        } else {
+            Router::new().nest(prefix, fake_github())
+        };
         tokio::spawn(async move {
-            axum::serve(listener, fake_github()).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
         });
+        let github_host = if host.is_empty() {
+            format!("{addr}")
+        } else {
+            host.to_owned()
+        };
 
         let settings = Settings {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -223,8 +240,8 @@ impl Harness {
             }),
             dev_login: true,
             github_token: Some(DEV_TOKEN.into()),
-            github_api_url: format!("http://{addr}"),
-            github_host: format!("{addr}"),
+            github_api_url: format!("http://{addr}{prefix}"),
+            github_host,
         };
         Some(Self {
             state: Arc::new(IdentityState::new(pool, settings)),
@@ -833,4 +850,122 @@ async fn audit_and_data_controls_round_trip() {
 #[test]
 fn role_text_matches_the_common_crate() {
     assert_eq!(roles::to_db(Role::Approver), "APPROVER");
+}
+
+/// GitHub Enterprise Server end to end: the deployment signs in to
+/// `ghe.corp.example`, whose API lives under `/api/v3`. The installation
+/// is recorded with that base, its token is minted there, and what
+/// knowledge and execution receive (`InstallationToken.api_base_url`) is
+/// that base, so every repository call of theirs lands on the enterprise
+/// host. OAuth itself goes to the web host, never under `/api/v3`.
+#[tokio::test]
+async fn enterprise_installations_mint_tokens_under_their_own_api_base() {
+    let Some(h) = Harness::new_at("/api/v3", "ghe.corp.example").await else {
+        return;
+    };
+    let base = h.state.settings.github_api_url.clone();
+    assert!(base.ends_with("/api/v3"), "{base}");
+    // The harness serves the fake enterprise API over plain http, so the
+    // derived web URL keeps that scheme; a real GHES base is https.
+    assert!(
+        h.state
+            .settings
+            .github_web_url()
+            .ends_with("://ghe.corp.example"),
+        "OAuth endpoints are on the web host"
+    );
+    assert_eq!(
+        crate::config::github_web_url_of("https://ghe.corp.example/api/v3", "ghe.corp.example"),
+        "https://ghe.corp.example"
+    );
+    let (_, user_id) = h.login().await;
+
+    let ws = workspaces::record_installation(
+        &h.state,
+        RecordInstallationRequest {
+            installation_id: 4242,
+            installed_by_user_id: user_id,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(ws.github_host, "ghe.corp.example");
+    assert_eq!(ws.slug, "acme", "looked up through {base}");
+
+    let token = workspaces::installation_token(
+        &h.state,
+        GetInstallationTokenRequest {
+            workspace_id: ws.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(token.token, "ghs_install_4242");
+    assert_eq!(token.api_base_url, base);
+    assert_eq!(h.state.cached_tokens(), 1);
+
+    // A second organisation on github.com proper keeps the public base,
+    // and any other host gets `/api/v3` derived.
+    assert_eq!(
+        workspaces::api_base_of(&h.state.settings, "github.com"),
+        "https://api.github.com"
+    );
+    assert_eq!(
+        workspaces::api_base_of(&h.state.settings, "other.ghe.example"),
+        "https://other.ghe.example/api/v3"
+    );
+    assert_eq!(
+        workspaces::api_base_of(&h.state.settings, "ghe.corp.example"),
+        base
+    );
+
+    h.drop_schema().await;
+}
+
+/// The token cache is bounded: minting for more installations than it
+/// holds evicts the oldest instead of growing.
+#[tokio::test]
+async fn installation_token_cache_is_bounded() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let (_, user_id) = h.login().await;
+    for id in 1..=3 {
+        let ws = workspaces::record_installation(
+            &h.state,
+            RecordInstallationRequest {
+                installation_id: id,
+                installed_by_user_id: user_id.clone(),
+                account_login: format!("org{id}"),
+                account_type: "Organization".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        workspaces::installation_token(
+            &h.state,
+            GetInstallationTokenRequest {
+                workspace_id: ws.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(h.state.cached_tokens(), 3);
+    {
+        let mut tokens = h.state.tokens.lock().unwrap();
+        for id in 100..(100 + crate::grpc::TOKEN_CACHE_CAPACITY as i64) {
+            tokens.insert(
+                id,
+                crate::grpc::CachedToken {
+                    token: "x".into(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                },
+            );
+        }
+    }
+    assert_eq!(h.state.cached_tokens(), crate::grpc::TOKEN_CACHE_CAPACITY);
+    h.drop_schema().await;
 }

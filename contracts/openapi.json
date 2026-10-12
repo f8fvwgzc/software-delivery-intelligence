@@ -1749,6 +1749,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "The workspace holds too many open streams on this replica",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -9677,7 +9687,7 @@
         "tags": [
           "webhooks"
         ],
-        "summary": "Receives GitHub App events. Verified with `GITHUB_WEBHOOK_SECRET`; the\ngateway answers 412 when none is configured.",
+        "summary": "Receives GitHub App events. Verified with `GITHUB_WEBHOOK_SECRET`; the\ngateway answers 412 when none is configured. A delivery that needs work\nis queued and answered `202 {outcome: \"queued\"}`; one that needs none is\nanswered `202 {outcome: \"ignored\"}`. `503` means the queue is full and\nGitHub should redeliver.",
         "operationId": "github",
         "requestBody": {
           "description": "GitHub webhook payload",
@@ -9689,7 +9699,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -13835,7 +13845,11 @@
           "model",
           "apiKeyConfigured",
           "costCeilingUsd",
-          "autoReview"
+          "autoReview",
+          "reasonerProvider",
+          "reasonerBaseUrl",
+          "reasonerModel",
+          "reasonerDailyTokenCap"
         ],
         "properties": {
           "apiKeyConfigured": {
@@ -13869,6 +13883,24 @@
           "reasoner": {
             "type": "string",
             "description": "`heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise."
+          },
+          "reasonerBaseUrl": {
+            "type": "string",
+            "description": "Base URL of an OpenAI-compatible endpoint (e.g. `http://ollama:11434/v1`). Empty reads `LLM_BASE_URL`, else the provider's public endpoint."
+          },
+          "reasonerDailyTokenCap": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens (input + output) the workspace may spend per UTC day before the reasoner falls back to the heuristic. Default 200000.",
+            "minimum": 0
+          },
+          "reasonerModel": {
+            "type": "string",
+            "description": "Model name next to provider and base URL (same value as `model`)."
+          },
+          "reasonerProvider": {
+            "type": "string",
+            "description": "Which API the reasoner speaks (CONTRACT.md §19): `anthropic` (Messages API) or `openai_compatible` (chat completions: OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter). Empty reads `LLM_PROVIDER`, else `anthropic`."
           }
         }
       },
@@ -13915,6 +13947,36 @@
               "null"
             ],
             "description": "`heuristic` or `claude`."
+          },
+          "reasonerBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Base URL of an OpenAI-compatible endpoint."
+          },
+          "reasonerDailyTokenCap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Daily token budget of the reasoner.",
+            "minimum": 0
+          },
+          "reasonerModel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model name for the reasoner."
+          },
+          "reasonerProvider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`anthropic` or `openai_compatible`."
           }
         }
       },
@@ -13927,7 +13989,10 @@
           "proposalsAccepted",
           "decisionsActive",
           "documents",
-          "messages"
+          "messages",
+          "reasonerTokensToday",
+          "reasonerDailyTokenCap",
+          "reasonerCallsToday"
         ],
         "properties": {
           "decisionsActive": {
@@ -13964,6 +14029,24 @@
             "type": "integer",
             "format": "int32",
             "description": "Proposals still open.",
+            "minimum": 0
+          },
+          "reasonerCallsToday": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reasoner calls made today, UTC.",
+            "minimum": 0
+          },
+          "reasonerDailyTokenCap": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workspace's daily token budget.",
+            "minimum": 0
+          },
+          "reasonerTokensToday": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Reasoner tokens (input + output) spent today, UTC (CONTRACT.md §19).",
             "minimum": 0
           }
         }

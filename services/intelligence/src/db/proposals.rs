@@ -132,6 +132,29 @@ pub async fn update_ranking(pool: &PgPool, row: &ProposalRow) -> sqlx::Result<()
     Ok(())
 }
 
+/// Writes the options filled in by the background artifact step, only
+/// while the proposal is still at the revision the step was started for:
+/// a negotiation in between re-ranked and regenerated them itself.
+pub async fn update_options(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    id: Uuid,
+    revision: i32,
+    options: &[RankedOption],
+) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE proposals SET options = $4, updated_at = now() \
+         WHERE workspace_id = $1 AND id = $2 AND revision = $3",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(revision)
+    .bind(Json(options))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 pub async fn accept(
     pool: &PgPool,
     workspace_id: Uuid,

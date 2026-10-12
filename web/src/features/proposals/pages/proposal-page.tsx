@@ -14,6 +14,7 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { proposalQuery } from '../api/queries'
 import { AcceptDialog } from '../components/accept-dialog'
 import { ArtifactsPanel, ArtifactsSkeleton, DownloadAllButton } from '../components/artifacts'
+import { GenerationProgress } from '../components/generation-progress'
 import { NegotiationPanel } from '../components/negotiation'
 import { OptionsTable } from '../components/options-table'
 import { ProposalStatusBanner } from '../components/proposal-status-banner'
@@ -22,11 +23,15 @@ import { RejectDialog } from '../components/reject-dialog'
 import { budgetOf } from '../lib/budget'
 import { formatMonthlyCost } from '../lib/format'
 import { isProposalClosed, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS } from '../lib/labels'
+import { useGenerationProgress } from '../lib/use-generation-progress'
+import { count } from '@/lib/intl'
 
 /** /proposals/:proposalId — the core screen: options on the left, negotiation on the right. */
 export default function ProposalPage() {
   const { proposalId = '' } = useParams()
   const { data: proposal } = useSuspenseQuery(proposalQuery(proposalId))
+  // The options arrive with the POST; the files follow over the platform stream.
+  const generationStep = useGenerationProgress(proposalId)
 
   // The option in focus. Null means "follow the recommendation", so a
   // re-rank from negotiation moves the focus without an effect.
@@ -86,6 +91,7 @@ export default function ProposalPage() {
       />
 
       <ProposalStatusBanner proposal={proposal} />
+      {generationStep ? <GenerationProgress step={generationStep} /> : null}
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
         <div className="flex min-w-0 flex-col gap-4">
@@ -132,7 +138,7 @@ export default function ProposalPage() {
               description={
                 focus.artifactCount === 0
                   ? 'This option adds no files to the repository.'
-                  : `${focus.artifactCount} generated ${focus.artifactCount === 1 ? 'file' : 'files'}, complete and ready to commit through a pull request.`
+                  : `${count(focus.artifactCount, 'generated file', 'generated files')}, complete and ready to commit through a pull request.`
               }
               actions={
                 focus.artifactCount > 0 ? (

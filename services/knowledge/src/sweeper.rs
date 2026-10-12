@@ -11,7 +11,7 @@ pub const INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Spawns the sweeper. It ends with the process (shutdown cancels it).
 pub fn spawn(pool: PgPool) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("code-cache-sweeper", async move {
         let mut ticker = tokio::time::interval(INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {

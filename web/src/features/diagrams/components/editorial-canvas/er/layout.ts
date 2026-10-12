@@ -10,6 +10,7 @@ import { NEUTRAL_TINT, groupTints, paletteTint, type Tint } from '../palette'
 import { fitText, textWidth, type Font } from '../text'
 import type { Box, Point } from '../types'
 import { parseColumns, type Column } from './columns'
+import { count } from '@/lib/intl'
 
 export const TABLE_NAME_FONT: Font = { size: 12, weight: 500, mono: true }
 export const COLUMN_FONT: Font = { size: 11, mono: true }
@@ -77,7 +78,7 @@ function sizeTable(node: DiagramNode): SizedTable {
   const name = node.label.trim() || node.id
   let note = ''
   if (parsed.columns.length === 0) {
-    note = parsed.count !== null ? `${parsed.count} ${parsed.count === 1 ? 'column' : 'columns'}` : 'No columns listed'
+    note = parsed.count !== null ? `${count(parsed.count, 'column', 'columns')}` : 'No columns listed'
   } else if (parsed.more > 0) {
     note = `+${parsed.more} more`
   }

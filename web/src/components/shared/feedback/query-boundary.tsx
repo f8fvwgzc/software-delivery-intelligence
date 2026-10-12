@@ -1,6 +1,8 @@
 import { QueryErrorResetBoundary } from '@tanstack/react-query'
-import { Suspense, type ReactNode } from 'react'
+import { Suspense, useEffect, type ReactNode } from 'react'
 import { ErrorBoundary, type FallbackProps } from 'react-error-boundary'
+
+import { isNetworkError } from '@/lib/api/errors'
 
 import { ErrorState } from './error-state'
 import { PageSkeleton } from './page-skeleton'
@@ -13,11 +15,26 @@ interface QueryBoundaryProps {
   compact?: boolean
 }
 
+/**
+ * A failed fetch is retried by itself the moment the browser reports the
+ * connection is back; every other error waits for the retry button.
+ */
+function useRetryWhenOnline(error: unknown, retry: () => void) {
+  const network = isNetworkError(error)
+  useEffect(() => {
+    if (!network) return
+    window.addEventListener('online', retry)
+    return () => window.removeEventListener('online', retry)
+  }, [network, retry])
+}
+
 function Fallback({ error, resetErrorBoundary }: FallbackProps) {
+  useRetryWhenOnline(error, resetErrorBoundary)
   return <ErrorState error={error} onRetry={resetErrorBoundary} />
 }
 
 function CompactFallback({ error, resetErrorBoundary }: FallbackProps) {
+  useRetryWhenOnline(error, resetErrorBoundary)
   return <ErrorState error={error} onRetry={resetErrorBoundary} compact />
 }
 

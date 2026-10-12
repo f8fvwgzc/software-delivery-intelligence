@@ -6,6 +6,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '
 
 import type { EcosystemCount } from '../../api/queries'
 import { ALL_ECOSYSTEMS, ecosystemLabel } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 interface DependencyToolbarProps {
   counts: EcosystemCount[]
@@ -36,7 +37,7 @@ export function DependencyToolbar({
     ...counts.map((row) => ({
       value: row.ecosystem,
       label: ecosystemLabel(row.ecosystem),
-      description: `${row.count.toLocaleString()} ${row.count === 1 ? 'package' : 'packages'}`,
+      description: `${count(row.count, 'package', 'packages')}`,
     })),
   ]
 

@@ -12,9 +12,6 @@
 /// which is exactly date order.
 pub type Day = (i32, u32, u32);
 
-/// Used by [`crate::analyze`] when the caller has no date to pass in.
-pub const DEFAULT_TODAY: Day = (2026, 10, 9);
-
 /// Runtime keys as they appear in `runtime:<name>:<version>` fact keys.
 pub const NODE: &str = "node";
 pub const PYTHON: &str = "python";

@@ -16,7 +16,14 @@
 pub mod delivery;
 pub mod tarball;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, stream};
@@ -52,6 +59,52 @@ const STAGES: [(&str, &str); 7] = [
     ("delivery", "Delivery sync"),
 ];
 
+/// Time budgets of a scan, from the environment: `SCAN_STAGE_TIMEOUT_SECS`
+/// (default 600) bounds every stage on its own, so a GitHub call or a
+/// transaction that hangs fails the scan with a clear message instead of
+/// leaving it `running` for good; `SCAN_TIMEOUT_SECS` (default 1800) bounds
+/// the whole pipeline. Progress events keep flowing every
+/// [`HEARTBEAT`] while a long stage works, so a watcher never mistakes a
+/// slow scan for a dead one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanLimits {
+    pub stage_timeout: Duration,
+    pub scan_timeout: Duration,
+}
+
+impl Default for ScanLimits {
+    fn default() -> Self {
+        Self {
+            stage_timeout: Duration::from_secs(600),
+            scan_timeout: Duration::from_secs(1800),
+        }
+    }
+}
+
+impl ScanLimits {
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        Self {
+            stage_timeout: Duration::from_secs(
+                sdi_common::config::env_parse(
+                    "SCAN_STAGE_TIMEOUT_SECS",
+                    defaults.stage_timeout.as_secs(),
+                )
+                .unwrap_or(defaults.stage_timeout.as_secs())
+                .max(1),
+            ),
+            scan_timeout: Duration::from_secs(
+                sdi_common::config::env_parse("SCAN_TIMEOUT_SECS", defaults.scan_timeout.as_secs())
+                    .unwrap_or(defaults.scan_timeout.as_secs())
+                    .max(1),
+            ),
+        }
+    }
+}
+
+/// How often a running scan repeats its progress while a stage works.
+pub const HEARTBEAT: Duration = Duration::from_secs(15);
+
 pub fn initial_stages() -> Vec<Stage> {
     STAGES
         .iter()
@@ -71,6 +124,7 @@ pub struct ScanInputs {
     pub github: GithubClient,
     pub settings: SettingsRow,
     pub controls: Controls,
+    pub limits: ScanLimits,
 }
 
 /// Creates the scan row and spawns the worker. The caller has already
@@ -98,8 +152,18 @@ pub async fn start(
     let scan_id = scan.id;
     let span =
         tracing::info_span!("scan", %scan_id, workspace = %ws, project = %project.repo_full_name);
-    tokio::spawn(run(pool, events, inputs, project, scan_id).instrument(span));
+    sdi_common::tasks::spawn(
+        "scan",
+        run(pool, events, inputs, project, scan_id).instrument(span),
+    );
     Ok(scan)
+}
+
+/// The counters a heartbeat repeats between stage changes.
+#[derive(Default)]
+struct Progress {
+    stages: Vec<Stage>,
+    files_total: usize,
 }
 
 async fn run(
@@ -119,9 +183,23 @@ async fn run(
         stages: initial_stages(),
         current: None,
         files_total: 0,
-        files_analyzed: 0,
+        files_analyzed: Arc::new(AtomicUsize::new(0)),
+        progress: Arc::new(Mutex::new(Progress::default())),
     };
-    match pipeline(&pool, &inputs, &project, scan_id, &mut tracker).await {
+    let heartbeat = sdi_common::tasks::spawn("scan-heartbeat", heartbeat(tracker.pulse()));
+    let outcome = tokio::time::timeout(
+        inputs.limits.scan_timeout,
+        pipeline(&pool, &inputs, &project, scan_id, &mut tracker),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(anyhow!(
+            "scan did not finish within {}s (SCAN_TIMEOUT_SECS)",
+            inputs.limits.scan_timeout.as_secs()
+        ))
+    });
+    heartbeat.abort();
+    match outcome {
         Ok(()) => {
             if let Err(error) = db::scans::set_succeeded(&pool, ws, scan_id, &tracker.stages).await
             {
@@ -158,10 +236,91 @@ struct Tracker {
     stages: Vec<Stage>,
     current: Option<usize>,
     files_total: usize,
+    /// Shared with the file downloads so the heartbeat sees them land.
+    files_analyzed: Arc<AtomicUsize>,
+    /// What the heartbeat repeats; refreshed on every flush.
+    progress: Arc<Mutex<Progress>>,
+}
+
+/// What the heartbeat needs: enough to emit the same event the tracker
+/// would, without borrowing the tracker.
+struct Pulse {
+    events: EventBus,
+    workspace_id: Uuid,
+    scan_id: Uuid,
+    project_id: Uuid,
+    files_analyzed: Arc<AtomicUsize>,
+    progress: Arc<Mutex<Progress>>,
+}
+
+/// Repeats the running scan's progress every [`HEARTBEAT`] until aborted.
+async fn heartbeat(pulse: Pulse) {
+    loop {
+        tokio::time::sleep(HEARTBEAT).await;
+        let (stages, files_total) = {
+            let progress = pulse.progress.lock().unwrap_or_else(|p| p.into_inner());
+            (progress.stages.clone(), progress.files_total)
+        };
+        if stages.is_empty() {
+            continue;
+        }
+        emit_progress(
+            &pulse.events,
+            pulse.workspace_id,
+            pulse.scan_id,
+            pulse.project_id,
+            &stages,
+            pulse.files_analyzed.load(Ordering::Relaxed),
+            files_total,
+            "progress",
+            "running",
+        );
+    }
+}
+
+/// `data` carries the stage in flight (or the one just finished, between
+/// stages) and the file counters so a list view can render progress
+/// without fetching the scan.
+#[allow(clippy::too_many_arguments)]
+fn emit_progress(
+    events: &EventBus,
+    workspace_id: Uuid,
+    scan_id: Uuid,
+    project_id: Uuid,
+    stages: &[Stage],
     files_analyzed: usize,
+    files_total: usize,
+    action: &str,
+    status: &str,
+) {
+    let running = stage_status_to_db(StageStatus::Running);
+    let pending = stage_status_to_db(StageStatus::Pending);
+    let stage = stages
+        .iter()
+        .find(|s| s.status == running)
+        .or_else(|| stages.iter().rev().find(|s| s.status != pending))
+        .map(|s| s.key.clone())
+        .unwrap_or_default();
+    let data = HashMap::from([
+        ("stage".to_owned(), stage),
+        ("files".to_owned(), files_analyzed.to_string()),
+        ("files_total".to_owned(), files_total.to_string()),
+    ]);
+    events.scan(workspace_id, scan_id, project_id, action, status, data);
 }
 
 impl Tracker {
+    fn pulse(&self) -> Pulse {
+        Pulse {
+            events: self.events.clone(),
+            workspace_id: self.workspace_id,
+            scan_id: self.scan_id,
+            project_id: self.project_id,
+            files_analyzed: Arc::clone(&self.files_analyzed),
+            progress: Arc::clone(&self.progress),
+        }
+    }
+
     async fn start(&mut self, key: &str) -> Result<()> {
         let index = self
             .stages
@@ -197,36 +356,44 @@ impl Tracker {
         db::scans::set_stages(&self.pool, self.workspace_id, self.scan_id, &self.stages)
             .await
             .context("could not record scan progress")?;
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(|p| p.into_inner());
+            progress.stages = self.stages.clone();
+            progress.files_total = self.files_total;
+        }
         self.emit("progress", "running");
         Ok(())
     }
 
-    /// `data` carries the stage in flight (or the one just finished, between
-    /// stages) and the file counters so a list view can render progress
-    /// without fetching the scan.
     fn emit(&self, action: &str, status: &str) {
-        let running = stage_status_to_db(StageStatus::Running);
-        let pending = stage_status_to_db(StageStatus::Pending);
-        let stage = self
-            .stages
-            .iter()
-            .find(|s| s.status == running)
-            .or_else(|| self.stages.iter().rev().find(|s| s.status != pending))
-            .map(|s| s.key.clone())
-            .unwrap_or_default();
-        let data = HashMap::from([
-            ("stage".to_owned(), stage),
-            ("files".to_owned(), self.files_analyzed.to_string()),
-            ("files_total".to_owned(), self.files_total.to_string()),
-        ]);
-        self.events.scan(
+        emit_progress(
+            &self.events,
             self.workspace_id,
             self.scan_id,
             self.project_id,
+            &self.stages,
+            self.files_analyzed.load(Ordering::Relaxed),
+            self.files_total,
             action,
             status,
-            data,
         );
+    }
+}
+
+/// Runs one stage under the stage budget: a stage that overruns fails the
+/// scan with the stage named, instead of the scan sitting `running` until
+/// the next restart marks it interrupted.
+async fn bounded<T>(
+    limit: Duration,
+    stage: &str,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    match tokio::time::timeout(limit, work).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "stage `{stage}` did not finish within {}s (SCAN_STAGE_TIMEOUT_SECS)",
+            limit.as_secs()
+        )),
     }
 }
 
@@ -241,7 +408,9 @@ async fn pipeline(
         github,
         settings,
         controls,
+        limits,
     } = inputs;
+    let budget = limits.stage_timeout;
     let ws = project.workspace_id;
     let (owner, name) = split_full_name(&project.repo_full_name)
         .ok_or_else(|| anyhow!("invalid repository name {}", project.repo_full_name))?;
@@ -249,15 +418,27 @@ async fn pipeline(
 
     // metadata
     tracker.start("metadata").await?;
-    let repo = github
-        .repo(owner, name)
-        .await
-        .context("repository metadata")?;
-    let languages = github.languages(owner, name).await.unwrap_or_default();
-    let commit_sha = github
-        .branch_sha(owner, name, &repo.default_branch)
-        .await
-        .with_context(|| format!("head of {}", repo.default_branch))?;
+    let (repo, languages, commit_sha) = bounded(budget, "metadata", async {
+        let repo = github
+            .repo(owner, name)
+            .await
+            .context("repository metadata")?;
+        // A repository without a default branch has no commits to scan
+        // (GitHub also answers 409 further down; this says it in words).
+        if repo.default_branch.trim().is_empty() {
+            return Err(anyhow!(
+                "repository {} has no default branch (is it empty?)",
+                repo.full_name
+            ));
+        }
+        let languages = github.languages(owner, name).await.unwrap_or_default();
+        let commit_sha = github
+            .branch_sha(owner, name, &repo.default_branch)
+            .await
+            .with_context(|| format!("head of {}", repo.default_branch))?;
+        Ok((repo, languages, commit_sha))
+    })
+    .await?;
     db::projects::set_metadata(
         pool,
         ws,
@@ -279,23 +460,18 @@ async fn pipeline(
 
     // tree
     tracker.start("tree").await?;
-    let tree = github
-        .tree(owner, name, &commit_sha)
-        .await
-        .context("repository tree")?;
-    let entries: Vec<TreeEntry> = tree
-        .tree
-        .iter()
-        .map(|node| TreeEntry {
-            path: node.path.clone(),
-            size: node.size.unwrap_or(0),
-            is_dir: node.kind == "tree",
-        })
-        .collect();
+    let tree = bounded(budget, "tree", async {
+        github
+            .full_tree(owner, name, &commit_sha)
+            .await
+            .context("repository tree")
+    })
+    .await?;
+    let entries = tree_entries(&tree.tree);
     let files_total = entries.iter().filter(|e| !e.is_dir).count();
     tracker.files_total = files_total;
     let truncated = if tree.truncated {
-        " (truncated by GitHub)"
+        " (truncated by GitHub; scanning what was listed)"
     } else {
         ""
     };
@@ -305,9 +481,21 @@ async fn pipeline(
 
     // files
     tracker.start("files").await?;
-    let (files, wanted, how) =
-        fetch_files(github, owner, name, &commit_sha, &entries, settings).await;
-    tracker.files_analyzed = files.len();
+    let fetched = Arc::clone(&tracker.files_analyzed);
+    let (files, wanted, how) = bounded(budget, "files", async {
+        Ok(fetch_files(
+            github,
+            owner,
+            name,
+            &commit_sha,
+            &entries,
+            settings,
+            &fetched,
+        )
+        .await)
+    })
+    .await?;
+    tracker.files_analyzed.store(files.len(), Ordering::Relaxed);
     db::scans::set_files(pool, ws, scan_id, files_total as i32, files.len() as i32).await?;
     tracker
         .done(format!("{} of {wanted} wanted files ({how})", files.len()))
@@ -327,9 +515,12 @@ async fn pipeline(
         tree: entries,
         files,
     };
-    let analysis = tokio::task::spawn_blocking(move || analyze(&snapshot))
-        .await
-        .context("analyzer panicked")?;
+    let analysis = bounded(budget, "analyze", async {
+        tokio::task::spawn_blocking(move || analyze(&snapshot))
+            .await
+            .context("analyzer panicked")
+    })
+    .await?;
     tracker
         .done(format!(
             "{} facts, {} nodes, {} edges, {} questions, maturity {} ({})",
@@ -358,8 +549,12 @@ async fn pipeline(
             0
         }
     };
-    let (facts, nodes, edges) =
-        store_knowledge(pool, ws, project.id, &analysis, &commit_sha, dependabot_prs).await?;
+    let (facts, nodes, edges) = bounded(
+        budget,
+        "graph",
+        store_knowledge(pool, ws, project.id, &analysis, &commit_sha, dependabot_prs),
+    )
+    .await?;
     db::scans::set_counts(pool, ws, scan_id, facts as i32, nodes as i32, edges as i32).await?;
     tracker
         .done(format!("{facts} facts, {nodes} nodes, {edges} edges"))
@@ -367,8 +562,18 @@ async fn pipeline(
 
     // embeddings
     tracker.start("embeddings").await?;
-    let chunks = store_embeddings(pool, ws, project.id, &analysis, controls).await?;
-    let learned = store_learned_patterns(pool, &tracker.events, ws, project.id, &analysis).await?;
+    let chunks = bounded(
+        budget,
+        "embeddings",
+        store_embeddings(pool, ws, project.id, &analysis, controls),
+    )
+    .await?;
+    let learned = bounded(
+        budget,
+        "embeddings",
+        store_learned_patterns(pool, &tracker.events, ws, project.id, &analysis),
+    )
+    .await?;
     tracker
         .done(format!("{chunks} chunks, {learned} learned patterns"))
         .await?;
@@ -376,8 +581,12 @@ async fn pipeline(
     // delivery
     tracker.start("delivery").await?;
     let runs_limit = settings.pipeline_runs_limit.max(1) as u32;
-    let runs = delivery::sync_runs(pool, github, project, runs_limit).await;
-    let deployments = delivery::sync_deployments(pool, github, project, runs_limit).await;
+    let (runs, deployments) = bounded(budget, "delivery", async {
+        let runs = delivery::sync_runs(pool, github, project, runs_limit).await;
+        let deployments = delivery::sync_deployments(pool, github, project, runs_limit).await;
+        Ok((runs, deployments))
+    })
+    .await?;
     let detail = match (runs, deployments) {
         (Ok(runs), Ok(deployments)) => format!("{runs} runs, {deployments} deployments"),
         (runs, deployments) => {
@@ -423,6 +632,23 @@ async fn prune_code_caches(pool: &PgPool, workspace_id: Uuid, project_id: Uuid, 
         Ok(rows) => tracing::info!(rows, "pruned code browser caches of older commits"),
         Err(error) => tracing::warn!(%error, "could not prune code browser caches"),
     }
+}
+
+/// The analyzer's view of the tree: files and directories only. Symlinks
+/// (their blob is the link target) and submodules (another repository)
+/// are dropped here, so neither is ever downloaded, counted or offered to
+/// the code browser. Paths stay exactly as GitHub lists them, spaces and
+/// non-ASCII included.
+pub fn tree_entries(nodes: &[crate::github::TreeNode]) -> Vec<TreeEntry> {
+    nodes
+        .iter()
+        .filter(|node| node.is_file() || node.is_dir())
+        .map(|node| TreeEntry {
+            path: node.path.clone(),
+            size: node.size.unwrap_or(0),
+            is_dir: node.is_dir(),
+        })
+        .collect()
 }
 
 /// Runs the analyzer as of today, so runtime end-of-life findings are
@@ -474,6 +700,7 @@ async fn fetch_files(
     reference: &str,
     entries: &[TreeEntry],
     settings: &SettingsRow,
+    fetched: &Arc<AtomicUsize>,
 ) -> (BTreeMap<String, String>, usize, &'static str) {
     let wanted = select_files(entries, settings, &[]);
     if wanted.is_empty() {
@@ -483,16 +710,17 @@ async fn fetch_files(
         .tarball(owner, name, reference, tarball::MAX_TARBALL_BYTES)
         .await
     {
-        Ok(Some(bytes)) => {
+        Ok(Some(archive)) => {
             let wanted_set: HashSet<String> = wanted.iter().cloned().collect();
             let max_file_bytes = settings.scan_max_file_bytes.max(1) as usize;
-            let size = bytes.len();
+            let size = archive.metadata().map(|m| m.len()).unwrap_or(0);
             let unpacked = tokio::task::spawn_blocking(move || {
-                tarball::unpack(&bytes, &wanted_set, max_file_bytes)
+                tarball::unpack(archive, &wanted_set, max_file_bytes)
             })
             .await;
             match unpacked {
                 Ok(Ok(mut files)) => {
+                    fetched.store(files.len(), Ordering::Relaxed);
                     tracing::info!(bytes = size, files = files.len(), "unpacked tarball");
                     let exclude = config_exclude(&files);
                     let mut wanted_len = wanted.len();
@@ -511,7 +739,8 @@ async fn fetch_files(
         Ok(None) => tracing::info!("tarball over the size limit, downloading files"),
         Err(error) => tracing::warn!(%error, "tarball download failed, downloading files"),
     }
-    let (files, wanted_len) = download(github, owner, name, reference, entries, settings).await;
+    let (files, wanted_len) =
+        download(github, owner, name, reference, entries, settings, fetched).await;
     (files, wanted_len, "per file")
 }
 
@@ -524,6 +753,7 @@ async fn download(
     reference: &str,
     entries: &[TreeEntry],
     settings: &SettingsRow,
+    fetched: &Arc<AtomicUsize>,
 ) -> (BTreeMap<String, String>, usize) {
     let mut wanted = select_files(entries, settings, &[]);
     let mut files = BTreeMap::new();
@@ -543,9 +773,12 @@ async fn download(
         .into_iter()
         .filter(|p| !files.contains_key(p))
         .collect();
-    let fetched: BTreeMap<String, String> = stream::iter(rest)
+    let downloaded: BTreeMap<String, String> = stream::iter(rest)
         .map(|path| async move {
-            match github.file(owner, name, &path, reference).await {
+            let result = github.file(owner, name, &path, reference).await;
+            // Every attempt counts as progress for the heartbeat, hit or miss.
+            fetched.fetch_add(1, Ordering::Relaxed);
+            match result {
                 Ok(content) => Some((path, content)),
                 Err(error) => {
                     tracing::warn!(path, %error, "skipping file");
@@ -557,7 +790,7 @@ async fn download(
         .filter_map(std::future::ready)
         .collect()
         .await;
-    files.extend(fetched);
+    files.extend(downloaded);
     (files, wanted_len)
 }
 

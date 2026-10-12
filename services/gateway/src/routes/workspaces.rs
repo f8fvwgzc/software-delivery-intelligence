@@ -3,7 +3,7 @@
 //! was authorised for (the auth middleware resolves `/workspaces/{id}`), so
 //! `{id}` and the principal's workspace always agree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::Json;
 use sdi_proto::{
@@ -38,7 +38,9 @@ pub fn router() -> OpenApiRouter<AppState> {
 }
 
 /// Every workspace of a user, with the project count the knowledge service
-/// reports for each (0 when it cannot be asked).
+/// reports for each (0 when it cannot be asked). One `CountProjects` call
+/// covers every workspace, so the switcher costs one round trip however
+/// many organisations the user belongs to.
 pub(crate) async fn list_for(scoped: &Scoped, user_id: &str) -> ApiResult<Vec<Workspace>> {
     let response = scoped
         .identity()
@@ -47,27 +49,40 @@ pub(crate) async fn list_for(scoped: &Scoped, user_id: &str) -> ApiResult<Vec<Wo
         })
         .await?
         .into_inner();
-    let counts = futures::future::join_all(response.workspaces.iter().map(|ws| {
-        let scoped = scoped.state.system(&ws.id);
-        async move {
-            scoped
-                .knowledge()
-                .list_projects(knowledge::ListProjectsRequest {})
-                .await
-                .map(|r| r.into_inner().projects.len() as u32)
-                .unwrap_or(0)
-        }
-    }))
-    .await;
+    let ids: Vec<String> = response.workspaces.iter().map(|ws| ws.id.clone()).collect();
+    let counts = project_counts(scoped, ids).await;
     Ok(response
         .workspaces
         .into_iter()
-        .zip(counts)
-        .map(|(ws, project_count)| Workspace {
-            project_count,
+        .map(|ws| Workspace {
+            project_count: counts.get(&ws.id).copied().unwrap_or(0),
             ..ws.into()
         })
         .collect())
+}
+
+/// Connected projects per workspace, as `system` in the caller's own
+/// workspace (CONTRACT.md §18: internal jobs run as `system`). Knowledge
+/// caps one call at 100 ids; a user in more organisations than that gets
+/// the counts in batches. Unreachable knowledge means zeros, not an error.
+async fn project_counts(scoped: &Scoped, ids: Vec<String>) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    let system = scoped.state.system(scoped.workspace_id());
+    for batch in ids.chunks(100) {
+        match system
+            .knowledge()
+            .count_projects(knowledge::CountProjectsRequest {
+                workspace_ids: batch.to_vec(),
+            })
+            .await
+        {
+            Ok(response) => counts.extend(response.into_inner().counts),
+            Err(error) => {
+                tracing::warn!(%error, "project counts unavailable");
+            }
+        }
+    }
+    counts
 }
 
 fn ensure_current(auth: &Auth, id: &str) -> ApiResult<()> {
@@ -105,11 +120,10 @@ async fn get_workspace(
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<Workspace>> {
     ensure_current(&auth, &id)?;
-    let project_count = scoped
-        .knowledge()
-        .list_projects(knowledge::ListProjectsRequest {})
+    let project_count = project_counts(&scoped, vec![id.clone()])
         .await
-        .map(|r| r.into_inner().projects.len() as u32)
+        .get(&id)
+        .copied()
         .unwrap_or(0);
     Ok(Json(Workspace {
         project_count,

@@ -9,7 +9,7 @@ export const SEARCH_LIMIT = 25
 export const searchQuery = (filters: SearchFilters) =>
   queryOptions({
     queryKey: searchKeys.results(filters),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       unwrap(
         api.GET('/api/v1/knowledge/search', {
           params: {
@@ -20,6 +20,7 @@ export const searchQuery = (filters: SearchFilters) =>
               ...(filters.kinds.length > 0 ? { kinds: filters.kinds.join(',') } : {}),
             },
           },
+          signal,
         }),
       ),
     staleTime: 60_000,

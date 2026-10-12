@@ -113,7 +113,7 @@ export default function EditorialCanvas({ spec, kind, direction, title, onOpenPa
   return (
     <div className={cn('relative size-full overflow-hidden bg-background', className)}>
       {/* The pane scrolls vertically; the svg is as tall as the drawing at the current zoom. */}
-      <div ref={containerRef} className="size-full overflow-x-hidden overflow-y-auto">
+      <div ref={containerRef} role="region" aria-label={`${title} canvas`} tabIndex={0} className="size-full overflow-x-hidden overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset">
         <svg
           ref={svgRef}
           className={cn('block w-full touch-pan-y select-none outline-none', dragging ? 'cursor-grabbing' : 'cursor-grab')}

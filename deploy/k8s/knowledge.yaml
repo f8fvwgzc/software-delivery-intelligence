@@ -1,0 +1,86 @@
+# knowledge (gRPC on 50051). Liveness and readiness use the gRPC health
+# service every Rust service registers (tonic-health), which Kubernetes
+# probes natively (grpc probes, GA since 1.27).
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowledge
+spec:
+  selector:
+    app.kubernetes.io/name: knowledge
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowledge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: knowledge
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: knowledge
+          image: sdi/knowledge
+          ports:
+            - name: grpc
+              containerPort: 50051
+          envFrom:
+            - configMapRef:
+                name: sdi-config
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: DATABASE_URL } }
+            - name: KNOWLEDGE_LISTEN
+              value: 0.0.0.0:50051
+            - name: IDENTITY_GRPC_URL
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: IDENTITY_GRPC_URL } }
+            - name: SCAN_STAGE_TIMEOUT_SECS
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: SCAN_STAGE_TIMEOUT_SECS } }
+            - name: SCAN_TIMEOUT_SECS
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: SCAN_TIMEOUT_SECS } }
+            - name: GITHUB_TOKEN
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: GITHUB_TOKEN, optional: true } }
+          readinessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            # Streamed repository archives (≤ 50 MB each) land here.
+            sizeLimit: 1Gi

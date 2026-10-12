@@ -39,14 +39,17 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(IdentityState::new(pool.clone(), settings.clone()));
 
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("audit-prune", async move {
         loop {
             match db::audit::prune(&pool).await {
                 Ok(0) => {}
                 Ok(pruned) => tracing::info!(pruned, "expired audit entries pruned"),
                 Err(error) => tracing::warn!(%error, "audit prune failed"),
             }
-            tokio::time::sleep(PRUNE_INTERVAL).await;
+            tokio::select! {
+                () = tokio::time::sleep(PRUNE_INTERVAL) => {}
+                () = sdi_common::shutdown::cancelled() => return,
+            }
         }
     });
 
@@ -68,9 +71,15 @@ async fn main() -> anyhow::Result<()> {
     }
     Server::builder()
         .add_service(health)
-        .add_service(IdentityServiceServer::new(IdentityGrpc::new(state)))
+        .add_service(
+            IdentityServiceServer::new(IdentityGrpc::new(state))
+                .max_decoding_message_size(sdi_common::grpc::MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(sdi_common::grpc::MAX_MESSAGE_BYTES),
+        )
         .serve_with_shutdown(settings.listen, sdi_common::shutdown::signal())
         .await
         .context("gRPC server failed")?;
+    let abandoned = sdi_common::tasks::shutdown(sdi_common::config::shutdown_grace()).await;
+    tracing::info!(abandoned, "identity service stopped");
     Ok(())
 }

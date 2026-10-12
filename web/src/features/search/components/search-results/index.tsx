@@ -5,6 +5,7 @@ import type { components } from '@/lib/api/schema'
 import { cn } from '@/lib/utils'
 
 import { ResultItem } from './result-item'
+import { count } from '@/lib/intl'
 
 type KnowledgeHit = components['schemas']['KnowledgeHit']
 
@@ -47,7 +48,7 @@ export function SearchResults({ hits, query, stale, filtered, onClearFilters }: 
   return (
     <div className={cn('flex flex-col gap-2 transition-opacity duration-150', stale && 'opacity-60')} aria-busy={stale || undefined}>
       <p className="text-xs tabular-nums text-muted-foreground">
-        {hits.length} {hits.length === 1 ? 'match' : 'matches'}, best first
+        {count(hits.length, 'match', 'matches')}, best first
       </p>
       <ol className="flex flex-col divide-y divide-border/60 rounded-lg bg-card ring-1 ring-border">
         {hits.map((hit) => (

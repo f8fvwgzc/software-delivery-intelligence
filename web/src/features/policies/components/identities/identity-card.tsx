@@ -43,7 +43,7 @@ export function IdentityCard({ identity }: IdentityCardProps) {
               return (
                 <li
                   key={`${grant.permission}-${grant.expiresAt ?? 'base'}`}
-                  className={cn('flex items-center justify-between gap-3 py-1.5 text-xs', expired && 'text-muted-foreground/60')}
+                  className={cn('flex items-center justify-between gap-3 py-1.5 text-xs', expired && 'text-muted-foreground line-through')}
                 >
                   <span className={cn('font-mono', expired && 'line-through decoration-muted-foreground/40')}>{grant.permission}</span>
                   <span className="shrink-0 text-muted-foreground">

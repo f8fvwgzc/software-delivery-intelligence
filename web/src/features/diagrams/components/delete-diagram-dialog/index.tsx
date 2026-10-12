@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { focusPageTitle } from '@/lib/focus'
 
 import { useDeleteDiagram } from '../../api/mutations'
 import type { Diagram } from '../../api/queries'
@@ -31,11 +32,20 @@ interface DeleteDiagramDialogProps {
 /** Confirms before a diagram is deleted. Its revisions go with it; the repository is untouched. */
 export function DeleteDiagramDialog({ diagram, trigger, tooltip, onDeleted }: DeleteDiagramDialogProps) {
   const [open, setOpen] = useState(false)
+  const [deleted, setDeleted] = useState(false)
   const remove = useDeleteDiagram(diagram.projectId)
+
+  // The trigger (the row's button) is gone with the row: focus lands on the page title instead.
+  const onCloseAutoFocus = (event: Event) => {
+    if (!deleted) return
+    event.preventDefault()
+    focusPageTitle()
+  }
 
   const confirm = () => {
     remove.mutate(diagram.id, {
       onSuccess: () => {
+        setDeleted(true)
         setOpen(false)
         toast.success('Diagram deleted', { description: diagram.title })
         onDeleted?.()
@@ -58,7 +68,7 @@ export function DeleteDiagramDialog({ diagram, trigger, tooltip, onDeleted }: De
       ) : (
         dialogTrigger
       )}
-      <AlertDialogContent>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogMedia className="bg-destructive/10 text-destructive">
             <Trash2Icon />

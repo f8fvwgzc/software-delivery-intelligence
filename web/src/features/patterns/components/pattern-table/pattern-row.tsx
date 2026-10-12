@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { categoryLabel, cloudLabel, humanize, PATTERN_SOURCE } from '../../lib/labels'
 import { ComplexityDots } from './complexity-dots'
 import { PatternDetails } from './pattern-details'
+import { count } from '@/lib/intl'
 
 type Pattern = components['schemas']['Pattern']
 
@@ -74,7 +75,7 @@ export function PatternRow({ pattern }: { pattern: Pattern }) {
             <div className="flex flex-col gap-0.5">
               <ScoreBar value={pattern.successRate} />
               <span className="text-2xs tabular-nums text-muted-foreground">
-                {pattern.deployments} {pattern.deployments === 1 ? 'deployment' : 'deployments'}
+                {count(pattern.deployments, 'deployment', 'deployments')}
                 {pattern.incidents > 0 ? `, ${pattern.incidents} incidents` : ''}
               </span>
             </div>

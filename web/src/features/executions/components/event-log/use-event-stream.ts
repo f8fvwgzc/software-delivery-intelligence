@@ -126,3 +126,19 @@ export function appendEvent(cached: ExecutionEvent[], event: ExecutionEvent): Ex
   const index = cached.findIndex((known) => known.seq > event.seq)
   return [...cached.slice(0, index), event, ...cached.slice(index)]
 }
+
+/**
+ * Appends a batch in one pass: one copy of the cached list however many
+ * events arrived in the frame. Events already in order are pushed; the
+ * rare out-of-order one goes through `appendEvent`.
+ */
+export function appendEvents(cached: ExecutionEvent[], batch: ExecutionEvent[]): ExecutionEvent[] {
+  if (batch.length === 0) return cached
+  let next = cached.slice()
+  for (const event of batch) {
+    const last = next[next.length - 1]
+    if (!last || last.seq < event.seq) next.push(event)
+    else next = appendEvent(next, event)
+  }
+  return next
+}

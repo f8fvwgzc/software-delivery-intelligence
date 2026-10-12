@@ -3,7 +3,7 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
 use sdi_proto::identity::v1 as identity;
@@ -27,8 +27,20 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(me))
 }
 
-fn session_cookie(state: &AppState, token: &str, max_age: u64) -> HeaderValue {
-    let secure = if state.settings.public_url.starts_with("https://") {
+/// Whether the browser reached us over TLS: the configured public origin
+/// says so, or the edge in front of the replica does through
+/// `X-Forwarded-Proto` (nginx and every cloud load balancer set it).
+pub fn is_secure(state: &AppState, headers: &HeaderMap) -> bool {
+    state.settings.public_url.starts_with("https://")
+        || headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
+}
+
+fn session_cookie(state: &AppState, headers: &HeaderMap, token: &str, max_age: u64) -> HeaderValue {
+    let secure = if is_secure(state, headers) {
         "; Secure"
     } else {
         ""
@@ -36,6 +48,18 @@ fn session_cookie(state: &AppState, token: &str, max_age: u64) -> HeaderValue {
     format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}")
         .parse()
         .expect("cookie header value")
+}
+
+/// A redirect target on the public origin: a path becomes
+/// `SDI_PUBLIC_URL` + path, so the `Location` the browser follows is the
+/// one the deployment advertises rather than whatever host a replica was
+/// reached through behind a proxy. Absolute same-origin targets pass.
+pub fn absolute(state: &AppState, target: &str) -> String {
+    if target.starts_with('/') && !state.settings.public_url.is_empty() {
+        format!("{}{target}", state.settings.public_url)
+    } else {
+        target.to_owned()
+    }
 }
 
 /// A same-origin target: a path, or a URL on the public origin.
@@ -71,7 +95,7 @@ async fn login(
         })
         .await?
         .into_inner();
-    Ok(Redirect::to(&response.authorize_url))
+    Ok(Redirect::to(&absolute(&state, &response.authorize_url)))
 }
 
 /// Where GitHub sends the user back. Exchanges the code for a session,
@@ -88,6 +112,7 @@ async fn login(
 )]
 async fn callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     ApiQuery(query): ApiQuery<CallbackQuery>,
 ) -> ApiResult<Response> {
     if let Some(error) = query.error.filter(|e| !e.is_empty()) {
@@ -117,10 +142,10 @@ async fn callback(
         _ if !session.return_to.is_empty() => session.return_to,
         _ => "/".to_owned(),
     };
-    let mut response = Redirect::to(&target).into_response();
+    let mut response = Redirect::to(&absolute(&state, &target)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        session_cookie(&state, &session.token, COOKIE_MAX_AGE),
+        session_cookie(&state, &headers, &session.token, COOKIE_MAX_AGE),
     );
     Ok(response)
 }
@@ -132,7 +157,11 @@ async fn callback(
     tag = "auth",
     responses((status = 204, description = "Signed out"), ErrorResponses),
 )]
-async fn logout(State(state): State<AppState>, auth: Auth) -> ApiResult<Response> {
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Auth,
+) -> ApiResult<Response> {
     state
         .identity()
         .revoke_session(identity::RevokeSessionRequest {
@@ -143,7 +172,7 @@ async fn logout(State(state): State<AppState>, auth: Auth) -> ApiResult<Response
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
         .headers_mut()
-        .insert(header::SET_COOKIE, session_cookie(&state, "", 0));
+        .insert(header::SET_COOKIE, session_cookie(&state, &headers, "", 0));
     Ok(response)
 }
 

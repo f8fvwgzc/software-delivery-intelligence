@@ -8,20 +8,57 @@ use crate::domain::review::input::ReviewInput;
 const MIN_SOURCE_LINES: u32 = 5;
 
 pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
-    if !input.has_test_framework {
-        return Vec::new();
+    let mut findings = Vec::new();
+    let has_tests = input.has_file(|f| f.is_test() && !f.is_removed());
+    // `.sdi.yml review.require_tests_for`: these paths always need a test
+    // change, test framework detected or not, however small the edit.
+    if !has_tests && !input.config.require_tests_for.is_empty() {
+        let required: Vec<&_> = input
+            .files
+            .iter()
+            .filter(|f| f.is_reviewable() && !f.is_test() && input.config.requires_tests(&f.path))
+            .collect();
+        if let Some(first) = required.first() {
+            let listed: Vec<String> = required
+                .iter()
+                .take(5)
+                .map(|f| format!("`{}`", f.path))
+                .collect();
+            findings.push(Finding::new(
+                "tests",
+                "required",
+                Severity::High,
+                &first.path,
+                first.first_line(),
+                "Change to a path that requires tests",
+                format!(
+                    "{} match{} `review.require_tests_for` in `.sdi.yml` ({}{}) and no test file is part of this pull \
+                     request. Add or extend a test that fails without this change.",
+                    if required.len() == 1 { "This file".to_owned() } else { format!("{} files", required.len()) },
+                    if required.len() == 1 { "es" } else { "" },
+                    listed.join(", "),
+                    if required.len() > 5 { ", …" } else { "" }
+                ),
+            ));
+        }
+    }
+    if !input.has_test_framework || has_tests {
+        return findings;
     }
     let sources: Vec<_> = input
         .files
         .iter()
-        .filter(|f| f.is_source() && !f.is_removed())
+        .filter(|f| f.is_source() && f.is_reviewable())
         .collect();
     let touched_lines: u32 = sources.iter().map(|f| f.additions + f.deletions).sum();
-    if sources.is_empty() || touched_lines < MIN_SOURCE_LINES {
-        return Vec::new();
+    // A whole-file rewrite is a real change however short the file is.
+    let rewrite = sources.iter().any(|f| f.is_whole_rewrite());
+    if sources.is_empty() || (touched_lines < MIN_SOURCE_LINES && !rewrite) {
+        return findings;
     }
-    if input.has_file(|f| f.is_test() && !f.is_removed()) {
-        return Vec::new();
+    if findings.iter().any(|f| f.rule == "tests.required") {
+        // The stricter finding already asks for the same thing.
+        return findings;
     }
     let first = sources[0];
     let listed: Vec<String> = sources
@@ -29,7 +66,7 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
         .take(5)
         .map(|f| format!("`{}`", f.path))
         .collect();
-    vec![Finding::new(
+    findings.push(Finding::new(
         "tests",
         "missing",
         Severity::Medium,
@@ -45,7 +82,8 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
             listed.join(", "),
             if sources.len() > 5 { ", …" } else { "" }
         ),
-    )]
+    ));
+    findings
 }
 
 #[cfg(test)]
@@ -122,5 +160,29 @@ mod cases {
             .is_empty()
         );
         assert!(analyze(&input(vec![modified("src/lib.rs", &lines)])).is_empty());
+    }
+
+    #[test]
+    fn required_paths_need_tests_even_without_a_framework_and_renames_do_not() {
+        let mut input = input(vec![modified("src/billing/invoice.rs", &["a"])]);
+        input.config.require_tests_for = vec!["src/billing/**".into()];
+        let findings = analyze(&input);
+        assert_eq!(rules(&findings), vec!["tests.required"]);
+        assert_eq!(findings[0].severity, Severity::High);
+        let mut with_test = input.clone();
+        with_test
+            .files
+            .push(added("tests/invoice.rs", &["#[test] fn t() {}"]));
+        assert!(analyze(&with_test).is_empty());
+        // A pure rename inside the required tree is not a change to test.
+        let mut renamed = input.clone();
+        renamed.files = vec![crate::domain::review::input::ChangedFile {
+            path: "src/billing/new.rs".into(),
+            previous_path: "src/billing/old.rs".into(),
+            status: "renamed".into(),
+            ..Default::default()
+        }];
+        renamed.has_test_framework = true;
+        assert!(analyze(&renamed).is_empty());
     }
 }

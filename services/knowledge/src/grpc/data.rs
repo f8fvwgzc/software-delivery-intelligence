@@ -108,7 +108,7 @@ pub(super) async fn export_workspace_data(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ExportRecord, Status>>(EXPORT_BUFFER);
     let pool = state.pool.clone();
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("workspace-export", async move {
         for table in db::workspace::TENANT_TABLES {
             let mut rows = db::workspace::export_rows(&pool, ws, table);
             while let Some(row) = rows.next().await {

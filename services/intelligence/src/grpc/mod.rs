@@ -50,32 +50,30 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::{
-    db::settings::SettingsRow,
+    config::ReasonerEnv,
+    db::{settings::SettingsRow, usage::PgUsageLedger},
     events::EventBus,
     gateway::{ExecutionGateway, IdentityGateway, KnowledgeGateway},
     github::{GithubPublisher, GithubTokens},
-    reasoner::{ClaudeReasoner, HeuristicReasoner, Reasoner},
+    reasoner::{HeuristicReasoner, LlmReasoner, Provider, Reasoner},
 };
 
-/// What the environment allows the reasoner to be (CONTRACT.md §3). The
-/// environment key is the development fallback only: it is used when the
-/// workspace allows the reasoner but stored no key of its own.
+/// What the environment allows the reasoner to be (CONTRACT.md §3, §19).
+/// The environment is the development fallback only: it is used when the
+/// workspace allows the reasoner but configured no provider or key of its own.
 #[derive(Clone, Default)]
 pub struct ReasonerConfig {
-    pub anthropic_api_key: Option<String>,
-    /// `ANTHROPIC_MODEL`: used when neither the settings nor the key name a model.
-    pub anthropic_model: String,
+    pub env: ReasonerEnv,
 }
 
 impl std::fmt::Debug for ReasonerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never print the key.
         f.debug_struct("ReasonerConfig")
-            .field(
-                "anthropic_api_key",
-                &self.anthropic_api_key.as_ref().map(|_| "<set>"),
-            )
-            .field("anthropic_model", &self.anthropic_model)
+            .field("provider", &self.env.provider)
+            .field("base_url", &self.env.base_url)
+            .field("api_key", &self.env.api_key.as_ref().map(|_| "<set>"))
+            .field("model", &self.env.model)
             .finish()
     }
 }
@@ -104,13 +102,18 @@ impl Caller {
     }
 }
 
-/// Whether, and with which key, the workspace may use the Claude reasoner.
+/// Whether, and with which provider and key, the workspace may use the
+/// LLM reasoner.
 #[derive(Clone, Default)]
 pub(crate) struct ReasonerAccess {
-    /// The workspace's data controls allow `reasoner = claude`.
+    /// The workspace's data controls allow the reasoner (anything but `off`).
     pub allowed: bool,
     /// The key to call with: the workspace's own, else the dev fallback.
+    /// An OpenAI-compatible endpoint without a key (Ollama, vLLM) carries
+    /// an empty `api_key`.
     pub key: Option<ReasonerKey>,
+    /// The provider the settings or the environment chose.
+    pub provider: Provider,
 }
 
 impl ReasonerAccess {
@@ -129,6 +132,8 @@ pub struct IntelligenceGrpc {
     /// GitHub access per workspace for `PublishReview` (CONTRACT.md §20).
     github_tokens: Arc<GithubTokens>,
     publisher: Arc<GithubPublisher>,
+    /// The vulnerability check of added dependencies; `None` = off.
+    osv: Option<Arc<crate::osv::OsvClient>>,
 }
 
 impl IntelligenceGrpc {
@@ -148,7 +153,14 @@ impl IntelligenceGrpc {
             events: EventBus::new(),
             github_tokens: Arc::new(GithubTokens::new(None)),
             publisher: Arc::new(GithubPublisher::new()),
+            osv: None,
         }
+    }
+
+    /// The OSV client reviews ask about added dependencies (`OSV_API_URL`).
+    pub fn with_osv(mut self, osv: Option<Arc<crate::osv::OsvClient>>) -> Self {
+        self.osv = osv;
+        self
     }
 
     /// `GITHUB_TOKEN`: used to publish reviews only while identity cannot
@@ -166,22 +178,51 @@ impl IntelligenceGrpc {
             .unwrap_or_else(SettingsRow::defaults))
     }
 
+    /// The provider a workspace's calls go to: the settings row's choice,
+    /// else the environment's (`LLM_PROVIDER` / `LLM_BASE_URL`), else Anthropic.
+    pub(crate) fn provider_for(&self, settings: &SettingsRow) -> Provider {
+        if !settings.reasoner_provider.trim().is_empty()
+            || !settings.reasoner_base_url.trim().is_empty()
+        {
+            let base_url = if settings.reasoner_base_url.trim().is_empty() {
+                self.reasoner.env.base_url.as_str()
+            } else {
+                settings.reasoner_base_url.as_str()
+            };
+            return Provider::parse(&settings.reasoner_provider, base_url);
+        }
+        Provider::parse(&self.reasoner.env.provider, &self.reasoner.env.base_url)
+    }
+
     /// Resolves the reasoner the workspace may use (CONTRACT.md §19):
-    /// `GetDataControls.reasoner` must be `claude`, then the workspace's own
-    /// key is used, and only when it has none the environment's. A missing
-    /// identity service means "off": the heuristic always works.
-    pub(crate) async fn reasoner_access(&self, caller: &Caller) -> ReasonerAccess {
+    /// `GetDataControls.reasoner` must not be `off`, then the workspace's
+    /// own key is used, and only when it has none the environment's. An
+    /// OpenAI-compatible endpoint needs no key. A missing identity service
+    /// means "off": the heuristic always works.
+    pub(crate) async fn reasoner_access(
+        &self,
+        caller: &Caller,
+        settings: &SettingsRow,
+    ) -> ReasonerAccess {
+        let provider = self.provider_for(settings);
         let controls = match self.identity.data_controls(&caller.principal).await {
             Ok(controls) => controls,
             Err(error) => {
                 tracing::warn!(%error, "data controls unavailable; reasoner stays off");
-                return ReasonerAccess::default();
+                return ReasonerAccess {
+                    provider,
+                    ..ReasonerAccess::default()
+                };
             }
         };
-        if controls.reasoner.trim() != "claude" {
+        if matches!(
+            controls.reasoner.trim().to_ascii_lowercase().as_str(),
+            "" | "off" | "none" | "heuristic"
+        ) {
             return ReasonerAccess {
                 allowed: false,
                 key: None,
+                provider,
             };
         }
         let key = match self.identity.reasoner_key(&caller.principal).await {
@@ -191,20 +232,31 @@ impl IntelligenceGrpc {
                 None
             }
         };
-        let key = key.filter(|k| !k.api_key.trim().is_empty()).or_else(|| {
-            self.reasoner
-                .anthropic_api_key
-                .clone()
-                .map(|api_key| ReasonerKey {
-                    api_key,
-                    model: String::new(),
-                })
-        });
-        ReasonerAccess { allowed: true, key }
+        let key = key
+            .filter(|k| !k.api_key.trim().is_empty())
+            .or_else(|| {
+                self.reasoner
+                    .env
+                    .api_key
+                    .clone()
+                    .map(|api_key| ReasonerKey {
+                        api_key,
+                        model: String::new(),
+                    })
+            })
+            .or_else(|| {
+                // A local OpenAI-compatible endpoint (Ollama, vLLM) has no key.
+                matches!(provider, Provider::OpenAiCompatible { .. }).then(ReasonerKey::default)
+            });
+        ReasonerAccess {
+            allowed: true,
+            key,
+            provider,
+        }
     }
 
-    /// The model Claude would be called with: the settings' choice, else the
-    /// one stored with the workspace key, else the environment's.
+    /// The model the provider is called with: the settings' choice, else
+    /// the one stored with the workspace key, else the environment's.
     pub(crate) fn effective_model(
         &self,
         settings: &SettingsRow,
@@ -219,22 +271,30 @@ impl IntelligenceGrpc {
             .map(|k| k.model.trim())
             .filter(|m| !m.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| self.reasoner.anthropic_model.clone())
+            .unwrap_or_else(|| self.reasoner.env.model.clone())
     }
 
-    /// The settings choose the reasoner; "claude" only works when the
-    /// workspace allows it and a key exists, and falls back to the heuristic
-    /// otherwise. Built per call so a changed key or model applies to the
-    /// next turn.
+    /// The settings choose the reasoner; the LLM only works when the
+    /// workspace allows it and a key (or keyless endpoint) exists, and falls
+    /// back to the heuristic otherwise. Built per call so a changed key,
+    /// provider or model applies to the next turn.
     pub(crate) fn reasoner_for(
         &self,
+        caller: &Caller,
         settings: &SettingsRow,
         access: &ReasonerAccess,
     ) -> Arc<dyn Reasoner> {
         match &access.key {
-            Some(key) if access.allowed && settings.reasoner == "claude" => Arc::new(
-                ClaudeReasoner::new(key.api_key.clone(), self.effective_model(settings, access)),
-            ),
+            Some(key) if access.allowed && settings.wants_llm() => Arc::new(LlmReasoner::new(
+                access.provider.clone(),
+                key.api_key.clone(),
+                self.effective_model(settings, access),
+                caller.workspace,
+                settings.daily_token_cap(),
+                Arc::new(PgUsageLedger {
+                    pool: self.pool.clone(),
+                }),
+            )),
             _ => Arc::new(HeuristicReasoner),
         }
     }

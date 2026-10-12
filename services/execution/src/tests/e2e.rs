@@ -101,6 +101,7 @@ impl Harness {
             Arc::new(audit.clone()),
             Duration::ZERO,
             false,
+            Arc::new(crate::identity::NoGithubAccess),
         );
         Some(Self {
             pool,
@@ -1980,6 +1981,8 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .policies;
     assert_eq!(policies_a.len(), 22);
     assert_eq!(decision_in(&policies_a), PolicyDecision::Approval as i32);
+    // The seed note is per process and bounded; both workspaces are in it.
+    assert_eq!(h.rt.seeded_workspaces(), 2);
 
     h.teardown().await;
 }

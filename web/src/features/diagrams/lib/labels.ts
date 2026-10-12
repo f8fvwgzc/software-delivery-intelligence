@@ -195,7 +195,7 @@ export function shortSha(sha: string | null | undefined) {
   return sha ? sha.slice(0, 7) : ''
 }
 
-/** File name for exports: "view-engine-architecture.svg". */
+/** File name for exports: "<project>-architecture.svg". */
 export function diagramFileName(title: string, extension: 'svg' | 'png') {
   const slug = title
     .toLowerCase()

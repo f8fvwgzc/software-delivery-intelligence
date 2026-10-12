@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { GitPullRequestIcon } from 'lucide-react'
 import { Link } from 'react-router'
 
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 
 import { reviewQueries } from '../../api/queries'
 import { REVIEW_STATUS, shortSha } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 interface ReviewsListProps {
   projectId?: string
@@ -19,6 +20,7 @@ interface ReviewsListProps {
 /** Every review, newest first: PR, state, findings, when. */
 export function ReviewsList({ projectId }: ReviewsListProps) {
   const { data: reviews } = useSuspenseQuery(reviewQueries.list(projectId ? { projectId } : {}))
+  const queryClient = useQueryClient()
 
   if (reviews.length === 0) {
     return (
@@ -49,6 +51,7 @@ export function ReviewsList({ projectId }: ReviewsListProps) {
           <li key={review.id}>
             <Row
               to={routes.review(review.id)}
+              onIntent={() => queryClient.prefetchQuery(reviewQueries.detail(review.id))}
               leading={<TagDot tone={status.tone} live={status.live} />}
               title={
                 <>
@@ -61,7 +64,7 @@ export function ReviewsList({ projectId }: ReviewsListProps) {
                   <span>{review.prAuthor}</span>
                   <span className="font-mono">{shortSha(review.headSha)}</span>
                   <span className="tabular-nums">
-                    {review.findingsTotal} {review.findingsTotal === 1 ? 'finding' : 'findings'}
+                    {count(review.findingsTotal, 'finding', 'findings')}
                     {review.findingsTotal > 0 ? `, ${review.findingsAccepted} accepted` : ''}
                   </span>
                 </>

@@ -45,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("server error")?;
 
-    tracing::info!("gateway stopped");
+    // Audit entries, exports and the webhook worker are tracked tasks: give
+    // them a moment to finish before the process ends.
+    let abandoned = sdi_common::tasks::shutdown(sdi_common::config::shutdown_grace()).await;
+    tracing::info!(abandoned, "gateway stopped");
     Ok(())
 }

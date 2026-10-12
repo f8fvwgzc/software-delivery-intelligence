@@ -90,8 +90,8 @@ pub(super) async fn negotiate(
     }
 
     let settings = svc.settings(caller).await?;
-    let access = svc.reasoner_access(caller).await;
-    let reasoner = svc.reasoner_for(&settings, &access);
+    let access = svc.reasoner_access(caller, &settings).await;
+    let reasoner = svc.reasoner_for(caller, &settings, &access);
     // Every revision re-ranks and regenerates artifacts, so a changed
     // region, port or runtime is reflected in the generated files.
     let (_, after) = proposals::rank_for(
@@ -102,6 +102,7 @@ pub(super) async fn negotiate(
         &constraints,
         &weights,
         settings.cost_ceiling_usd,
+        true,
     )
     .await?;
     let draft_decision = recorded.as_ref().map(|d| negotiation::DecisionDraft {

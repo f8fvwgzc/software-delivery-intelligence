@@ -56,6 +56,11 @@ impl ApiError {
         Self::new(StatusCode::FORBIDDEN, "permission_denied", message)
     }
 
+    /// A per-replica cap was reached (open event streams per workspace).
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "resource_exhausted", message)
+    }
+
     pub fn precondition(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::PRECONDITION_FAILED,

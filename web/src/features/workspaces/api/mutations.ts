@@ -16,6 +16,7 @@ import type {
   UpdateDataControlsRequest,
   WorkspaceDeleted,
 } from './types'
+import { count } from '@/lib/intl'
 
 /** `PATCH /workspaces/{id}/members/{userId}`: narrows one member's role, or clears the override. */
 export function useUpdateMemberRole(workspaceId: string) {
@@ -52,7 +53,7 @@ export function useSyncMembers(workspaceId: string) {
       unwrap(api.POST('/api/v1/workspaces/{id}/members/sync', { params: { path: { id: workspaceId } } })),
     onSuccess: (members) => {
       queryClient.setQueryData(key, members)
-      toast.success(`Synced ${members.members.length} member${members.members.length === 1 ? '' : 's'} from GitHub`)
+      toast.success(`Synced ${count(members.members.length, 'member', 'members')} from GitHub`)
     },
   })
 }

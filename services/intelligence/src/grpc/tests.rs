@@ -6,7 +6,7 @@ use std::{sync::Arc, time::Duration};
 
 use sdi_common::principal::{Principal, Role};
 use sdi_proto::{
-    common::v1::WatchEventsRequest,
+    common::v1::{PlatformEvent, WatchEventsRequest},
     identity::v1::ReasonerKey,
     intelligence::v1::{
         AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, DecisionScope,
@@ -77,6 +77,9 @@ async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
         .await
         .expect("migrations");
     for table in [
+        "review_learnings",
+        "reasoner_usage",
+        "osv_cache",
         "review_activity",
         "findings",
         "reviews",
@@ -110,8 +113,10 @@ async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
         execution.clone(),
         identity.clone(),
         ReasonerConfig {
-            anthropic_api_key: None,
-            anthropic_model: crate::config::DEFAULT_MODEL.to_owned(),
+            env: crate::config::ReasonerEnv {
+                model: crate::config::DEFAULT_MODEL.to_owned(),
+                ..Default::default()
+            },
         },
     );
     (
@@ -366,7 +371,60 @@ async fn validation_errors_are_invalid_argument() {
     assert!(err.is_ok_and(|r| r.into_inner().messages.is_empty()));
 }
 
+/// A deployment proposal with its artifacts filled in: `GenerateProposal`
+/// answers before the files exist (CONTRACT.md §6 Realtime), so this waits
+/// for the background step the way the web app does.
 async fn propose(svc: &IntelligenceGrpc, budget: f64) -> sdi_proto::intelligence::v1::Proposal {
+    let proposal = svc
+        .generate_proposal(req(GenerateProposalRequest {
+            project_id: "proj-1".into(),
+            kind: ProposalKind::Deployment as i32,
+            prompt: String::new(),
+            budget_monthly_usd: budget,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    settled(svc, &proposal.id).await
+}
+
+/// The proposal once every option carries its generated files.
+async fn settled(svc: &IntelligenceGrpc, id: &str) -> sdi_proto::intelligence::v1::Proposal {
+    for _ in 0..200 {
+        let proposal = svc
+            .get_proposal(req(GetProposalRequest { id: id.to_owned() }))
+            .await
+            .unwrap()
+            .into_inner();
+        if proposal.options.iter().all(|o| !o.artifacts.is_empty()) {
+            return proposal;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("proposal {id} never got its artifacts");
+}
+
+/// The next event that is not generation progress (`progress`, or the
+/// `updated` that closes the artifact step), which the older flows below
+/// do not care about.
+async fn next_event(
+    events: &mut tokio_stream::wrappers::ReceiverStream<Result<PlatformEvent, tonic::Status>>,
+) -> PlatformEvent {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .unwrap();
+        let step = event.data.get("step").map(String::as_str);
+        if event.action == "progress" || (event.action == "updated" && step == Some("done")) {
+            continue;
+        }
+        return event;
+    }
+}
+
+async fn propose_raw(svc: &IntelligenceGrpc, budget: f64) -> sdi_proto::intelligence::v1::Proposal {
     svc.generate_proposal(req(GenerateProposalRequest {
         project_id: "proj-1".into(),
         kind: ProposalKind::Deployment as i32,
@@ -548,6 +606,7 @@ async fn settings_drive_ranking_and_validate_input() {
                 model: "claude-opus-5".into(),
                 api_key_configured: true,
                 cost_ceiling_usd: 100.0,
+                ..Default::default()
             }),
         }))
         .await
@@ -639,7 +698,7 @@ async fn budget_artifacts_list_and_events() {
     );
     assert!(proposal.options.iter().all(|o| !o.artifacts.is_empty()));
 
-    let created = events.next().await.unwrap().unwrap();
+    let created = next_event(&mut events).await;
     assert_eq!(
         (
             created.entity.as_str(),
@@ -683,7 +742,7 @@ async fn budget_artifacts_list_and_events() {
         .find(|a| a.path == "infra/aws/variables.tf")
         .unwrap();
     assert!(variables.content.contains("eu-central-1"));
-    let updated = events.next().await.unwrap().unwrap();
+    let updated = next_event(&mut events).await;
     assert_eq!(
         (updated.action.as_str(), updated.status.as_str()),
         ("updated", "negotiating")
@@ -720,9 +779,9 @@ async fn budget_artifacts_list_and_events() {
 
     // A new proposal of the same kind supersedes the old one and says so.
     let newer = propose(&svc, 0.0).await;
-    let created = events.next().await.unwrap().unwrap();
+    let created = next_event(&mut events).await;
     assert_eq!(created.entity_id, newer.id);
-    let superseded = events.next().await.unwrap().unwrap();
+    let superseded = next_event(&mut events).await;
     assert_eq!(superseded.entity_id, proposal.id);
     assert_eq!(superseded.status, "superseded");
 
@@ -735,7 +794,7 @@ async fn budget_artifacts_list_and_events() {
         .unwrap()
         .into_inner();
     assert!(document.markdown.contains("## Rollback"));
-    let event = events.next().await.unwrap().unwrap();
+    let event = next_event(&mut events).await;
     assert_eq!(
         (event.entity.as_str(), event.entity_id.as_str()),
         ("document", document.id.as_str())
@@ -1193,7 +1252,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         );
         assert!(accept.detail.contains("exec-1"));
     }
-    let event = events_a.next().await.unwrap().unwrap();
+    let event = next_event(&mut events_a).await;
     assert_eq!(
         event.data.get("workspace_id").map(String::as_str),
         Some(WS_A)
@@ -1314,23 +1373,29 @@ async fn reasoner_follows_the_workspace_data_controls() {
     let settings = svc.settings(&caller).await.unwrap();
 
     // Off (the default): nothing, not even with an environment key.
-    let access = svc.reasoner_access(&caller).await;
+    let access = svc.reasoner_access(&caller, &settings).await;
     assert!(!access.allowed && access.key.is_none());
-    assert_eq!(svc.reasoner_for(&settings, &access).name(), "heuristic");
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "heuristic"
+    );
     let with_env = IntelligenceGrpc::new(
         svc.pool.clone(),
         peers.knowledge.clone(),
         peers.execution.clone(),
         peers.identity.clone(),
         ReasonerConfig {
-            anthropic_api_key: Some("env-key".into()),
-            anthropic_model: "env-model".into(),
+            env: crate::config::ReasonerEnv {
+                api_key: Some("env-key".into()),
+                model: "env-model".into(),
+                ..Default::default()
+            },
         },
     );
-    let access = with_env.reasoner_access(&caller).await;
+    let access = with_env.reasoner_access(&caller, &settings).await;
     assert!(!access.configured());
     assert_eq!(
-        with_env.reasoner_for(&settings, &access).name(),
+        with_env.reasoner_for(&caller, &settings, &access).name(),
         "heuristic"
     );
     let shown = with_env
@@ -1342,12 +1407,18 @@ async fn reasoner_follows_the_workspace_data_controls() {
 
     // Allowed without a workspace key: the environment fallback applies.
     peers.identity.set_reasoner(WS_A, "claude", None);
-    let access = svc.reasoner_access(&caller).await;
+    let access = svc.reasoner_access(&caller, &settings).await;
     assert!(access.allowed && !access.configured());
-    assert_eq!(svc.reasoner_for(&settings, &access).name(), "heuristic");
-    let access = with_env.reasoner_access(&caller).await;
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "heuristic"
+    );
+    let access = with_env.reasoner_access(&caller, &settings).await;
     assert!(access.configured());
-    assert_eq!(with_env.reasoner_for(&settings, &access).name(), "claude");
+    assert_eq!(
+        with_env.reasoner_for(&caller, &settings, &access).name(),
+        "claude"
+    );
     assert_eq!(with_env.effective_model(&settings, &access), "env-model");
 
     // The workspace's own key wins and brings its model along.
@@ -1359,7 +1430,7 @@ async fn reasoner_follows_the_workspace_data_controls() {
             model: "ws-model".into(),
         },
     );
-    let access = with_env.reasoner_access(&caller).await;
+    let access = with_env.reasoner_access(&caller, &settings).await;
     assert_eq!(
         access.key.as_ref().map(|k| k.api_key.as_str()),
         Some("ws-key")
@@ -1387,7 +1458,7 @@ async fn reasoner_follows_the_workspace_data_controls() {
 
     // Another workspace's controls do not leak.
     let other = Caller::from_request(&as_role(Role::Admin, WS_B, ())).unwrap();
-    let access = with_env.reasoner_access(&other).await;
+    let access = with_env.reasoner_access(&other, &settings).await;
     assert!(!access.allowed);
 
     // The settings switch can still turn it off per workspace.
@@ -1400,9 +1471,12 @@ async fn reasoner_follows_the_workspace_data_controls() {
     .await
     .unwrap();
     let settings = svc.settings(&caller).await.unwrap();
-    let access = svc.reasoner_access(&caller).await;
+    let access = svc.reasoner_access(&caller, &settings).await;
     assert!(access.configured());
-    assert_eq!(svc.reasoner_for(&settings, &access).name(), "heuristic");
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "heuristic"
+    );
 }
 
 /// A pull request against the fixture project: a new Dockerfile with a
@@ -1800,4 +1874,692 @@ async fn review_pipeline_proposes_decides_and_refuses_to_publish_without_github(
             .into_inner()
             .auto_review
     );
+}
+
+/// Reviews until the pipeline has proposed (or failed).
+async fn wait_for_review(svc: &IntelligenceGrpc, id: &str) -> sdi_proto::intelligence::v1::Review {
+    for _ in 0..200 {
+        let review = svc
+            .get_review(req(GetReviewRequest { id: id.to_owned() }))
+            .await
+            .unwrap()
+            .into_inner();
+        if matches!(
+            review.status(),
+            ReviewStatus::Proposed | ReviewStatus::Failed
+        ) {
+            return review;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("review {id} never finished");
+}
+
+fn review_service(svc: &IntelligenceGrpc, peers: &Peers, shas: &[&str]) -> IntelligenceGrpc {
+    let mut context = fixtures::context();
+    context.capabilities.push("tests:unit".into());
+    let knowledge = Arc::new(FakeKnowledge {
+        context: Some(context),
+        patterns: fixtures::catalog(),
+        pull_requests: shas
+            .iter()
+            .enumerate()
+            .map(|(i, sha)| (i as u64 + 1, pull_request_fixture(i as u64 + 1, sha)))
+            .collect(),
+        ..Default::default()
+    });
+    IntelligenceGrpc::new(
+        svc.pool.clone(),
+        knowledge,
+        peers.execution.clone(),
+        peers.identity.clone(),
+        ReasonerConfig::default(),
+    )
+}
+
+/// CONTRACT.md §20 learnings: a rule dismissed three times with no
+/// acceptance is suppressed on the next review of the project; a rule the
+/// project accepted orders above its peers; a changed verdict moves the
+/// count instead of counting twice; the ledger is part of the export.
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn review_learnings_suppress_dismissed_rules_and_lift_accepted_ones() {
+    let (svc, peers) = service_with_peers("intelligence_test_learnings").await;
+    let svc = review_service(&svc, &peers, &["sha1", "sha2", "sha3", "sha4"]);
+    let start = |n: u64| {
+        as_role(
+            Role::Member,
+            WS_A,
+            StartReviewRequest {
+                project_id: "proj-1".into(),
+                pr_number: n,
+            },
+        )
+    };
+    let decide = |id: &str, decision: FindingDecision, note: &str| {
+        as_role(
+            Role::Member,
+            WS_A,
+            DecideFindingRequest {
+                finding_id: id.to_owned(),
+                decision: decision as i32,
+                note: note.to_owned(),
+            },
+        )
+    };
+    let mut first_order: Option<Vec<String>> = None;
+    for n in 1..=3u64 {
+        let started = svc.start_review(start(n)).await.unwrap().into_inner();
+        let review = wait_for_review(&svc, &started.id).await;
+        assert_eq!(review.status(), ReviewStatus::Proposed, "{}", review.error);
+        let latest = review
+            .findings
+            .iter()
+            .find(|f| f.rule == "docker.latest_tag")
+            .expect("latest tag finding");
+        assert_eq!(
+            latest.severity(),
+            sdi_proto::intelligence::v1::FindingSeverity::Medium
+        );
+        assert!(!latest.detail.contains("Suppressed"));
+        if first_order.is_none() {
+            first_order = Some(review.findings.iter().map(|f| f.rule.clone()).collect());
+        }
+        // Dismiss it; the first time by way of an accept that is reversed,
+        // which must leave accepted at 0.
+        if n == 1 {
+            svc.decide_finding(decide(&latest.id, FindingDecision::Accepted, "hm"))
+                .await
+                .unwrap();
+        }
+        svc.decide_finding(decide(
+            &latest.id,
+            FindingDecision::Dismissed,
+            "we pin elsewhere",
+        ))
+        .await
+        .unwrap();
+        if n == 1 {
+            let tests = review
+                .findings
+                .iter()
+                .find(|f| f.rule == "tests.missing")
+                .expect("tests finding");
+            svc.decide_finding(decide(&tests.id, FindingDecision::Accepted, "yes"))
+                .await
+                .unwrap();
+        }
+    }
+    let rows = crate::db::learnings::for_project(
+        &svc.pool,
+        uuid::Uuid::parse_str(WS_A).unwrap(),
+        "proj-1",
+    )
+    .await
+    .unwrap();
+    let counts: Vec<(&str, i32, i32)> = rows
+        .iter()
+        .map(|r| (r.rule.as_str(), r.accepted, r.dismissed))
+        .collect();
+    assert_eq!(
+        counts,
+        vec![("docker.latest_tag", 0, 3), ("tests.missing", 1, 0)]
+    );
+
+    let started = svc.start_review(start(4)).await.unwrap().into_inner();
+    let review = wait_for_review(&svc, &started.id).await;
+    assert_eq!(review.status(), ReviewStatus::Proposed, "{}", review.error);
+    let latest = review
+        .findings
+        .iter()
+        .find(|f| f.rule == "docker.latest_tag")
+        .expect("still emitted");
+    assert_eq!(
+        latest.severity(),
+        sdi_proto::intelligence::v1::FindingSeverity::Info
+    );
+    assert!(
+        latest.detail.contains("Suppressed by project learnings"),
+        "{}",
+        latest.detail
+    );
+    assert!(
+        latest
+            .detail
+            .contains("dismissed `docker.latest_tag` 3 times")
+    );
+    // The accepted rule now leads, ahead of the medium docker finding it
+    // used to follow.
+    assert_eq!(review.findings[0].rule, "tests.missing");
+    let before = first_order.unwrap();
+    assert_ne!(before[0], "tests.missing");
+    let analyze = review.steps.iter().find(|s| s.key == "analyze").unwrap();
+    assert!(
+        analyze.detail.contains("1 suppressed by project learnings"),
+        "{}",
+        analyze.detail
+    );
+    let context = review.steps.iter().find(|s| s.key == "context").unwrap();
+    assert!(
+        context.detail.contains("2 learned rules"),
+        "{}",
+        context.detail
+    );
+
+    // Part of the workspace's data: exported, and gone after a delete.
+    let mut stream = svc
+        .export_workspace_data(req(ExportWorkspaceDataRequest {
+            workspace_id: WS_A.into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut learnings = 0;
+    while let Some(record) = stream.next().await {
+        if record.unwrap().entity == "review_learning" {
+            learnings += 1;
+        }
+    }
+    assert_eq!(learnings, 2);
+    let deleted = svc
+        .delete_workspace_data(as_role(
+            Role::Owner,
+            WS_A,
+            DeleteWorkspaceDataRequest {
+                workspace_id: WS_A.into(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(deleted.deleted.get("review_learning"), Some(&2));
+}
+
+/// A recorded decision changes the next proposal's ranking with no rescan:
+/// the fake knowledge never changes, only our decision memory does. And
+/// what negotiation added as a constraint stays through later turns.
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn decisions_rerank_without_a_rescan_and_constraints_persist() {
+    let (svc, _, _) = service("intelligence_test_decisions").await;
+    let before = propose_raw(&svc, 0.0).await;
+    let policy_of = |p: &sdi_proto::intelligence::v1::Proposal, id: &str| {
+        p.options
+            .iter()
+            .find(|o| o.pattern_id == id)
+            .map(|o| o.score.as_ref().unwrap().policy)
+    };
+    assert_eq!(policy_of(&before, "azure-container-apps"), Some(0.6));
+    assert_eq!(policy_of(&before, "aws-ecs-fargate"), Some(0.6));
+
+    svc.create_decision(req(CreateDecisionRequest {
+        project_id: String::new(),
+        scope: DecisionScope::Organization as i32,
+        title: "We run on AWS".into(),
+        statement: "Everything deploys to AWS.".into(),
+        reasons: vec!["platform team".into()],
+        tags: vec!["cloud:aws".into()],
+        approved_by: String::new(),
+    }))
+    .await
+    .unwrap();
+
+    let after = propose_raw(&svc, 0.0).await;
+    assert_eq!(policy_of(&after, "azure-container-apps"), Some(0.0));
+    assert_eq!(policy_of(&after, "aws-ecs-fargate"), Some(1.0));
+    assert_ne!(
+        before.options[0].pattern_id, after.options[0].pattern_id,
+        "the recommendation follows the decision"
+    );
+    assert_eq!(after.options[0].pattern_id, "aws-ecs-fargate");
+
+    // Constraints survive every later revision.
+    let turn = svc
+        .negotiate(req(NegotiateRequest {
+            proposal_id: after.id.clone(),
+            content: "we need private networking".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let keys = |p: &sdi_proto::intelligence::v1::Proposal| -> Vec<String> {
+        p.constraints.iter().map(|c| c.key.clone()).collect()
+    };
+    let first = turn.proposal.unwrap();
+    assert_eq!(first.revision, 2);
+    assert!(
+        keys(&first).iter().any(|k| k.starts_with("require:")),
+        "{:?}",
+        keys(&first)
+    );
+    let turn = svc
+        .negotiate(req(NegotiateRequest {
+            proposal_id: after.id.clone(),
+            content: "cheaper, and not kubernetes".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let second = turn.proposal.unwrap();
+    assert_eq!(second.revision, 3);
+    let k = keys(&second);
+    assert!(k.iter().any(|x| x.starts_with("require:")), "{k:?}");
+    assert!(k.iter().any(|x| x.starts_with("exclude:")), "{k:?}");
+    assert!(
+        second
+            .options
+            .iter()
+            .all(|o| o.pattern_id != "kubernetes-helm")
+    );
+    assert_eq!(policy_of(&second, "aws-ecs-fargate"), Some(1.0));
+}
+
+/// CONTRACT.md §6 Realtime: the answer comes back within two seconds for
+/// fifty candidate patterns, progress is streamed, and the artifacts
+/// arrive afterwards with an `updated` event.
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn generate_proposal_answers_fast_and_fills_artifacts_in_the_background() {
+    let (svc, peers) = service_with_peers("intelligence_test_realtime").await;
+    let mut patterns = fixtures::catalog();
+    for i in 0..50 {
+        let cloud = ["aws", "azure", "gcp", "any"][i % 4];
+        patterns.push(fixtures::pattern(
+            &format!("candidate-{i:02}"),
+            cloud,
+            "serverless_container",
+            &["dockerfile"],
+            20.0 + i as f64,
+        ));
+    }
+    assert!(patterns.len() >= 50);
+    let mut context = fixtures::context();
+    context.understanding = Some(sdi_proto::knowledge::v1::Understanding {
+        commit_sha: "0123456789abcdef".into(),
+        ..Default::default()
+    });
+    let knowledge = Arc::new(FakeKnowledge {
+        context: Some(context),
+        patterns,
+        ..Default::default()
+    });
+    let svc = IntelligenceGrpc::new(
+        svc.pool.clone(),
+        knowledge,
+        peers.execution.clone(),
+        peers.identity.clone(),
+        ReasonerConfig::default(),
+    );
+    let mut events = svc
+        .watch_events(req(WatchEventsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let started = std::time::Instant::now();
+    let proposal = propose_raw(&svc, 0.0).await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "GenerateProposal took {elapsed:?}"
+    );
+    assert_eq!(proposal.status(), ProposalStatus::Proposed);
+    assert_eq!(proposal.options.len(), 5);
+    assert!(
+        proposal.options.iter().all(|o| o.artifacts.is_empty()),
+        "files are generated after the answer"
+    );
+    assert!(
+        proposal
+            .options
+            .iter()
+            .all(|o| !o.cost_breakdown.is_empty())
+    );
+
+    let mut seen: Vec<(String, String, String)> = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .expect("events keep coming")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.entity_id, proposal.id);
+        let step = event.data.get("step").cloned().unwrap_or_default();
+        seen.push((event.action.clone(), event.status.clone(), step.clone()));
+        if event.action == "updated" && step == "done" {
+            assert_eq!(event.status, "proposed");
+            assert_eq!(event.data.get("revision").map(String::as_str), Some("1"));
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "progress".to_owned(),
+                "generating".to_owned(),
+                "retrieving_context".to_owned()
+            ),
+            (
+                "progress".to_owned(),
+                "generating".to_owned(),
+                "ranking".to_owned()
+            ),
+            ("created".to_owned(), "proposed".to_owned(), String::new()),
+            (
+                "progress".to_owned(),
+                "generating".to_owned(),
+                "generating_artifacts".to_owned()
+            ),
+            (
+                "updated".to_owned(),
+                "proposed".to_owned(),
+                "done".to_owned()
+            ),
+        ]
+    );
+    let filled = svc
+        .get_proposal(req(GetProposalRequest {
+            id: proposal.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(filled.revision, 1);
+    // The synthetic candidates have no generator; the catalog ones do.
+    assert!(
+        filled
+            .options
+            .iter()
+            .filter(|o| !o.pattern_id.starts_with("candidate-"))
+            .all(|o| !o.artifacts.is_empty())
+    );
+    assert!(filled.options.iter().any(|o| !o.artifacts.is_empty()));
+    assert_eq!(
+        filled.options.iter().map(|o| &o.id).collect::<Vec<_>>(),
+        proposal.options.iter().map(|o| &o.id).collect::<Vec<_>>(),
+        "the background step changes nothing but the files"
+    );
+}
+
+/// The reasoner is any provider: the settings carry provider, endpoint,
+/// model and the daily token cap; an OpenAI-compatible endpoint works
+/// without a key; the stats show the day's spend against the cap.
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn settings_carry_the_provider_and_the_token_cap() {
+    let (svc, peers) = service_with_peers("intelligence_test_provider").await;
+    let caller = Caller::from_request(&req(())).unwrap();
+    let shown = svc
+        .get_settings(req(GetSettingsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(shown.reasoner, "claude");
+    assert_eq!(shown.reasoner_provider, "anthropic");
+    assert_eq!(shown.reasoner_daily_token_cap, 200_000);
+    assert_eq!(shown.reasoner_model, shown.model);
+
+    for (provider, url, message) in [
+        ("carrier-pigeon", "", "reasoner_provider"),
+        ("openai_compatible", "ollama:11434", "http://"),
+    ] {
+        let error = svc
+            .update_settings(req(UpdateSettingsRequest {
+                settings: Some(IntelligenceSettings {
+                    reasoner_provider: provider.into(),
+                    reasoner_base_url: url.into(),
+                    ..Default::default()
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert!(error.message().contains(message), "{error}");
+    }
+
+    let updated = svc
+        .update_settings(req(UpdateSettingsRequest {
+            settings: Some(IntelligenceSettings {
+                reasoner: "llm".into(),
+                reasoner_provider: "openai_compatible".into(),
+                reasoner_base_url: "http://ollama:11434/v1/".into(),
+                reasoner_model: "llama3".into(),
+                reasoner_daily_token_cap: 5_000,
+                ..Default::default()
+            }),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(updated.reasoner_provider, "openai_compatible");
+    assert_eq!(updated.reasoner_base_url, "http://ollama:11434/v1");
+    assert_eq!(
+        (updated.model.as_str(), updated.reasoner_model.as_str()),
+        ("llama3", "llama3")
+    );
+    assert_eq!(updated.reasoner_daily_token_cap, 5_000);
+    // Not allowed by the data controls yet: heuristic, not configured.
+    assert!(!updated.api_key_configured);
+    let settings = svc.settings(&caller).await.unwrap();
+    let access = svc.reasoner_access(&caller, &settings).await;
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "heuristic"
+    );
+
+    // Allowed, no key: a local OpenAI-compatible endpoint needs none.
+    peers.identity.set_reasoner(WS_A, "claude", None);
+    let access = svc.reasoner_access(&caller, &settings).await;
+    assert!(access.configured());
+    assert_eq!(svc.reasoner_for(&caller, &settings, &access).name(), "llm");
+    let shown = svc
+        .get_settings(req(GetSettingsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(shown.api_key_configured);
+
+    // Back to Anthropic: now a key is required again.
+    svc.update_settings(req(UpdateSettingsRequest {
+        settings: Some(IntelligenceSettings {
+            reasoner_provider: "anthropic".into(),
+            ..Default::default()
+        }),
+    }))
+    .await
+    .unwrap();
+    let settings = svc.settings(&caller).await.unwrap();
+    let access = svc.reasoner_access(&caller, &settings).await;
+    assert!(!access.configured());
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "heuristic"
+    );
+    peers.identity.set_reasoner(WS_A, "claude", Some("ws-key"));
+    let access = svc.reasoner_access(&caller, &settings).await;
+    assert_eq!(
+        svc.reasoner_for(&caller, &settings, &access).name(),
+        "claude"
+    );
+
+    // Usage shows up in the stats, per workspace.
+    let ws = uuid::Uuid::parse_str(WS_A).unwrap();
+    crate::db::usage::add(&svc.pool, ws, 1_200, 300)
+        .await
+        .unwrap();
+    crate::db::usage::add(&svc.pool, ws, 100, 50).await.unwrap();
+    let stats = svc
+        .get_intelligence_stats(req(GetIntelligenceStatsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(stats.reasoner_tokens_today, 1_650);
+    assert_eq!(stats.reasoner_calls_today, 2);
+    assert_eq!(stats.reasoner_daily_token_cap, 5_000);
+    let other = svc
+        .get_intelligence_stats(as_role(Role::Viewer, WS_B, GetIntelligenceStatsRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(other.reasoner_tokens_today, 0);
+    assert_eq!(other.reasoner_daily_token_cap, 200_000);
+    // The ledger the provider uses reads the same rows.
+    let ledger = crate::db::usage::PgUsageLedger {
+        pool: svc.pool.clone(),
+    };
+    use crate::db::usage::UsageLedger;
+    assert_eq!(ledger.used_today(ws).await, 1_650);
+}
+
+/// OSV (CONTRACT.md §20): added exact pins are looked up in one batch, the
+/// advisories' details fetched once, everything cached for a day, and a
+/// broken endpoint costs nothing but the finding.
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn osv_check_queries_once_caches_and_fails_soft() {
+    use std::sync::Mutex;
+
+    use axum::{
+        Router,
+        extract::State,
+        routing::{get, post},
+    };
+    use serde_json::{Value, json};
+
+    use crate::domain::review::rules::dependencies::AddedDependency;
+
+    let (svc, _, _) = service("intelligence_test_osv").await;
+
+    #[derive(Default)]
+    struct Seen {
+        batches: Vec<Value>,
+        details: Vec<String>,
+        broken: bool,
+    }
+    type Shared = Arc<Mutex<Seen>>;
+    async fn batch(
+        State(seen): State<Shared>,
+        axum::Json(body): axum::Json<Value>,
+    ) -> (axum::http::StatusCode, axum::Json<Value>) {
+        let mut seen = seen.lock().unwrap();
+        if seen.broken {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({})),
+            );
+        }
+        let n = body["queries"].as_array().map(Vec::len).unwrap_or(0);
+        seen.batches.push(body.clone());
+        let results: Vec<Value> = (0..n)
+            .map(|i| {
+                let name = body["queries"][i]["package"]["name"].as_str().unwrap_or("");
+                if name == "left-pad" {
+                    json!({"vulns": [{"id": "GHSA-left", "modified": "2024-01-01T00:00:00Z"}]})
+                } else {
+                    json!({})
+                }
+            })
+            .collect();
+        (
+            axum::http::StatusCode::OK,
+            axum::Json(json!({"results": results})),
+        )
+    }
+    async fn detail(
+        State(seen): State<Shared>,
+        axum::extract::Path(id): axum::extract::Path<String>,
+    ) -> axum::Json<Value> {
+        seen.lock().unwrap().details.push(id.clone());
+        axum::Json(json!({
+            "id": id,
+            "summary": "Prototype pollution",
+            "database_specific": {"severity": "HIGH"},
+            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"},
+                          "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.3.1"}]}]}]
+        }))
+    }
+    let seen: Shared = Arc::default();
+    let app = Router::new()
+        .route("/v1/querybatch", post(batch))
+        .route("/v1/vulns/{id}", get(detail))
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = crate::osv::OsvClient::new(&format!("http://{addr}"), svc.pool.clone()).unwrap();
+    let deps = vec![
+        AddedDependency {
+            ecosystem: "npm",
+            name: "left-pad".into(),
+            version: "1.3.0".into(),
+            path: "package.json".into(),
+            line: 4,
+        },
+        AddedDependency {
+            ecosystem: "PyPI",
+            name: "requests".into(),
+            version: "2.32.0".into(),
+            path: "requirements.txt".into(),
+            line: 1,
+        },
+    ];
+    let answers = client.check(&deps).await;
+    assert_eq!(answers.len(), 2);
+    let left = &answers[&("npm".to_owned(), "left-pad".to_owned(), "1.3.0".to_owned())];
+    assert_eq!(left.len(), 1);
+    assert_eq!(
+        (
+            left[0].id.as_str(),
+            left[0].severity.as_str(),
+            left[0].fixed.as_str()
+        ),
+        ("GHSA-left", "HIGH", "1.3.1")
+    );
+    assert!(
+        answers[&(
+            "PyPI".to_owned(),
+            "requests".to_owned(),
+            "2.32.0".to_owned()
+        )]
+            .is_empty()
+    );
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.batches.len(), 1);
+        assert_eq!(seen.batches[0]["queries"].as_array().unwrap().len(), 2);
+        assert_eq!(seen.batches[0]["queries"][0]["package"]["ecosystem"], "npm");
+        assert_eq!(seen.details, vec!["GHSA-left"]);
+    }
+    let findings = crate::domain::review::rules::osv::findings(&deps, &answers);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule, "dependencies.vulnerable");
+    assert_eq!(findings[0].line, 4);
+
+    // Cached: the second check asks nothing, even with the server broken.
+    seen.lock().unwrap().broken = true;
+    let again = client.check(&deps).await;
+    assert_eq!(again, answers);
+    assert_eq!(seen.lock().unwrap().batches.len(), 1);
+
+    // A new package with a broken endpoint: no answer, no failure.
+    let unknown = vec![AddedDependency {
+        ecosystem: "crates.io",
+        name: "serde".into(),
+        version: "1.0.0".into(),
+        path: "Cargo.toml".into(),
+        line: 9,
+    }];
+    assert!(client.check(&unknown).await.is_empty());
+
+    // Stale cache rows are refreshed on the next lookup.
+    sqlx::query("UPDATE osv_cache SET fetched_at = now() - interval '25 hours'")
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    seen.lock().unwrap().broken = false;
+    client.check(&deps).await;
+    assert_eq!(seen.lock().unwrap().batches.len(), 2);
 }

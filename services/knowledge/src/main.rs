@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use sdi_common::grpc::MAX_MESSAGE_BYTES;
 use sdi_knowledge::{
     auth, catalog,
     config::Settings,
@@ -55,13 +56,19 @@ async fn main() -> Result<()> {
     tracing::info!(listen = %settings.listen, identity = %settings.identity_url, "knowledge service listening");
     Server::builder()
         .add_service(health)
-        .add_service(KnowledgeServiceServer::with_interceptor(
-            state,
+        .add_service(tonic::service::interceptor::InterceptedService::new(
+            KnowledgeServiceServer::new(state)
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES),
             auth::interceptor,
         ))
         .serve_with_shutdown(settings.listen, sdi_common::shutdown::signal())
         .await
         .context("gRPC server failed")?;
 
+    // Scans, audit entries and exports in flight get a moment to finish;
+    // a scan cut short is marked failed by the next start (`fail_interrupted`).
+    let abandoned = sdi_common::tasks::shutdown(sdi_common::config::shutdown_grace()).await;
+    tracing::info!(abandoned, "knowledge service stopped");
     Ok(())
 }

@@ -4,6 +4,7 @@ import { EXECUTION_STATUS, isPausedOnFailure, isTerminal } from '@/features/exec
 import { isProposalClosed, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS } from '@/features/proposals/lib/labels'
 
 import type { ExecutionStatus, ProposalStatus } from '../api/types'
+import { count } from '@/lib/intl'
 
 /*
  * Status vocabularies belong to the features that own the entities. The
@@ -65,6 +66,7 @@ export const DOT_CLASS: Record<StatusTone, string> = {
   brand: 'bg-brand',
 }
 
-export function plural(count: number, singular: string, pluralForm = `${singular}s`) {
-  return `${count.toLocaleString()} ${count === 1 ? singular : pluralForm}`
+/** `3 open questions`; the plural category comes from `Intl.PluralRules`. */
+export function plural(value: number, singular: string, pluralForm = `${singular}s`) {
+  return count(value, singular, pluralForm)
 }

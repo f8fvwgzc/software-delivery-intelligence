@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/card'
 
 import { formatDuration, percent } from '../../lib/format'
 import type { PipelineStats } from '../../lib/types'
+import { count } from '@/lib/intl'
 
 interface RunStatsProps {
   stats: PipelineStats | null | undefined
@@ -31,7 +32,7 @@ export function RunStats({ stats }: RunStatsProps) {
       <Stat
         label="Average duration"
         value={<span className="font-mono">{formatDuration(stats.avgDurationSeconds)}</span>}
-        hint={stats.total === 1 ? 'over 1 run' : `over ${stats.total} runs`}
+        hint={`over ${count(stats.total, 'run', 'runs')}`}
         icon={TimerIcon}
       />
       <Stat

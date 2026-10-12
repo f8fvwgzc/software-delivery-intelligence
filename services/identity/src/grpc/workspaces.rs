@@ -48,11 +48,17 @@ pub async fn get(state: &IdentityState, req: GetWorkspaceRequest) -> Result<Work
     Ok(convert::workspace_to_proto(row, None))
 }
 
-/// The API base of the host an installation lives on.
-fn api_base_for(state: &IdentityState, host: &str) -> String {
-    if host.is_empty() || host == state.settings.github_host {
-        state.settings.github_api_url.clone()
-    } else if host == "github.com" {
+/// The API base of the host an installation lives on: the configured
+/// base for the host this deployment signs in with, github.com's public
+/// API, or `https://<host>/api/v3` for any other GitHub Enterprise Server.
+pub(crate) fn api_base_for(state: &IdentityState, host: &str) -> String {
+    api_base_of(&state.settings, host)
+}
+
+pub(crate) fn api_base_of(settings: &config::Settings, host: &str) -> String {
+    if host.is_empty() || host == settings.github_host {
+        settings.github_api_url.clone()
+    } else if host == config::PUBLIC_HOST {
         config::DEFAULT_GITHUB_API.to_owned()
     } else {
         format!("https://{host}/api/v3")
@@ -236,12 +242,12 @@ async fn app_token(
     api_base: &str,
     installation_id: i64,
 ) -> Result<CachedToken, Status> {
+    let now = Utc::now();
     if let Some(cached) = state
         .tokens
         .lock()
         .expect("token cache lock")
-        .get(&installation_id)
-        .filter(|t| t.expires_at - TOKEN_MARGIN > Utc::now())
+        .get_if(&installation_id, |t| t.expires_at - TOKEN_MARGIN > now)
         .cloned()
     {
         return Ok(cached);
@@ -266,5 +272,10 @@ async fn app_token(
         .lock()
         .expect("token cache lock")
         .insert(installation_id, token.clone());
+    tracing::debug!(
+        installation_id,
+        cached = state.cached_tokens(),
+        "installation token minted"
+    );
     Ok(token)
 }

@@ -1,8 +1,7 @@
-import { format, isValid, parseISO } from 'date-fns'
-
 import { StatusBadge } from '@/components/shared/data'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { formatDateTime, formatShortDateTime } from '@/lib/intl'
 
 import type { AuditEntry } from '../../api/types'
 import { actionTone } from '../../lib/labels'
@@ -11,18 +10,17 @@ function shortId(id: string) {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id
 }
 
-/** `MMM d HH:mm:ss` in mono, the full timestamp on hover. */
+/** Month, day and clock in mono, the full timestamp on hover. */
 function Time({ value }: { value: string }) {
-  const date = parseISO(value)
-  if (!isValid(date)) return <span className="font-mono text-xs text-muted-foreground">{value}</span>
+  if (Number.isNaN(new Date(value).getTime())) return <span className="font-mono text-xs text-muted-foreground">{value}</span>
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <time dateTime={value} className="font-mono text-xs tabular-nums text-muted-foreground">
-          {format(date, 'MMM d HH:mm:ss')}
+          {formatShortDateTime(value)}
         </time>
       </TooltipTrigger>
-      <TooltipContent>{format(date, 'PPpp')}</TooltipContent>
+      <TooltipContent>{formatDateTime(value)}</TooltipContent>
     </Tooltip>
   )
 }

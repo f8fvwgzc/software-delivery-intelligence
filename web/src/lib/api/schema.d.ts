@@ -1354,7 +1354,10 @@ export interface paths {
         put?: never;
         /**
          * Receives GitHub App events. Verified with `GITHUB_WEBHOOK_SECRET`; the
-         *     gateway answers 412 when none is configured.
+         *     gateway answers 412 when none is configured. A delivery that needs work
+         *     is queued and answered `202 {outcome: "queued"}`; one that needs none is
+         *     answered `202 {outcome: "ignored"}`. `503` means the queue is full and
+         *     GitHub should redeliver.
          */
         post: operations["github"];
         delete?: never;
@@ -2676,6 +2679,17 @@ export interface components {
             model: string;
             /** @description `heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise. */
             reasoner: string;
+            /** @description Base URL of an OpenAI-compatible endpoint (e.g. `http://ollama:11434/v1`). Empty reads `LLM_BASE_URL`, else the provider's public endpoint. */
+            reasonerBaseUrl: string;
+            /**
+             * Format: int64
+             * @description Tokens (input + output) the workspace may spend per UTC day before the reasoner falls back to the heuristic. Default 200000.
+             */
+            reasonerDailyTokenCap: number;
+            /** @description Model name next to provider and base URL (same value as `model`). */
+            reasonerModel: string;
+            /** @description Which API the reasoner speaks (CONTRACT.md §19): `anthropic` (Messages API) or `openai_compatible` (chat completions: OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter). Empty reads `LLM_PROVIDER`, else `anthropic`. */
+            reasonerProvider: string;
         };
         /**
          * @description The `intelligence` part of `PATCH /settings`: every field is optional and
@@ -2694,6 +2708,17 @@ export interface components {
             model?: string | null;
             /** @description `heuristic` or `claude`. */
             reasoner?: string | null;
+            /** @description Base URL of an OpenAI-compatible endpoint. */
+            reasonerBaseUrl?: string | null;
+            /**
+             * Format: int64
+             * @description Daily token budget of the reasoner.
+             */
+            reasonerDailyTokenCap?: number | null;
+            /** @description Model name for the reasoner. */
+            reasonerModel?: string | null;
+            /** @description `anthropic` or `openai_compatible`. */
+            reasonerProvider?: string | null;
         };
         /** @description Counters of the intelligence store. */
         IntelligenceStats: {
@@ -2727,6 +2752,21 @@ export interface components {
              * @description Proposals still open.
              */
             proposalsOpen: number;
+            /**
+             * Format: int32
+             * @description Reasoner calls made today, UTC.
+             */
+            reasonerCallsToday: number;
+            /**
+             * Format: int64
+             * @description The workspace's daily token budget.
+             */
+            reasonerDailyTokenCap: number;
+            /**
+             * Format: int64
+             * @description Reasoner tokens (input + output) spent today, UTC (CONTRACT.md §19).
+             */
+            reasonerTokensToday: number;
         };
         /** @description One semantic search hit. */
         KnowledgeHit: {
@@ -5731,6 +5771,15 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["PlatformEvent"];
+                };
+            };
+            /** @description The workspace holds too many open streams on this replica */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -12210,7 +12259,7 @@ export interface operations {
             };
         };
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

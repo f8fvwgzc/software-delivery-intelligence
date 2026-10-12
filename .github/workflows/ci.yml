@@ -124,6 +124,14 @@ jobs:
       - name: Syntax-check the shell scripts
         run: bash -n scripts/*.sh deploy/docker/healthcheck.sh
 
+      - name: Build the Kubernetes kustomization
+        # kubectl is on the runner image; the example secrets stand in for
+        # the real file, which is git-ignored.
+        run: |
+          cp deploy/k8s/secrets.example.env deploy/k8s/secrets.env
+          kubectl kustomize deploy/k8s > /tmp/k8s.yaml
+          grep -c '^kind:' /tmp/k8s.yaml
+
       - name: Lint the workflows
         # actionlint catches wrong expressions, unknown action inputs and
         # shellcheck findings in run: blocks before a run ever fails on them.

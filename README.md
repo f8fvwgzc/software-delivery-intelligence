@@ -137,8 +137,10 @@ because the default thread count exhausts memory on a 16 GB machine.
 |---|---|---|
 | `DATABASE_URL` | `postgres://sdi:sdi@127.0.0.1:5440/sdi` (host) · `…@postgres:5432/sdi` (compose) | all services |
 | `GITHUB_TOKEN` | — | knowledge (read); execution (`github` adapter, needs `repo` write) |
-| `ANTHROPIC_API_KEY` | — | intelligence (optional; enables the `claude` reasoner) |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
+| `LLM_PROVIDER` / `LLM_BASE_URL` | `anthropic` / — | intelligence (instance-wide reasoner fallback: `anthropic`, or `openai_compatible` with the endpoint of OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter, Gemini) |
+| `LLM_API_KEY` (alias `ANTHROPIC_API_KEY`) | — | intelligence (optional; enables the reasoner for workspaces that allow it and hold no key) |
+| `LLM_MODEL` (alias `ANTHROPIC_MODEL`) | `claude-sonnet-5-5` | intelligence |
+| `OSV_API_URL` | `https://api.osv.dev` | intelligence (review vulnerability check; `off` disables) |
 | `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge |
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` | `0.0.0.0:<port>` | each service |
 | `SDI_SESSION_SECRET` | — (required; `scripts/dev.sh` generates one into `.run/session-secret`) | identity: signs sessions, encrypts stored tokens and keys |
@@ -330,7 +332,7 @@ object.
 | section | fields |
 |---|---|
 | `knowledge` | `scanMaxFiles`, `scanMaxFileBytes`, `scanConcurrency`, `pipelineRunsLimit`, `cacheGithub` (ETag caching of GitHub responses) |
-| `intelligence` | `defaultWeights` (the seven ranking weights), `reasoner` (`heuristic` or `claude`; `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise), `model`, `apiKeyConfigured` (read-only), `costCeilingUsd` |
+| `intelligence` | `defaultWeights` (the seven ranking weights), `reasoner` (`heuristic` or `claude` — the latter meaning "the configured provider"; it needs the workspace's data controls on and a key, and falls back otherwise), `reasonerProvider` (`anthropic` or `openai_compatible`), `reasonerBaseUrl`, `model`/`reasonerModel`, `reasonerDailyTokenCap` (default 200 000 tokens per UTC day), `apiKeyConfigured` (read-only), `costCeilingUsd`, `autoReview` |
 
 Weights edited here are the defaults every new proposal starts from;
 negotiation still adjusts them per proposal.

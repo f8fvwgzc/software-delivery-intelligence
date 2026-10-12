@@ -135,8 +135,8 @@ pub(super) async fn start(
     // The reasoner is resolved now, with the caller's access, so the task
     // never has to ask identity on its own.
     let settings = svc.settings(caller).await?;
-    let access = svc.reasoner_access(caller).await;
-    let reasoner = svc.reasoner_for(&settings, &access);
+    let access = svc.reasoner_access(caller, &settings).await;
+    let reasoner = svc.reasoner_for(caller, &settings, &access);
     review_runner::spawn(ReviewRun {
         pool: svc.pool.clone(),
         knowledge: Arc::clone(&svc.knowledge),
@@ -146,6 +146,7 @@ pub(super) async fn start(
         workspace: caller.workspace,
         review: row.clone(),
         pull_request,
+        osv: svc.osv.clone(),
     });
     Ok(convert::review(&row, &[]))
 }
@@ -211,6 +212,7 @@ pub(super) async fn decide_finding(
         ));
     }
     let note = request.note.trim();
+    let previous = finding.decision.clone();
     let row = repo::decide_finding(
         &svc.pool,
         caller.workspace,
@@ -224,6 +226,22 @@ pub(super) async fn decide_finding(
     repo::refresh_accepted(&svc.pool, caller.workspace, review.id)
         .await
         .map_err(db_status)?;
+    // The project remembers the verdict (CONTRACT.md §20 learnings); a
+    // ledger that cannot be written must not block the decision.
+    if !row.rule.is_empty()
+        && let Err(error) = crate::db::learnings::record(
+            &svc.pool,
+            caller.workspace,
+            &review.project_id,
+            &row.rule,
+            &previous,
+            decision,
+            note,
+        )
+        .await
+    {
+        tracing::warn!(%error, rule = %row.rule, "could not record the review learning");
+    }
     repo::insert_activity(
         &svc.pool,
         &activity(

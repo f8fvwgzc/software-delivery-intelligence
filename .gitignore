@@ -22,3 +22,6 @@ web/dist/
 *.log
 .run/
 docker-compose.override.yml
+
+# Kubernetes secrets, generated from secrets.example.env
+deploy/k8s/secrets.env

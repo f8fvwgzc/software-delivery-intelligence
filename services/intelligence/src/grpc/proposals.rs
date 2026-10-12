@@ -7,7 +7,7 @@ use sdi_proto::{
         GetProposalRequest, ListProposalsRequest, ListProposalsResponse, Proposal, ProposalKind,
         RejectProposalRequest,
     },
-    knowledge::v1::{IndexKnowledgeRequest, KnowledgeKind, ProjectContext},
+    knowledge::v1::{IndexKnowledgeRequest, KnowledgeKind, Pattern, ProjectContext},
 };
 use sqlx::types::Json;
 use tonic::Status;
@@ -83,9 +83,18 @@ pub(super) async fn record_decision(
     Ok(())
 }
 
+/// What one ranking produced: the options and the candidate patterns
+/// they came from (the artifact step needs the patterns again).
+pub(super) struct Ranked {
+    pub options: Vec<RankedOption>,
+    pub patterns: Vec<Pattern>,
+}
+
 /// Context and candidates from knowledge, decisions from our own schema, then
 /// the pure ranker. Similar projects are evidence only, so their failure is
-/// logged and ignored.
+/// logged and ignored. `artifacts` generates the options' files inline;
+/// `GenerateProposal` passes `false` and fills them in afterwards.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn rank_for(
     svc: &IntelligenceGrpc,
     caller: &Caller,
@@ -94,13 +103,14 @@ pub(super) async fn rank_for(
     constraints: &[ConstraintData],
     weights: &Weights,
     cost_ceiling: f64,
+    artifacts: bool,
 ) -> Result<(ProjectContext, Vec<RankedOption>), Status> {
     let context = svc
         .knowledge
         .project_context(&caller.principal, project_id)
         .await
         .map_err(|e| e.into_status())?;
-    let options = rank_with(
+    let ranked = rank_with(
         svc,
         caller,
         &context,
@@ -108,12 +118,14 @@ pub(super) async fn rank_for(
         constraints,
         weights,
         cost_ceiling,
+        artifacts,
     )
     .await?;
-    Ok((context, options))
+    Ok((context, ranked.options))
 }
 
 /// `rank_for` with a context the caller already holds.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn rank_with(
     svc: &IntelligenceGrpc,
     caller: &Caller,
@@ -122,7 +134,8 @@ pub(super) async fn rank_with(
     constraints: &[ConstraintData],
     weights: &Weights,
     cost_ceiling: f64,
-) -> Result<Vec<RankedOption>, Status> {
+    artifacts: bool,
+) -> Result<Ranked, Status> {
     let category =
         ranking::category_for(kind).ok_or_else(|| Status::invalid_argument("kind is required"))?;
     let project_id = context
@@ -153,7 +166,7 @@ pub(super) async fn rank_with(
             Vec::new()
         }
     };
-    Ok(ranking::rank(&ranking::RankingInput {
+    let input = ranking::RankingInput {
         context,
         patterns: &patterns,
         decisions: &ranking::applicable_decisions(&decisions, project_id),
@@ -163,7 +176,13 @@ pub(super) async fn rank_with(
         now: Utc::now(),
         kind,
         cost_ceiling,
-    }))
+    };
+    let options = if artifacts {
+        ranking::rank(&input)
+    } else {
+        ranking::rank_options(&input)
+    };
+    Ok(Ranked { options, patterns })
 }
 
 /// The budget constraint of a new proposal: the request wins, then `.sdi.yml`.
@@ -190,6 +209,39 @@ pub(super) async fn load(
         .map_err(db_status)
 }
 
+/// Progress of a proposal being generated (CONTRACT.md §6 Realtime): a
+/// `proposal` event with `action = "progress"` and `data["step"]` set to
+/// one of these, in order, then `done`.
+pub const PROGRESS_STEPS: [&str; 4] = [
+    "retrieving_context",
+    "ranking",
+    "generating_artifacts",
+    "done",
+];
+
+fn emit_progress(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    id: Uuid,
+    project_id: &str,
+    kind: &str,
+    step: &str,
+) {
+    debug_assert!(PROGRESS_STEPS.contains(&step));
+    svc.events.emit(
+        caller.workspace,
+        "proposal",
+        &id.to_string(),
+        project_id,
+        "progress",
+        "generating",
+        &[("step", step.to_owned()), ("kind", kind.to_owned())],
+    );
+}
+
+/// Ranks and answers at once; the options' files are generated in a
+/// background step that updates the proposal (`updated` event with
+/// `step = done`) so the answer never waits for the generators.
 pub(super) async fn generate(
     svc: &IntelligenceGrpc,
     caller: &Caller,
@@ -206,54 +258,54 @@ pub(super) async fn generate(
             "budget_monthly_usd must be positive",
         ));
     }
+    let id = Uuid::now_v7();
+    let kind_str = convert::kind_to_str(kind);
     let settings = svc.settings(caller).await?;
     let weights = settings.default_weights.0.clone();
-    // The budget can only be known once the context (with `.sdi.yml`) is
-    // loaded, so a budgeted proposal ranks twice: the first pass is cheap.
-    let (context, options) = rank_for(
+
+    emit_progress(
         svc,
         caller,
+        id,
         &project_id,
+        &kind_str,
+        "retrieving_context",
+    );
+    let context = svc
+        .knowledge
+        .project_context(&caller.principal, &project_id)
+        .await
+        .map_err(|e| e.into_status())?;
+    let constraints = initial_constraints(request.budget_monthly_usd, &context);
+
+    emit_progress(svc, caller, id, &project_id, &kind_str, "ranking");
+    let ranked = rank_with(
+        svc,
+        caller,
+        &context,
         kind,
-        &[],
+        &constraints,
         &weights,
         settings.cost_ceiling_usd,
+        false,
     )
     .await?;
-    let constraints = initial_constraints(request.budget_monthly_usd, &context);
-    let options = if constraints.is_empty() {
-        options
-    } else {
-        rank_for(
-            svc,
-            caller,
-            &project_id,
-            kind,
-            &constraints,
-            &weights,
-            settings.cost_ceiling_usd,
-        )
-        .await?
-        .1
-    };
+    let options = ranked.options;
     let project_name = context
         .project
         .as_ref()
         .map(|p| p.name.clone())
         .unwrap_or_else(|| project_id.clone());
-    let (title, summary) = narrative::describe_proposal(
-        &convert::kind_to_str(kind).replace('_', "/"),
-        &project_name,
-        &options,
-    );
+    let (title, summary) =
+        narrative::describe_proposal(&kind_str.replace('_', "/"), &project_name, &options);
 
-    let access = svc.reasoner_access(caller).await;
+    let access = svc.reasoner_access(caller, &settings).await;
     let now = Utc::now();
     let row = ProposalRow {
-        id: Uuid::now_v7(),
+        id,
         workspace_id: caller.workspace,
         project_id: project_id.clone(),
-        kind: convert::kind_to_str(kind),
+        kind: kind_str.clone(),
         status: "proposed".to_owned(),
         title,
         summary,
@@ -265,7 +317,10 @@ pub(super) async fn generate(
         constraints: Json(constraints),
         weights: Json(weights),
         revision: 1,
-        reasoner: svc.reasoner_for(&settings, &access).name().to_owned(),
+        reasoner: svc
+            .reasoner_for(caller, &settings, &access)
+            .name()
+            .to_owned(),
         created_at: now,
         updated_at: now,
     };
@@ -316,7 +371,81 @@ pub(super) async fn generate(
             .map_err(db_status)?;
     }
 
+    spawn_artifacts(svc, caller, &row, context, ranked.patterns, kind);
     Ok(convert::proposal(&row))
+}
+
+/// The background artifact step: generates every option's files off the
+/// async runtime, stores them if nobody re-ranked meanwhile, and announces
+/// `updated` with `step = done`. Nothing here can fail the proposal.
+fn spawn_artifacts(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    row: &ProposalRow,
+    context: ProjectContext,
+    patterns: Vec<Pattern>,
+    kind: ProposalKind,
+) {
+    if !ranking::carries_artifacts(kind) {
+        return;
+    }
+    let pool = svc.pool.clone();
+    let events = svc.events.clone();
+    let workspace = caller.workspace;
+    let (id, project_id, kind_str, revision) = (
+        row.id,
+        row.project_id.clone(),
+        row.kind.clone(),
+        row.revision,
+    );
+    let mut options = row.options.0.clone();
+    let constraints = row.constraints.0.clone();
+    let announce = move |step: &str| {
+        debug_assert!(PROGRESS_STEPS.contains(&step));
+        events.emit(
+            workspace,
+            "proposal",
+            &id.to_string(),
+            &project_id,
+            if step == "done" {
+                "updated"
+            } else {
+                "progress"
+            },
+            if step == "done" {
+                "proposed"
+            } else {
+                "generating"
+            },
+            &[
+                ("step", step.to_owned()),
+                ("kind", kind_str.clone()),
+                ("revision", revision.to_string()),
+            ],
+        );
+    };
+    tokio::spawn(async move {
+        announce("generating_artifacts");
+        let generated = tokio::task::spawn_blocking(move || {
+            ranking::attach_artifacts(&mut options, kind, &patterns, &context, &constraints);
+            options
+        })
+        .await;
+        match generated {
+            Ok(options) => {
+                match repo::update_options(&pool, workspace, id, revision, &options).await {
+                    Ok(true) => announce("done"),
+                    Ok(false) => {
+                        tracing::debug!(proposal = %id, "proposal re-ranked before its artifacts were ready")
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, proposal = %id, "could not store generated artifacts")
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, proposal = %id, "artifact generation failed"),
+        }
+    });
 }
 
 pub(super) async fn list(

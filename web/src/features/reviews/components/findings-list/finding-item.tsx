@@ -1,4 +1,5 @@
 import { CheckIcon } from 'lucide-react'
+import type { CSSProperties } from 'react'
 import { toast } from 'sonner'
 
 import { Markdown } from '@/components/shared/data/markdown'
@@ -15,10 +16,14 @@ interface FindingItemProps {
   finding: Finding
   reviewId: string
   decidable: boolean
+  /** Position in the windowed list and its measurer, when the list is long. */
+  index?: number
+  measure?: (element: HTMLElement | null) => void
+  style?: CSSProperties
 }
 
 /** One finding: where, which rule, the evidence, the suggested replacement, and the decision. */
-export function FindingItem({ finding, reviewId, decidable }: FindingItemProps) {
+export function FindingItem({ finding, reviewId, decidable, index, measure, style }: FindingItemProps) {
   const decide = useDecideFinding(reviewId)
   const decision = DECISION[finding.decision] ?? DECISION.pending
   const pending = finding.decision === 'pending' || finding.decision === 'unspecified'
@@ -33,7 +38,7 @@ export function FindingItem({ finding, reviewId, decidable }: FindingItemProps) 
   }
 
   return (
-    <li className="flex flex-col gap-2 px-3 py-2.5" data-decision={finding.decision}>
+    <li className="flex flex-col gap-2 border-b px-3 py-2.5 last:border-b-0" data-decision={finding.decision} data-index={index} ref={measure} style={style}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-medium">{finding.title}</span>
         <Tag mono variant="outline">

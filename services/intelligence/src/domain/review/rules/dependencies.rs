@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use sdi_analyzer::{Day, eol};
+
 use super::{Finding, Severity, evidence};
 use crate::domain::review::input::{ChangedFile, ReviewInput};
 
@@ -131,35 +133,11 @@ fn looks_like_version_spec(spec: &str) -> bool {
             || s.starts_with("link:"))
 }
 
-/// Runtime pins that reached end of life: `(family, version-prefix)` pairs
-/// matched against Dockerfile `FROM`, workflow `*-version:`, `engines`,
-/// `.nvmrc`, `.python-version`, `runtime.txt`, `.tool-versions`.
-const EOL: &[(&str, &[&str])] = &[
-    ("python", &["2", "2.7", "3.5", "3.6", "3.7", "3.8", "3.9"]),
-    ("node", &["10", "12", "14", "16", "18", "20"]),
-    ("ruby", &["2.5", "2.6", "2.7", "3.0", "3.1"]),
-    (
-        "php",
-        &["5", "7.0", "7.1", "7.2", "7.3", "7.4", "8.0", "8.1"],
-    ),
-    (
-        "go",
-        &["1.17", "1.18", "1.19", "1.20", "1.21", "1.22", "1.23"],
-    ),
-    ("dotnet", &["2.1", "3.1", "5.0", "6.0", "7.0"]),
-    ("ubuntu", &["16.04", "18.04", "20.04"]),
-    (
-        "debian",
-        &[
-            "8", "9", "10", "11", "jessie", "stretch", "buster", "bullseye",
-        ],
-    ),
-    (
-        "alpine",
-        &["3.14", "3.15", "3.16", "3.17", "3.18", "3.19", "3.20"],
-    ),
-];
-
+/// Runtime pins matched against Dockerfile `FROM`, workflow `*-version:`,
+/// `engines`, `.nvmrc`, `.python-version`, `runtime.txt`, `.tool-versions`;
+/// whether a pin is past end of life comes from the analyzer's curated
+/// table (`sdi_analyzer::eol`) and the review's `today`, never from a list
+/// baked into this rule.
 static RUNTIME_PIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?i)(?:FROM\s+(?:[\w./-]+/)?(python|node|ruby|php|golang|go|ubuntu|debian|alpine)(?::|@)(?P<tag>[\w.-]+)|(python|node|ruby|php|go|dotnet)[-_]version\s*:\s*['"]?(?P<ver>[\w.]+)|"(node|python|ruby|php|go)"\s*:\s*"(?:[>=^~]*)(?P<eng>[\d.]+)|^\s*(python|nodejs|ruby|php|golang|dotnet-core)\s+(?P<tool>[\d.]+)|python-(?P<rt>[\d.]+))"#,
@@ -167,7 +145,7 @@ static RUNTIME_PIN: LazyLock<Regex> = LazyLock::new(|| {
     .expect("runtime pin")
 });
 
-fn eol_runtime(line: &str, file: &ChangedFile) -> Option<(String, String)> {
+fn eol_runtime(line: &str, file: &ChangedFile, today: Day) -> Option<(String, String)> {
     let name = file.file_name();
     let bare = matches!(
         name,
@@ -181,7 +159,7 @@ fn eol_runtime(line: &str, file: &ChangedFile) -> Option<(String, String)> {
             ".ruby-version" => "ruby",
             _ => "go",
         };
-        return eol_match(family, version).map(|v| (family.to_owned(), v));
+        return eol_match(family, version, today).map(|v| (family.to_owned(), v));
     }
     let caps = RUNTIME_PIN.captures(line)?;
     let family = [1, 3, 5, 7]
@@ -199,21 +177,131 @@ fn eol_runtime(line: &str, file: &ChangedFile) -> Option<(String, String)> {
         .iter()
         .find_map(|n| caps.name(n))
         .map(|m| m.as_str())?;
-    eol_match(&family, version).map(|v| (family, v))
+    eol_match(&family, version, today).map(|v| (family, v))
 }
 
-fn eol_match(family: &str, version: &str) -> Option<String> {
-    let (_, prefixes) = EOL.iter().find(|(f, _)| *f == family)?;
-    // "3.7-slim" → "3.7"; "14-alpine" → "14"; "buster-slim" → "buster".
+/// The release line of `version` for `family` when it is past its end of
+/// life on `today`. "3.7-slim" → "3.7"; "14-alpine" → "14"; "buster-slim"
+/// → "10".
+fn eol_match(family: &str, version: &str, today: Day) -> Option<String> {
     let core: String = version
         .split(['-', '_'])
         .next()
         .unwrap_or(version)
         .to_owned();
-    let hit = prefixes
-        .iter()
-        .any(|p| core == *p || core.starts_with(&format!("{p}.")));
-    hit.then_some(core)
+    let (runtime, line) = match family {
+        "python" => (eol::PYTHON, eol::python_minor(&core)?),
+        "node" => (eol::NODE, eol::node_major(&core)?),
+        "ruby" => (eol::RUBY, eol::ruby_minor(&core)?),
+        "php" => (eol::PHP, eol::php_minor(&core)?),
+        "go" => (eol::GO, eol::go_minor(&core)?),
+        "dotnet" => {
+            let major = core.split('.').next().unwrap_or(&core);
+            match major {
+                "1" | "2" | "3" => (eol::DOTNET_CORE, eol::python_minor(&core)?),
+                _ => (eol::DOTNET, major.to_owned()),
+            }
+        }
+        "ubuntu" => (eol::UBUNTU, eol::ubuntu_version(&core)?),
+        "debian" => (eol::DEBIAN, eol::debian_version(&core)?),
+        "alpine" => (eol::ALPINE, eol::alpine_version(&core)?),
+        _ => return None,
+    };
+    eol::is_eol(runtime, &line, today).map(|_| line)
+}
+
+/// A dependency added by the pull request, in OSV's vocabulary
+/// (`ecosystem`, `name`, `version`), with where it was added. Only exact
+/// versions are reported: a range cannot be looked up.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddedDependency {
+    pub ecosystem: &'static str,
+    pub name: String,
+    pub version: String,
+    pub path: String,
+    pub line: u32,
+}
+
+fn osv_ecosystem(file: &ChangedFile) -> Option<&'static str> {
+    Some(match file.file_name() {
+        "package.json" => "npm",
+        "Cargo.toml" => "crates.io",
+        "pyproject.toml"
+        | "Pipfile"
+        | "requirements.txt"
+        | "requirements-dev.txt"
+        | "constraints.txt" => "PyPI",
+        "go.mod" => "Go",
+        "Gemfile" => "RubyGems",
+        "composer.json" => "Packagist",
+        "mix.exs" => "Hex",
+        _ => return None,
+    })
+}
+
+/// An exact version out of a spec: `1.2.3`, `=1.2.3`, `==1.2.3`, `v1.2.3`;
+/// `^1.2.3`, `~1.2`, `>=1`, `*` and `latest` are not.
+fn exact_version(spec: &str) -> Option<String> {
+    let s = spec
+        .trim()
+        .trim_start_matches("==")
+        .trim_start_matches('=')
+        .trim_start_matches('v')
+        .trim();
+    (!s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && !s.contains(['*', ' ', ',', '<', '>', '^', '~', '|', 'x', 'X']))
+    .then(|| s.to_owned())
+}
+
+/// Every exactly pinned dependency the pull request adds (sorted, unique).
+pub fn added_dependencies(input: &ReviewInput) -> Vec<AddedDependency> {
+    let mut out: Vec<AddedDependency> = Vec::new();
+    for file in input.files.iter().filter(|f| f.is_reviewable()) {
+        let Some(ecosystem) = osv_ecosystem(file) else {
+            continue;
+        };
+        for (line_no, line) in file.added_lines() {
+            let coords = match file.file_name() {
+                "go.mod" => GO_DEP
+                    .captures(line)
+                    .filter(|_| is_dependency_line(file, line))
+                    .map(|c| (c[1].to_owned(), c[2].trim_start_matches('v').to_owned())),
+                "Gemfile" => {
+                    let parts: Vec<&str> = line
+                        .trim()
+                        .trim_start_matches("gem")
+                        .split(',')
+                        .map(|p| p.trim().trim_matches(['\'', '"']))
+                        .collect();
+                    match parts.as_slice() {
+                        [name, version, ..] if !name.is_empty() => {
+                            exact_version(version).map(|v| ((*name).to_owned(), v))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => dependency_of(line, file)
+                    .filter(|_| {
+                        is_dependency_line(file, line)
+                            || file.file_name().starts_with("requirements")
+                    })
+                    .and_then(|(name, spec)| exact_version(&spec).map(|v| (name, v))),
+            };
+            if let Some((name, version)) = coords {
+                out.push(AddedDependency {
+                    ecosystem,
+                    name,
+                    version,
+                    path: file.path.clone(),
+                    line: line_no,
+                });
+            }
+        }
+    }
+    out.sort();
+    out.dedup_by(|a, b| a.ecosystem == b.ecosystem && a.name == b.name && a.version == b.version);
+    out
 }
 
 /// Pins that got looser: a removed exact version became a range, a
@@ -269,7 +357,7 @@ fn dependency_of(line: &str, file: &ChangedFile) -> Option<(String, String)> {
 
 pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for file in input.files.iter().filter(|f| !f.is_removed()) {
+    for file in input.files.iter().filter(|f| f.is_reviewable()) {
         let name = file.file_name();
         let locks = lockfiles_for(name);
         if !locks.is_empty() {
@@ -322,7 +410,7 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
             );
         if runtime_file {
             for (line_no, line) in file.added_lines() {
-                if let Some((family, version)) = eol_runtime(line, file) {
+                if let Some((family, version)) = eol_runtime(line, file, input.today) {
                     findings.push(Finding::new(
                         "dependencies",
                         "eol_runtime",
@@ -417,6 +505,51 @@ mod tests {
         assert!(findings[0].title.contains("python 3.7"));
         assert!(findings[1].title.contains("node 14"));
         assert!(findings[2].title.contains("node 16"));
+    }
+
+    #[test]
+    fn eol_follows_the_review_date_not_a_list() {
+        let mut old = input(vec![added("Dockerfile", &["FROM node:22"])]);
+        old.today = (2027, 6, 1);
+        assert_eq!(rules(&analyze(&old)), vec!["dependencies.eol_runtime"]);
+        let mut early = input(vec![added("Dockerfile", &["FROM node:16"])]);
+        early.today = (2022, 1, 1);
+        assert!(analyze(&early).is_empty());
+    }
+
+    #[test]
+    fn added_dependencies_are_exact_pins_in_osv_terms() {
+        let deps = added_dependencies(&input(vec![
+            modified(
+                "package.json",
+                &[
+                    "    \"left-pad\": \"1.3.0\",",
+                    "    \"lodash\": \"^4.17.21\",",
+                    "    \"name\": \"web\",",
+                ],
+            ),
+            modified("Cargo.toml", &["serde = \"=1.0.200\"", "tokio = \"1\""]),
+            modified("requirements.txt", &["requests==2.31.0", "flask>=2"]),
+            modified("go.mod", &["\tgithub.com/gin-gonic/gin v1.9.0"]),
+            modified("Gemfile", &["gem 'rails', '7.0.0'", "gem 'puma'"]),
+            modified("package-lock.json", &["{}"]),
+        ]));
+        let coords: Vec<(&str, &str, &str)> = deps
+            .iter()
+            .map(|d| (d.ecosystem, d.name.as_str(), d.version.as_str()))
+            .collect();
+        assert_eq!(
+            coords,
+            vec![
+                ("Go", "github.com/gin-gonic/gin", "1.9.0"),
+                ("PyPI", "requests", "2.31.0"),
+                ("RubyGems", "rails", "7.0.0"),
+                ("crates.io", "serde", "1.0.200"),
+                ("crates.io", "tokio", "1"),
+                ("npm", "left-pad", "1.3.0"),
+            ]
+        );
+        assert_eq!(deps.iter().find(|d| d.name == "requests").unwrap().line, 1);
     }
 
     #[test]

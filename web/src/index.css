@@ -109,16 +109,19 @@
   --secondary: oklch(0.975 0.002 265);
   --secondary-foreground: oklch(0.27 0.012 265);
   --muted: oklch(0.982 0.002 265);
-  --muted-foreground: oklch(0.54 0.012 265);
+  /* L 0.52: 4.8:1 on the muted wash and on /10 status tints, where 11px tags sit. */
+  --muted-foreground: oklch(0.52 0.012 265);
   --accent: oklch(0.972 0.003 265);
   --accent-foreground: oklch(0.27 0.012 265);
-  --destructive: oklch(0.6 0.2 25);
+  /* L 0.55: destructive text reads at 4.6:1 on its /10 tint; white on it stays at 5.4:1. */
+  --destructive: oklch(0.55 0.2 25);
   /* Hairlines: the foreground at 7%, so every line sits at the same contrast in both themes. */
   --border: oklch(0.24 0.008 265 / 7%);
   --input: oklch(0.24 0.008 265 / 12%);
   --ring: oklch(0.74 0.03 268);
 
-  --brand: oklch(0.55 0.17 268);
+  /* L 0.50: brand text reads at ≥ 4.5:1 on white and on its own /8 tint (the active nav pill, brand tags). */
+  --brand: oklch(0.5 0.17 268);
   /* Dark enough to read at 11px on their own /10 tints (WCAG AA 4.5:1). */
   --success: oklch(0.5 0.13 158);
   --warning: oklch(0.52 0.14 72);
@@ -383,7 +386,8 @@
     @apply my-3 list-decimal space-y-1 pl-5;
   }
   .prose-sdi :where(a) {
-    @apply text-brand underline-offset-4 hover:underline;
+    /* Underlined at rest: a link in running text must not rely on colour alone (WCAG 1.4.1). */
+    @apply text-brand underline underline-offset-4 decoration-brand/40 hover:decoration-brand;
   }
   .prose-sdi :where(code) {
     @apply rounded-sm bg-muted px-1 py-0.5 text-xs;

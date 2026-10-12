@@ -9,6 +9,7 @@ import { formatBytes, languageLabel } from '../../lib/format'
 import { baseName } from '../../lib/path'
 import { EntryGlyph } from '../entry-glyph'
 import { useCopied } from './use-copied'
+import { count } from '@/lib/intl'
 
 export type MarkdownMode = 'preview' | 'source'
 
@@ -39,7 +40,7 @@ export function FileHeader({ file, lineCount, markdownMode, onMarkdownModeChange
           {languageLabel(file.language)}
         </Badge>
         <span className="hidden shrink-0 text-2xs tabular-nums text-muted-foreground sm:inline">
-          {file.binary ? formatBytes(file.size) : `${lineCount.toLocaleString()} ${lineCount === 1 ? 'line' : 'lines'} · ${formatBytes(file.size)}`}
+          {file.binary ? formatBytes(file.size) : `${count(lineCount, 'line', 'lines')} · ${formatBytes(file.size)}`}
         </span>
       </div>
 

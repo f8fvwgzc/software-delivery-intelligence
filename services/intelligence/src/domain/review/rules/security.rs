@@ -86,6 +86,37 @@ fn benign_host(matched: &str) -> bool {
         || lower.contains("spdx.org")
 }
 
+static DEBUG_ON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\bDEBUG\s*[:=]+\s*(?:True|true|"true"|'true'|1\b|"1"|on\b)|\bdebug\s*=\s*True\b|"debug"\s*:\s*true|\bAPP_DEBUG\s*[:=]\s*true|\bdebug\s*:\s*true\b|\.debug\s*=\s*true\b"#,
+    )
+    .expect("debug pattern")
+});
+
+static CORS_ANY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)Access-Control-Allow-Origin["']?\s*[:,=]\s*["']\*["']|\ballow_origin\(\s*Any\s*\)|AllowOrigin::any\(\)|\bAllowAnyOrigin\(\)|\bCORS_ORIGIN_ALLOW_ALL\s*=\s*True|\bCORS_ALLOW_ALL_ORIGINS\s*=\s*True|\borigins?\s*[:=]\s*["']\*["']|\bAllowAllOrigins\s*[:=]\s*true|allow_origins\s*=\s*\[\s*["']\*["']|\ballowed_origins\s*[:=]\s*\[\s*["']\*["']|\bcors\(\s*\)|\bCORS\(\s*app\s*\)|cors_allowed_origins\s*=\s*["']\*["']|AllowedOrigins:\s*\[\]string\{\s*"\*""#,
+    )
+    .expect("cors pattern")
+});
+
+static INSECURE_COOKIE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\bsecure\s*[:=]\s*false\b|\bhttp[_-]?only\s*[:=]\s*false\b|\bSESSION_COOKIE_SECURE\s*=\s*False|\bCSRF_COOKIE_SECURE\s*=\s*False|\bSESSION_COOKIE_HTTPONLY\s*=\s*False|\.secure\(\s*false\s*\)|\.http_only\(\s*false\s*\)|\bSecure\s*=\s*false\b|\bcookie_secure\s*[:=]\s*false|\bsameSite\s*:\s*["']none["']"#,
+    )
+    .expect("cookie pattern")
+});
+
+/// Settings a reviewer wants to see spelled out in a non-local file.
+fn is_config_or_code(file: &ChangedFile) -> bool {
+    is_code(file)
+        && !file.path.contains("local")
+        && !file.path.contains("dev.")
+        && !file.path.contains("development")
+        && !file.file_name().ends_with(".example")
+        && !file.file_name().ends_with(".sample")
+}
+
 fn is_code(file: &ChangedFile) -> bool {
     !file.is_test() && !file.is_docs() && !file.is_removed() && !file.is_lockfile()
 }
@@ -102,6 +133,47 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
         for (line_no, line) in file.added_lines() {
             if is_comment(line) {
                 continue;
+            }
+            if is_config_or_code(file) {
+                let insecure: Option<(&str, &str, &str)> = if DEBUG_ON.is_match(line) {
+                    Some((
+                        "debug_enabled",
+                        "Debug mode switched on",
+                        "enables debug mode, which prints stack traces and internals to clients and often disables \
+                         protections",
+                    ))
+                } else if CORS_ANY.is_match(line) {
+                    Some((
+                        "cors_wildcard",
+                        "CORS open to every origin",
+                        "allows any origin to call the API with the user's credentials; list the origins that need \
+                         access instead",
+                    ))
+                } else if INSECURE_COOKIE.is_match(line) {
+                    Some((
+                        "insecure_cookie",
+                        "Cookie without Secure/HttpOnly",
+                        "sends or accepts a cookie over plain HTTP or exposes it to scripts; keep `Secure` and \
+                         `HttpOnly` on outside local development",
+                    ))
+                } else {
+                    None
+                };
+                if let Some((check, title, what)) = insecure {
+                    findings.push(Finding::new(
+                        "security",
+                        check,
+                        Severity::Medium,
+                        path,
+                        line_no,
+                        title,
+                        format!(
+                            "Line {line_no} {what}: {}. If this is for local development only, move it to an \
+                             environment-specific file.",
+                            evidence(line)
+                        ),
+                    ));
+                }
             }
             if SHELL.is_match(line) {
                 findings.push(Finding::new(
@@ -297,5 +369,54 @@ mod tests {
             added("README.md", &["Run `curl -k https://10.0.0.1`"]),
         ]));
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn insecure_defaults_are_reported_outside_local_files() {
+        let findings = analyze(&input(vec![
+            added(
+                "settings.py",
+                &[
+                    "DEBUG = True",
+                    "CORS_ORIGIN_ALLOW_ALL = True",
+                    "SESSION_COOKIE_SECURE = False",
+                    "ALLOWED_HOSTS = ['*']",
+                ],
+            ),
+            added(
+                "src/server.ts",
+                &[
+                    "app.use(cors());",
+                    "res.cookie('sid', id, { httpOnly: false, secure: false });",
+                    "res.setHeader('Access-Control-Allow-Origin', '*');",
+                ],
+            ),
+            added("config/settings.local.py", &["DEBUG = True"]),
+            added("tests/conftest.py", &["DEBUG = True"]),
+        ]));
+        let rules: Vec<(&str, u32)> = findings
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.rule.as_str(),
+                    "security.debug_enabled"
+                        | "security.cors_wildcard"
+                        | "security.insecure_cookie"
+                )
+            })
+            .map(|f| (f.rule.as_str(), f.line))
+            .collect();
+        assert_eq!(
+            rules,
+            vec![
+                ("security.debug_enabled", 1),
+                ("security.cors_wildcard", 2),
+                ("security.insecure_cookie", 3),
+                ("security.cors_wildcard", 1),
+                ("security.insecure_cookie", 2),
+                ("security.cors_wildcard", 3),
+            ],
+            "{findings:?}"
+        );
     }
 }

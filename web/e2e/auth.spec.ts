@@ -36,7 +36,7 @@ test.describe('smoke: session', () => {
       await expect(page.getByRole('heading', { level: 1, name: 'Sign in with GitHub' })).toBeVisible()
       await expect(page.getByRole('button', { name: 'Continue with GitHub' })).toBeEnabled()
       await expect(page.getByRole('link', { name: /install the GitHub App/ })).toBeVisible()
-      await expect(page.getByRole('link', { name: 'What we store' })).toHaveAttribute('href', /TRUST\.md$/)
+      await expect(page.getByRole('link', { name: 'What we store' })).toHaveAttribute('href', /\/docs\/trust$/)
       // No shell around it.
       await expect(page.locator('a[data-sidebar="menu-button"]')).toHaveCount(0)
       guard.assertClean({ apiUp: true })
@@ -54,6 +54,23 @@ test.describe('smoke: session', () => {
       await page.getByRole('button', { name: 'Continue with GitHub' }).click()
       await expect(page).toHaveURL(/\/projects$/, { timeout: 20_000 })
       await expect(page.getByRole('heading', { level: 1, name: 'Projects', exact: true })).toBeVisible()
+    } finally {
+      await context.close()
+    }
+  })
+
+  test('the trust documents are readable without a session', async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL })
+    const page = await context.newPage()
+    const guard = watchConsole(page)
+    try {
+      await page.goto('/docs/trust')
+      await expect(page.getByRole('navigation', { name: 'Trust documents' })).toBeVisible()
+      await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible({ timeout: 20_000 })
+      await page.getByRole('navigation', { name: 'Trust documents' }).getByRole('link', { name: 'Privacy', exact: true }).click()
+      await expect(page).toHaveURL(/\/docs\/privacy$/)
+      await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible({ timeout: 20_000 })
+      guard.assertClean({ apiUp })
     } finally {
       await context.close()
     }

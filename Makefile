@@ -60,7 +60,9 @@ api-contract:
 e2e:
 	cd web && pnpm install --frozen-lockfile && pnpm e2e
 
-# 30 s through nginx: p50/p95 and the share of 429s (scripts/loadcheck.sh).
+# 60 s through nginx at 200 clients with 50 SSE streams held: p50/p95/p99,
+# error share and service RSS before/after (scripts/loadcheck.sh; results
+# in docs/performance.md).
 loadcheck:
 	./scripts/loadcheck.sh
 
@@ -71,6 +73,8 @@ deploy-check:
 	docker compose --profile local-exec config --quiet
 	docker run --rm -v "$(CURDIR)/deploy/nginx:/etc/nginx:ro" nginxinc/nginx-unprivileged:1.28-alpine nginx -t
 	bash -n scripts/*.sh deploy/docker/healthcheck.sh
+	cp -n deploy/k8s/secrets.example.env deploy/k8s/secrets.env 2>/dev/null || true
+	kubectl kustomize deploy/k8s > /dev/null
 
 clean:
 	cargo clean

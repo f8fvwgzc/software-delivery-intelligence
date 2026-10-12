@@ -119,7 +119,7 @@ where
 
 pub fn stream(scoped: Scoped, auth: Auth) -> Response {
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(64);
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("workspace-export", async move {
         let out = Out(tx);
         let workspace_id = scoped.workspace_id().to_owned();
         let mut errors: BTreeMap<String, String> = BTreeMap::new();

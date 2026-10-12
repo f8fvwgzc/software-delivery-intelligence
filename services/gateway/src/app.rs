@@ -4,12 +4,12 @@
 use std::{any::Any, time::Duration};
 
 use axum::{
-    Json, Router,
-    body::Body,
+    Router,
+    body::{Body, Bytes},
     extract::Request,
-    http::{HeaderName, StatusCode, header},
+    http::{HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::get,
 };
 use tower::ServiceBuilder;
@@ -102,7 +102,15 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 /// JSON fallbacks and the middleware stack.
 pub fn router(state: AppState) -> Router {
     let (api, document) = parts();
-    let spec = document.clone();
+    // The OpenAPI document and the Scalar page are rendered once and shared:
+    // axum clones every route's service per connection, and a handler that
+    // captured the document itself (a tree of maps) cost about 9 MB of heap
+    // per open connection, which fifty SSE tabs turned into half a gigabyte.
+    let spec: Bytes = document
+        .to_json()
+        .expect("the OpenAPI document serialises")
+        .into();
+    let docs: Bytes = Scalar::with_url("/api/docs", document).to_html().into();
 
     let middleware = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -129,14 +137,34 @@ pub fn router(state: AppState) -> Router {
     // Order of the per-request layers, outermost first: request id and
     // tracing, then authentication (which needs no request id), then the
     // audit (which reads the request id and the principal), then routes.
-    api.route("/api/openapi.json", get(move || async move { Json(spec) }))
-        .merge(Scalar::with_url("/api/docs", document))
-        .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
-        .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state.clone(), auth::audit))
-        .layer(middleware::from_fn_with_state(state, auth::authenticate))
-        .layer(middleware)
+    api.route(
+        "/api/openapi.json",
+        get(move || {
+            let spec = spec.clone();
+            async move {
+                (
+                    [(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/json"),
+                    )],
+                    spec,
+                )
+            }
+        }),
+    )
+    .route(
+        "/api/docs",
+        get(move || {
+            let docs = docs.clone();
+            async move { Html(docs) }
+        }),
+    )
+    .fallback(not_found)
+    .method_not_allowed_fallback(method_not_allowed)
+    .with_state(state.clone())
+    .layer(middleware::from_fn_with_state(state.clone(), auth::audit))
+    .layer(middleware::from_fn_with_state(state, auth::authenticate))
+    .layer(middleware)
 }
 
 /// `tokio::time::timeout` instead of `tower_http::timeout` so the 504 carries
@@ -208,18 +236,25 @@ mod tests {
     const DEAD: &str = "http://127.0.0.1:1";
     const OWNER: &str = "t-owner";
 
+    const PUBLIC_URL: &str = "http://127.0.0.1:5173";
+
     fn settings() -> GatewaySettings {
         GatewaySettings {
-            public_url: "http://127.0.0.1:5173".into(),
+            public_url: PUBLIC_URL.into(),
             webhook_secret: Some("hook-secret".into()),
             app_slug: Some("sdi-test".into()),
             dev_login: true,
+            // Small on purpose so the cap tests stay quick.
+            sse_max_per_workspace: 3,
+            auth_cache_max: 4,
+            webhook_queue_max: 8,
         }
     }
 
     struct Stack {
         app: Router,
         recorder: Arc<Recorder>,
+        state: AppState,
     }
 
     async fn stack(knowledge: &str, intelligence: &str, execution: &str) -> Stack {
@@ -233,8 +268,9 @@ mod tests {
         )
         .unwrap();
         Stack {
-            app: router(state),
+            app: router(state.clone()),
             recorder,
+            state,
         }
     }
 
@@ -722,9 +758,11 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
+        // Redirects are absolute on the public origin (CONTRACT.md §18), so
+        // a replica behind a proxy never advertises its own host.
         assert_eq!(
             headers["location"],
-            "/api/v1/auth/callback?code=dev&state=dev&returnTo=/projects"
+            format!("{PUBLIC_URL}/api/v1/auth/callback?code=dev&state=dev&returnTo=/projects")
         );
 
         let (status, _, headers) = send_as(
@@ -736,13 +774,32 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(headers["location"], "/projects");
+        assert_eq!(headers["location"], format!("{PUBLIC_URL}/projects"));
         let cookie = headers["set-cookie"].to_str().unwrap();
         assert!(cookie.starts_with("sdi_session=t-owner;"), "{cookie}");
         assert!(cookie.contains("HttpOnly"), "{cookie}");
         assert!(cookie.contains("SameSite=Lax"), "{cookie}");
         assert!(cookie.contains("Max-Age=2592000"), "{cookie}");
         assert!(!cookie.contains("Secure"), "http public url: {cookie}");
+
+        // Behind a TLS-terminating edge the cookie is Secure even though
+        // the replica itself speaks plain HTTP (X-Forwarded-Proto).
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/callback?code=dev&state=dev&returnTo=/projects")
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(cookie.contains("; Secure"), "forwarded https: {cookie}");
 
         // An off-origin target is not followed.
         let (_, _, headers) = send_as(
@@ -753,7 +810,7 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(headers["location"], "/");
+        assert_eq!(headers["location"], format!("{PUBLIC_URL}/"));
 
         let (status, json, _) = send_as(
             app().await,
@@ -1064,7 +1121,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(headers["location"], "/?workspace=w1");
+        assert_eq!(headers["location"], format!("{PUBLIC_URL}/?workspace=w1"));
         let (status, _, _) = send_as(
             app().await,
             Some(OWNER),
@@ -1086,7 +1143,15 @@ mod tests {
         )
     }
 
-    async fn webhook(app: Router, event: &str, body: &Value, secret: &str) -> (StatusCode, Value) {
+    /// Posts a delivery and returns the HTTP answer. The handler only
+    /// classifies: the answer is `202 queued` or `202 ignored`.
+    async fn post_webhook(
+        app: Router,
+        delivery_id: &str,
+        event: &str,
+        body: &Value,
+        secret: &str,
+    ) -> (StatusCode, Value) {
         let (text, signature) = signed(secret, body);
         let response = app
             .oneshot(
@@ -1095,6 +1160,7 @@ mod tests {
                     .uri("/api/v1/webhooks/github")
                     .header("content-type", "application/json")
                     .header("x-github-event", event)
+                    .header("x-github-delivery", delivery_id)
                     .header("x-hub-signature-256", signature)
                     .body(Body::from(text))
                     .unwrap(),
@@ -1109,44 +1175,91 @@ mod tests {
         )
     }
 
+    /// Posts a delivery and, when it was queued, waits for the worker's
+    /// outcome, so a test reads what the delivery ended as.
+    async fn webhook(stack: Stack, event: &str, body: &Value, secret: &str) -> (StatusCode, Value) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let delivery_id = format!(
+            "d-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let (status, mut json) = post_webhook(stack.app, &delivery_id, event, body, secret).await;
+        if status != StatusCode::ACCEPTED {
+            return (status, json);
+        }
+        if json["outcome"] == "queued" {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(outcome) = stack.state.webhook_outcome(&delivery_id) {
+                    json["outcome"] = Value::String(outcome);
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "delivery {delivery_id} never processed"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        (status, json)
+    }
+
     #[tokio::test]
     async fn webhooks_verify_the_signature_and_dispatch() {
         let installation = json!({"installation": {"id": 777, "account": {"login": "acme", "type": "Organization"}, "repository_selection": "all"}});
         let mut created = installation.clone();
         created["action"] = json!("created");
-        let (status, json) = webhook(app().await, "installation", &created, "wrong").await;
+        let dead = || stack(DEAD, DEAD, DEAD);
+        let (status, json) = webhook(dead().await, "installation", &created, "wrong").await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
 
-        let (status, json) = webhook(app().await, "installation", &created, "hook-secret").await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        // The handler answers 202 at once; the recorded outcome arrives
+        // from the worker (the helper waits for it).
+        let (status, json) = post_webhook(
+            app().await,
+            "d-raw",
+            "installation",
+            &created,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["outcome"], "queued");
+
+        let (status, json) = webhook(dead().await, "installation", &created, "hook-secret").await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "recorded");
 
         let mut deleted = installation.clone();
         deleted["action"] = json!("deleted");
-        let (status, json) = webhook(app().await, "installation", &deleted, "hook-secret").await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        let (status, json) = webhook(dead().await, "installation", &deleted, "hook-secret").await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "removed");
 
         let member = json!({"action": "added", "installation": {"id": 777}, "organization": {"login": "acme"}});
-        let (status, json) = webhook(app().await, "member", &member, "hook-secret").await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        let (status, json) = webhook(dead().await, "member", &member, "hook-secret").await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "synced");
 
         let push = |git_ref: &str, repo: &str| {
             json!({"ref": git_ref, "installation": {"id": 777}, "organization": {"login": "acme"},
                    "repository": {"full_name": repo, "default_branch": "main"}})
         };
+        let with_knowledge = || async {
+            let addr = fakes::knowledge::serve().await;
+            stack(&format!("http://{addr}"), DEAD, DEAD).await
+        };
         let (status, json) = webhook(
-            app_with_fake_knowledge().await,
+            with_knowledge().await,
             "push",
             &push("refs/heads/main", "acme/repo"),
             "hook-secret",
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "scan_started");
         let (_, json) = webhook(
-            app_with_fake_knowledge().await,
+            with_knowledge().await,
             "push",
             &push("refs/heads/feature", "acme/repo"),
             "hook-secret",
@@ -1154,26 +1267,69 @@ mod tests {
         .await;
         assert_eq!(json["outcome"], "ignored");
         let (_, json) = webhook(
-            app_with_fake_knowledge().await,
+            with_knowledge().await,
             "push",
             &push("refs/heads/main", "acme/other"),
             "hook-secret",
         )
         .await;
         assert_eq!(json["outcome"], "ignored");
-        // Knowledge down: still 200, the scan is simply not started.
+        // Knowledge down: still accepted, the worker records the failure.
         let (status, json) = webhook(
-            app().await,
+            dead().await,
             "push",
             &push("refs/heads/main", "acme/repo"),
             "hook-secret",
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(json["outcome"], "ignored");
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["outcome"], "failed");
 
-        let (_, json) = webhook(app().await, "ping", &json!({"zen": "x"}), "hook-secret").await;
+        let (_, json) = webhook(dead().await, "ping", &json!({"zen": "x"}), "hook-secret").await;
         assert_eq!(json["outcome"], "ignored");
+    }
+
+    /// The queue is bounded: once `WEBHOOK_QUEUE_MAX` deliveries wait,
+    /// the handler answers 503 with Retry-After so GitHub redelivers
+    /// instead of the replica growing a backlog.
+    #[tokio::test]
+    async fn webhook_queue_is_bounded_and_overflow_asks_for_redelivery() {
+        // Every service dead: each delivery waits on the identity connect
+        // timeout, so the queue fills up before the worker drains it.
+        let (identity, _) = fakes::identity::serve().await;
+        let state = AppState::with_urls(
+            DEAD,
+            DEAD,
+            DEAD,
+            &format!("http://{identity}"),
+            GatewaySettings {
+                webhook_queue_max: 2,
+                ..settings()
+            },
+        )
+        .unwrap();
+        let app = router(state.clone());
+        let member = json!({"action": "added", "installation": {"id": 777}, "organization": {"login": "acme"}});
+        let mut seen = Vec::new();
+        for i in 0..40 {
+            let (status, _) = post_webhook(
+                app.clone(),
+                &format!("q-{i}"),
+                "member",
+                &member,
+                "hook-secret",
+            )
+            .await;
+            seen.push(status);
+            if status == StatusCode::SERVICE_UNAVAILABLE {
+                break;
+            }
+        }
+        assert!(
+            seen.contains(&StatusCode::SERVICE_UNAVAILABLE),
+            "never overflowed: {seen:?}"
+        );
+        assert!(seen.iter().filter(|s| **s == StatusCode::ACCEPTED).count() <= 3);
     }
 
     // --- Code review (§20) --------------------------------------------------
@@ -1350,31 +1506,31 @@ mod tests {
         });
         fakes::intelligence::AUTO_REVIEW.store(false, std::sync::atomic::Ordering::SeqCst);
         let (status, json) = webhook(
-            app_with_every_fake().await.app,
+            app_with_every_fake().await,
             "pull_request",
             &opened,
             "hook-secret",
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "ignored");
 
         fakes::intelligence::AUTO_REVIEW.store(true, std::sync::atomic::Ordering::SeqCst);
         let (status, json) = webhook(
-            app_with_every_fake().await.app,
+            app_with_every_fake().await,
             "pull_request",
             &opened,
             "hook-secret",
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
         assert_eq!(json["outcome"], "review_started");
 
         // Drafts, closes and unknown repositories never start one.
         let mut draft = opened.clone();
         draft["pull_request"]["draft"] = json!(true);
         let (_, json) = webhook(
-            app_with_every_fake().await.app,
+            app_with_every_fake().await,
             "pull_request",
             &draft,
             "hook-secret",
@@ -1384,7 +1540,7 @@ mod tests {
         let mut closed = opened.clone();
         closed["action"] = json!("closed");
         let (_, json) = webhook(
-            app_with_every_fake().await.app,
+            app_with_every_fake().await,
             "pull_request",
             &closed,
             "hook-secret",
@@ -1394,7 +1550,7 @@ mod tests {
         let mut other = opened.clone();
         other["repository"]["full_name"] = json!("acme/other");
         let (_, json) = webhook(
-            app_with_every_fake().await.app,
+            app_with_every_fake().await,
             "pull_request",
             &other,
             "hook-secret",
@@ -1514,6 +1670,77 @@ mod tests {
         assert_eq!(execution["projectId"], "p1");
         assert_eq!(execution["at"], "2023-11-14T22:13:20Z");
         assert_eq!(execution["data"]["workspace_id"], "w1");
+    }
+
+    /// `SSE_MAX_PER_WORKSPACE` open streams per replica; the next one is
+    /// 429 until one closes, and closing one frees its slot.
+    #[tokio::test]
+    async fn events_stream_is_capped_per_workspace_and_slots_are_released() {
+        let stack = stack(DEAD, DEAD, DEAD).await;
+        let open = |app: Router| async move {
+            app.oneshot(request("GET", "/api/v1/events/stream", Some(OWNER), None))
+                .await
+                .unwrap()
+        };
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            let response = open(stack.app.clone()).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            held.push(response);
+        }
+        assert_eq!(stack.state.open_streams(fakes::WORKSPACE), 3);
+
+        let response = open(stack.app.clone()).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["code"], "resource_exhausted");
+
+        // A scan stream counts against the same cap.
+        let (status, _, _) = send_as(
+            stack.app.clone(),
+            Some(OWNER),
+            "GET",
+            "/api/v1/scans/s1/stream",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // Dropping a response drops its stream and frees the slot.
+        drop(held.pop());
+        tokio::task::yield_now().await;
+        assert_eq!(stack.state.open_streams(fakes::WORKSPACE), 2);
+        let response = open(stack.app.clone()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        held.push(response);
+        drop(held);
+        tokio::task::yield_now().await;
+        assert_eq!(stack.state.open_streams(fakes::WORKSPACE), 0);
+    }
+
+    /// The authorize cache never grows past `GATEWAY_AUTH_CACHE_MAX`
+    /// entries, however many sessions a replica sees.
+    #[tokio::test]
+    async fn authorize_cache_is_bounded() {
+        let stack = stack(DEAD, DEAD, DEAD).await;
+        for token in ["t-owner", "t-admin", "t-approver", "t-member", "t-viewer"] {
+            for workspace in ["", "w1"] {
+                let uri = if workspace.is_empty() {
+                    "/api/v1/auth/me".to_owned()
+                } else {
+                    format!("/api/v1/auth/me?workspace={workspace}")
+                };
+                // Knowledge is dead, so /auth/me fails after authorising;
+                // the cache entry is written on the way in regardless.
+                let _ = send_as(stack.app.clone(), Some(token), "GET", &uri, None).await;
+            }
+        }
+        assert!(
+            stack.state.cached_auths() <= 4,
+            "cache holds {} entries",
+            stack.state.cached_auths()
+        );
     }
 
     #[tokio::test]

@@ -77,5 +77,8 @@ async fn setup(
         .await?
         .into_inner();
     state.forget_auth(Some(&auth.token), None);
-    Ok(Redirect::to(&format!("/?workspace={}", workspace.id)))
+    Ok(Redirect::to(&super::auth::absolute(
+        &state,
+        &format!("/?workspace={}", workspace.id),
+    )))
 }

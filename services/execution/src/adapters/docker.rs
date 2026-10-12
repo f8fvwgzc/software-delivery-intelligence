@@ -14,7 +14,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    io::Cursor,
+    io::{Read, Seek, Write},
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
@@ -45,11 +45,20 @@ const HEALTH_POLL: Duration = Duration::from_secs(1);
 /// Lines of tool output kept for `Failure.raw_output`.
 const TAIL_LINES: usize = 200;
 const USER_AGENT: &str = concat!("sdi-execution/", env!("CARGO_PKG_VERSION"));
+/// Largest repository archive `repo.checkout` downloads (50 MiB). The
+/// archive streams into a temporary file, never into memory; past the cap
+/// the step fails with the size so a plan can name a smaller `ref`.
+pub const MAX_TARBALL_BYTES: u64 = 50 * 1024 * 1024;
+/// Where containers publish their port on the host (`SDI_DOCKER_PUBLISH_HOST`,
+/// default loopback: a dev machine must not expose a test container).
+pub const DEFAULT_PUBLISH_HOST: &str = "127.0.0.1";
 
 pub struct DockerAdapter {
     run_dir: PathBuf,
     github_token: Option<String>,
     github_api: String,
+    publish_host: String,
+    tarball_cap: u64,
     http: reqwest::Client,
 }
 
@@ -79,7 +88,35 @@ impl DockerAdapter {
             run_dir: run_dir.into(),
             github_token,
             github_api: github_api.trim_end_matches('/').to_owned(),
+            publish_host: DEFAULT_PUBLISH_HOST.to_owned(),
+            tarball_cap: MAX_TARBALL_BYTES,
             http,
+        }
+    }
+
+    /// A smaller archive cap than [`MAX_TARBALL_BYTES`] (tests).
+    #[cfg(test)]
+    pub fn with_tarball_cap(mut self, cap: u64) -> Self {
+        self.tarball_cap = cap;
+        self
+    }
+
+    /// The host address containers publish on (`SDI_DOCKER_PUBLISH_HOST`).
+    pub fn with_publish_host(mut self, host: &str) -> Self {
+        let host = host.trim();
+        if !host.is_empty() {
+            self.publish_host = host.to_owned();
+        }
+        self
+    }
+
+    /// The token and API base a step reads GitHub with: the workspace's
+    /// (identity-minted, GHES-aware) when the context carries them, else
+    /// the process-wide dev configuration.
+    fn github_for<'a>(&'a self, ctx: &'a RunContext) -> (Option<&'a str>, &'a str) {
+        match &ctx.github {
+            Some(access) => (Some(access.token.as_str()), access.api_base_url.as_str()),
+            None => (self.github_token.as_deref(), self.github_api.as_str()),
         }
     }
 
@@ -221,10 +258,11 @@ impl DockerAdapter {
             );
         }
 
+        let (token, api) = self.github_for(ctx);
         let url = if reference.is_empty() {
-            format!("{}/repos/{repo}/tarball", self.github_api)
+            format!("{api}/repos/{repo}/tarball")
         } else {
-            format!("{}/repos/{repo}/tarball/{reference}", self.github_api)
+            format!("{api}/repos/{repo}/tarball/{reference}")
         };
         ctx.logs.line(format!("GET {url}"));
         let mut request = self
@@ -232,7 +270,7 @@ impl DockerAdapter {
             .get(&url)
             .header("Accept", "application/vnd.github+json")
             .timeout(Self::timeout_for(step, CHECKOUT_TIMEOUT));
-        if let Some(token) = &self.github_token {
+        if let Some(token) = token {
             request = request.bearer_auth(token);
         }
         let response = match request.send().await {
@@ -258,7 +296,7 @@ impl DockerAdapter {
                     code: diagnosis::PERMISSION_DENIED.to_owned(),
                     raw_output: format!(
                         "GET {url} -> {status}: GITHUB_TOKEN {} read {repo}",
-                        if self.github_token.is_some() {
+                        if token.is_some() {
                             "cannot"
                         } else {
                             "is not configured and anonymous access cannot"
@@ -275,8 +313,29 @@ impl DockerAdapter {
             }
             _ => {}
         }
-        let bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
+        let cap = self.tarball_cap;
+        if response.content_length().is_some_and(|len| len > cap) {
+            return StepOutcome::failed(
+                diagnosis::UNKNOWN,
+                format!(
+                    "the archive of {repo} is {} bytes, over the {cap} byte limit",
+                    response.content_length().unwrap_or(0)
+                ),
+            );
+        }
+        // Streamed to a temporary file: a 50 MB archive must not cost 50 MB
+        // of heap per concurrent checkout.
+        let archive = match stream_to_tempfile(response, cap).await {
+            Ok(Some((file, len))) => {
+                ctx.logs.line(format!("downloaded {len} bytes, unpacking"));
+                file
+            }
+            Ok(None) => {
+                return StepOutcome::failed(
+                    diagnosis::UNKNOWN,
+                    format!("the archive of {repo} exceeds the {cap} byte limit"),
+                );
+            }
             Err(error) => {
                 return StepOutcome::failed(
                     diagnosis::UNKNOWN,
@@ -284,11 +343,9 @@ impl DockerAdapter {
                 );
             }
         };
-        ctx.logs
-            .line(format!("downloaded {} bytes, unpacking", bytes.len()));
 
         let dest = workdir.clone();
-        let unpacked = tokio::task::spawn_blocking(move || unpack_tarball(&bytes, &dest)).await;
+        let unpacked = tokio::task::spawn_blocking(move || unpack_tarball(archive, &dest)).await;
         match unpacked {
             Ok(Ok(files)) => {
                 ctx.logs
@@ -465,7 +522,7 @@ impl DockerAdapter {
         Self::best_effort(&["rm", "-f", &name]).await;
         // No `--rm`: a container that dies on start must keep its logs so
         // the failure can say why; env.destroy_temporary removes it.
-        let publish = format!("127.0.0.1:0:{port}");
+        let publish = format!("{}:0:{port}", self.publish_host);
         ctx.logs
             .line(format!("docker run -d -p {publish} --name {name} {image}"));
         let mut cmd = Command::new("docker");
@@ -490,7 +547,7 @@ impl DockerAdapter {
                 );
             }
         };
-        let base = format!("http://127.0.0.1:{mapped}");
+        let base = format!("http://{}:{mapped}", self.publish_host);
         let health_url = format!("{base}{health_path}");
         ctx.logs
             .line(format!("{name} is up on {base}; polling {health_url}"));
@@ -930,12 +987,36 @@ async fn write_artifacts(
     Ok(written)
 }
 
+/// Writes a response body into an anonymous temporary file, stopping at
+/// `max_bytes` (`None`). The file is rewound and unlinked already.
+async fn stream_to_tempfile(
+    mut response: reqwest::Response,
+    max_bytes: u64,
+) -> Result<Option<(std::fs::File, u64)>, String> {
+    let mut file = tokio::task::spawn_blocking(tempfile::tempfile)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let mut written = 0u64;
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        written += chunk.len() as u64;
+        if written > max_bytes {
+            return Ok(None);
+        }
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+    }
+    file.flush()
+        .and_then(|()| file.rewind())
+        .map_err(|e| e.to_string())?;
+    Ok(Some((file, written)))
+}
+
 /// Unpacks a GitHub tarball into `dest`, dropping the `<owner>-<repo>-<sha>/`
 /// top-level directory. Entries that would escape `dest` are skipped, and so
 /// are symlinks and anything else that is not a plain file or directory: a
 /// build needs none of them and a link target is a path on the host.
-fn unpack_tarball(bytes: &[u8], dest: &Path) -> std::io::Result<usize> {
-    let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
+fn unpack_tarball<R: Read>(source: R, dest: &Path) -> std::io::Result<usize> {
+    let decoder = flate2::read::GzDecoder::new(source);
     let mut archive = tar::Archive::new(decoder);
     let mut files = 0usize;
     for entry in archive.entries()? {
@@ -1082,7 +1163,7 @@ mod tests {
             Entry::Link("owner-repo-abc123/.github", "/etc"),
             Entry::Link("owner-repo-abc123/README.md", "../../outside.md"),
         ]);
-        let files = unpack_tarball(&bytes, &dir).unwrap();
+        let files = unpack_tarball(&bytes[..], &dir).unwrap();
         assert_eq!(files, 2);
         assert_eq!(
             std::fs::read_to_string(dir.join("Dockerfile")).unwrap(),
@@ -1277,6 +1358,130 @@ mod tests {
             StepOutcome::Failed { code, .. } => assert_eq!(code, diagnosis::UNKNOWN),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Serves `archive` as the tarball of any repository under `prefix`
+    /// (`/api/v3` for an enterprise host) and records the paths asked for.
+    async fn fake_tarball_server(
+        prefix: &'static str,
+        archive: Vec<u8>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        use axum::{Router, extract::State, routing::get};
+        type Seen = Arc<Mutex<Vec<String>>>;
+        let seen: Seen = Arc::default();
+        let state = (seen.clone(), Arc::new(archive));
+        async fn serve_tarball(
+            State((seen, archive)): State<(Seen, Arc<Vec<u8>>)>,
+            original: axum::extract::OriginalUri,
+            request: axum::extract::Request,
+        ) -> axum::response::Response {
+            // `nest` strips the prefix from the request's own uri; the
+            // original one is what the adapter asked for.
+            seen.lock().unwrap().push(original.0.path().to_owned());
+            let auth = request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            if auth != "Bearer ghs_ws" {
+                return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+            }
+            (
+                [("content-type", "application/x-gzip")],
+                axum::body::Body::from(archive.as_ref().clone()),
+            )
+                .into_response()
+        }
+        use axum::response::IntoResponse;
+        let routes = Router::new()
+            .route("/repos/{o}/{r}/tarball", get(serve_tarball))
+            .route("/repos/{o}/{r}/tarball/{reference}", get(serve_tarball))
+            .with_state(state);
+        let app = if prefix.is_empty() {
+            routes
+        } else {
+            Router::new().nest(prefix, routes)
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// The checkout goes to the workspace's API base with the workspace's
+    /// token (GitHub Enterprise Server), never to the process defaults,
+    /// and the archive streams to disk under the size cap.
+    #[tokio::test]
+    async fn checkout_uses_the_workspace_access_and_caps_the_archive() {
+        let archive = tarball(&[
+            Entry::File("o-r-abc/Dockerfile", "FROM scratch\n"),
+            Entry::File("o-r-abc/src/main.rs", "fn main() {}\n"),
+        ]);
+        let (base, seen) = fake_tarball_server("/api/v3", archive.clone()).await;
+        let dir = std::env::temp_dir().join(format!("sdi-ghes-{}", Uuid::now_v7()));
+        // Process defaults point nowhere: only the context can make this work.
+        let adapter = DockerAdapter::new(&dir, None, "http://127.0.0.1:1");
+        let ctx = RunContext {
+            execution_id: Uuid::now_v7(),
+            github: Some(super::super::GithubAccess {
+                token: "ghs_ws".into(),
+                api_base_url: format!("{base}/api/v3"),
+            }),
+            ..Default::default()
+        };
+        let outcome = adapter
+            .run(
+                &step("repo.checkout", &[("repo", "o/r"), ("sha", "abc")]),
+                &ctx,
+            )
+            .await;
+        let StepOutcome::Succeeded { outputs, .. } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(outputs["commit"], "abc");
+        assert!(
+            adapter
+                .workdir(ctx.execution_id)
+                .join("Dockerfile")
+                .is_file()
+        );
+        assert!(
+            adapter
+                .workdir(ctx.execution_id)
+                .join("src/main.rs")
+                .is_file()
+        );
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["/api/v3/repos/o/r/tarball/abc"]
+        );
+
+        // The same archive over a (tiny) cap fails with the limit named and
+        // leaves no checkout behind.
+        let capped = DockerAdapter::new(&dir, None, "http://127.0.0.1:1")
+            .with_tarball_cap(archive.len() as u64 - 1);
+        let ctx2 = RunContext {
+            execution_id: Uuid::now_v7(),
+            ..ctx.clone()
+        };
+        let outcome = capped
+            .run(
+                &step("repo.checkout", &[("repo", "o/r"), ("sha", "abc")]),
+                &ctx2,
+            )
+            .await;
+        let StepOutcome::Failed { raw_output, .. } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(raw_output.contains("byte limit"), "{raw_output}");
+        assert!(
+            !capped
+                .workdir(ctx2.execution_id)
+                .join("Dockerfile")
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Read-only against GitHub: `SDI_TEST_GITHUB=1 GITHUB_TOKEN=... cargo test -p sdi-execution`.

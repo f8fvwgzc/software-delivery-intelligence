@@ -1,3 +1,6 @@
+/** Row height in px; the cell classes below (`h-11`) must agree, the windowing math reads it. */
+export const ROW_HEIGHT = 44
+
 /** Shared cell classes so the skeleton and the live rows have identical geometry. */
 export const HEAD_CLASS = 'h-9 px-3 text-xs font-medium text-muted-foreground'
 

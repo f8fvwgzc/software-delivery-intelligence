@@ -46,4 +46,6 @@ export const routes = {
   settings: () => '/settings',
 
   apiDocs: () => '/api/docs',
+  /** The trust documents (TRUST.md, PRIVACY.md), served by the app itself. */
+  trustDoc: (doc: 'trust' | 'privacy') => `/docs/${doc}`,
 } as const

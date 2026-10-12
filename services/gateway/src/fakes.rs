@@ -327,6 +327,25 @@ pub mod knowledge {
                 }))
             }
 
+            /// One project in `w1`, none anywhere else; only `system` may
+            /// ask for several workspaces, like the real service.
+            async fn count_projects(
+                &self,
+                request: Request<proto::CountProjectsRequest>,
+            ) -> Result<Response<proto::CountProjectsResponse>, Status> {
+                let caller = principal(&request)?;
+                let ids = request.into_inner().workspace_ids;
+                if ids.len() > 1 && caller.user_id != sdi_common::principal::SYSTEM_USER {
+                    return Err(Status::permission_denied("system only"));
+                }
+                let counts = ids
+                    .into_iter()
+                    .filter(|id| id == WORKSPACE)
+                    .map(|id| (id, 1))
+                    .collect();
+                Ok(Response::new(proto::CountProjectsResponse { counts }))
+            }
+
             async fn start_scan(
                 &self,
                 request: Request<proto::StartScanRequest>,
@@ -617,6 +636,7 @@ pub mod intelligence {
             api_key_configured: false,
             cost_ceiling_usd: 500.0,
             auto_review: false,
+            ..Default::default()
         }
     }
 

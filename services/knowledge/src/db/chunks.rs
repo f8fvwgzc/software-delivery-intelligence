@@ -84,8 +84,42 @@ pub async fn replace_kinds(
     .bind(kinds)
     .execute(&mut *conn)
     .await?;
-    for chunk in chunks {
-        insert(&mut *conn, workspace_id, chunk).await?;
+    insert_many(conn, workspace_id, chunks).await
+}
+
+/// Inserts chunks in batches of [`super::INSERT_BATCH`]; embeddings travel
+/// as pgvector text literals and are cast per row.
+pub async fn insert_many(
+    conn: &mut PgConnection,
+    workspace_id: Uuid,
+    chunks: &[NewChunk],
+) -> sqlx::Result<()> {
+    for batch in chunks.chunks(super::INSERT_BATCH) {
+        let ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let kinds: Vec<&str> = batch.iter().map(|c| c.kind.as_str()).collect();
+        let projects: Vec<Option<Uuid>> = batch.iter().map(|c| c.project_id).collect();
+        let refs: Vec<&str> = batch.iter().map(|c| c.ref_id.as_str()).collect();
+        let titles: Vec<&str> = batch.iter().map(|c| c.title.as_str()).collect();
+        let paths: Vec<&str> = batch.iter().map(|c| c.path.as_str()).collect();
+        let contents: Vec<&str> = batch.iter().map(|c| c.content.as_str()).collect();
+        let embeddings: Vec<String> = batch.iter().map(|c| to_pgvector(&c.embedding)).collect();
+        sqlx::query(
+            "INSERT INTO chunks (id, workspace_id, kind, project_id, ref_id, title, path, content, embedding)
+             SELECT id, $1, kind, project_id, ref_id, title, path, content, embedding::vector
+               FROM UNNEST($2::uuid[], $3::text[], $4::uuid[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+                 AS t(id, kind, project_id, ref_id, title, path, content, embedding)",
+        )
+        .bind(workspace_id)
+        .bind(&ids)
+        .bind(&kinds)
+        .bind(&projects)
+        .bind(&refs)
+        .bind(&titles)
+        .bind(&paths)
+        .bind(&contents)
+        .bind(&embeddings)
+        .execute(&mut *conn)
+        .await?;
     }
     Ok(())
 }

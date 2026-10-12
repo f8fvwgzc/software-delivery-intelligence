@@ -1,0 +1,75 @@
+# Kubernetes deployment of the whole platform (docs/self-hosting.md,
+# "Kubernetes"). `kubectl apply -k deploy/k8s` after filling secrets.env.
+#
+#   kubectl create namespace sdi
+#   cp deploy/k8s/secrets.example.env deploy/k8s/secrets.env   # then edit
+#   kubectl apply -k deploy/k8s
+#
+# Images are the ones docker-compose builds (`sdi/<service>:<tag>`); point
+# `images:` at your registry. Postgres here is a single StatefulSet for
+# small installs; a managed Postgres with pgvector works by setting
+# DATABASE_URL in secrets.env and dropping postgres.yaml from `resources`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sdi
+
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/part-of: sdi
+
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - identity.yaml
+  - knowledge.yaml
+  - intelligence.yaml
+  - execution.yaml
+  - gateway.yaml
+  - web.yaml
+  - ingress.yaml
+
+configMapGenerator:
+  - name: sdi-config
+    literals:
+      - LOG_FORMAT=json
+      - RUST_LOG=info,sqlx=warn
+      # Five services × DB_MAX_CONNECTIONS must fit Postgres max_connections.
+      - DB_MAX_CONNECTIONS=20
+      - DB_STATEMENT_TIMEOUT_MS=30000
+      - SHUTDOWN_GRACE_SECS=20
+      # The origin the browser uses: redirects are absolute on it and the
+      # session cookie is Secure when it is https (X-Forwarded-Proto from
+      # the ingress is honoured too).
+      - SDI_PUBLIC_URL=https://sdi.example.com
+      - GITHUB_API_URL=https://api.github.com
+      - KNOWLEDGE_GRPC_URL=http://knowledge:50051
+      - INTELLIGENCE_GRPC_URL=http://intelligence:50052
+      - EXECUTION_GRPC_URL=http://execution:50053
+      - IDENTITY_GRPC_URL=http://identity:50054
+      - GATEWAY_AUTH_CACHE_MAX=10000
+      - SSE_MAX_PER_WORKSPACE=50
+      - WEBHOOK_QUEUE_MAX=256
+      - SCAN_STAGE_TIMEOUT_SECS=600
+      - SCAN_TIMEOUT_SECS=1800
+
+secretGenerator:
+  # DATABASE_URL, SDI_SESSION_SECRET, GITHUB_* (see secrets.example.env).
+  - name: sdi-secrets
+    envs:
+      - secrets.env
+
+images:
+  - name: sdi/identity
+    newTag: local
+  - name: sdi/knowledge
+    newTag: local
+  - name: sdi/intelligence
+    newTag: local
+  - name: sdi/execution
+    newTag: local
+  - name: sdi/gateway
+    newTag: local
+  - name: sdi/web
+    newTag: local

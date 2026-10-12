@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 
 import { downloadArtifact, splitLines, type Artifact } from '../../lib/artifacts'
 import { ArtifactIcon } from './artifact-icon'
+import { count } from '@/lib/intl'
 
 interface CodePaneProps {
   artifact: Artifact
@@ -68,7 +69,7 @@ export function CodePane({ artifact }: CodePaneProps) {
             {lines.map((line, index) => (
               <span
                 key={index}
-                className="block whitespace-pre pr-4 [counter-increment:line] before:sticky before:left-0 before:mr-4 before:inline-block before:w-10 before:bg-muted/20 before:pr-2 before:text-right before:tabular-nums before:text-muted-foreground/60 before:select-none before:content-[counter(line)]"
+                className="block whitespace-pre pr-4 [counter-increment:line] before:sticky before:left-0 before:mr-4 before:inline-block before:w-10 before:bg-muted/20 before:pr-2 before:text-right before:tabular-nums before:text-muted-foreground before:select-none before:content-[counter(line)]"
               >
                 {line}
                 {'\n'}
@@ -78,7 +79,7 @@ export function CodePane({ artifact }: CodePaneProps) {
         </pre>
       </div>
       <footer className="flex h-7 items-center border-t px-3 text-2xs tabular-nums text-muted-foreground">
-        {lines.length} {lines.length === 1 ? 'line' : 'lines'} · {artifact.content.length.toLocaleString()} bytes
+        {count(lines.length, 'line', 'lines')} · {artifact.content.length.toLocaleString()} bytes
       </footer>
     </div>
   )

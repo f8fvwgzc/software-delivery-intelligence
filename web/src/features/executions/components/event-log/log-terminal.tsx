@@ -1,5 +1,6 @@
-import { format, isValid, parseISO } from 'date-fns'
 import { useEffect, useRef } from 'react'
+
+import { count as countOf, formatClock } from '@/lib/intl'
 
 import type { ExecutionEvent } from './use-event-stream'
 
@@ -15,11 +16,6 @@ interface LogTerminalProps {
 }
 
 const FOLLOW_THRESHOLD = 24
-
-function clock(iso: string) {
-  const date = parseISO(iso)
-  return isValid(date) ? format(date, 'HH:mm:ss') : '--:--:--'
-}
 
 /**
  * The adapter's stdout/stderr as a terminal-style block: a muted dark-ish
@@ -65,13 +61,13 @@ export function LogTerminal({ lines, hidden = 0, onShowAll, follow, onFollowChan
                 onClick={onShowAll}
                 className="rounded-sm text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
               >
-                Show {hidden} earlier {hidden === 1 ? 'line' : 'lines'}
+                Show {countOf(hidden, 'earlier line', 'earlier lines')}
               </button>
             </li>
           ) : null}
           {lines.map((line) => (
             <li key={line.seq} className="grid grid-cols-[3.75rem_minmax(0,1fr)] gap-x-2">
-              <span className="tabular-nums text-muted-foreground select-none">{clock(line.at)}</span>
+              <span className="tabular-nums text-muted-foreground select-none">{formatClock(line.at)}</span>
               <span className="min-w-0 whitespace-pre-wrap break-all text-foreground/90">
                 {line.stepKey ? <span className="text-muted-foreground">[{line.stepKey}] </span> : null}
                 {line.message}

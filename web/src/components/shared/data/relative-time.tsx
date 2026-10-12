@@ -1,4 +1,6 @@
-import { format, formatDistanceToNowStrict, isValid, parseISO } from 'date-fns'
+import { formatDistanceToNowStrict, isValid, parseISO } from 'date-fns'
+
+import { formatDateTime } from '@/lib/intl'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
@@ -24,7 +26,7 @@ export function RelativeTime({ value, fallback = '—', className }: RelativeTim
           {formatDistanceToNowStrict(date, { addSuffix: true })}
         </time>
       </TooltipTrigger>
-      <TooltipContent>{format(date, 'PPpp')}</TooltipContent>
+      <TooltipContent>{formatDateTime(value)}</TooltipContent>
     </Tooltip>
   )
 }

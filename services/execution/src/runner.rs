@@ -40,6 +40,7 @@ use crate::{
         state,
     },
     events::PlatformEvents,
+    identity::GithubAccessSource,
     knowledge::PatternOutcomes,
 };
 
@@ -133,10 +134,17 @@ pub struct Runtime {
     /// Whether `GITHUB_TOKEN` is configured: decides if a new workspace gets
     /// the `github-token` identity (CONTRACT.md §5.3).
     pub github_token: bool,
+    /// Per-workspace GitHub access for the real adapters (CONTRACT.md §18).
+    pub github_access: Arc<dyn GithubAccessSource>,
     runners: Mutex<HashMap<Uuid, mpsc::Sender<Command>>>,
     /// Workspaces whose policy and identity seed was checked this process.
+    /// Bounded: past `SEEDED_MAX` entries the set is cleared, and the seed
+    /// (idempotent) simply runs again for the next request.
     seeded: Mutex<HashSet<Uuid>>,
 }
+
+/// Workspaces remembered as seeded before the set is reset.
+const SEEDED_MAX: usize = 10_000;
 
 impl Runtime {
     pub fn new(
@@ -146,6 +154,7 @@ impl Runtime {
         audit: Arc<dyn AuditSink>,
         verify_delay: Duration,
         github_token: bool,
+        github_access: Arc<dyn GithubAccessSource>,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
@@ -156,9 +165,16 @@ impl Runtime {
             platform: PlatformEvents::default(),
             verify_delay,
             github_token,
+            github_access,
             runners: Mutex::new(HashMap::new()),
             seeded: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// Workspaces currently remembered as seeded (tests).
+    #[cfg(test)]
+    pub fn seeded_workspaces(&self) -> usize {
+        self.seeded.lock().expect("seeded lock").len()
     }
 
     /// Copies the §5.2 policies and creates the §5.3 identities for a
@@ -181,10 +197,11 @@ impl Runtime {
             .await
             .map_err(db_status)?;
         tx.commit().await.map_err(db_status)?;
-        self.seeded
-            .lock()
-            .expect("seeded lock")
-            .insert(workspace_id);
+        let mut seeded = self.seeded.lock().expect("seeded lock");
+        if seeded.len() >= SEEDED_MAX {
+            seeded.clear();
+        }
+        seeded.insert(workspace_id);
         Ok(())
     }
 
@@ -204,7 +221,7 @@ impl Runtime {
             id,
             rx: receiver,
         };
-        tokio::spawn(runner.run());
+        sdi_common::tasks::spawn("execution-runner", runner.run());
         sender
     }
 
@@ -254,7 +271,7 @@ impl Runtime {
             if mid_step && row.adapter != adapters::SIMULATED {
                 let adapters = self.adapters.clone();
                 let id = row.id;
-                tokio::spawn(async move {
+                sdi_common::tasks::spawn("recovery-stop", async move {
                     for adapter in adapters.real() {
                         adapter.stop(id).await;
                     }
@@ -1300,6 +1317,13 @@ impl Runner {
             attempt: attempt.max(0) as u32,
         };
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_CHANNEL);
+        // Real adapters read and write GitHub as the workspace, with the
+        // token and API base identity mints for it (GHES included).
+        let github = if exec.adapter == adapters::SIMULATED {
+            None
+        } else {
+            self.rt.github_access.access(self.workspace).await
+        };
         let ctx = RunContext {
             execution_id: self.id,
             execution_number: exec.number,
@@ -1308,6 +1332,7 @@ impl Runner {
             outputs: exec.outputs.0.clone(),
             artifacts: exec.artifacts.0.clone(),
             logs: LogSink::new(log_tx),
+            github,
         };
         let fault_targets_step = ctx.fault.as_ref().is_some_and(|f| f.step_key == step.key);
 

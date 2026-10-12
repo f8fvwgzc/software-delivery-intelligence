@@ -6,6 +6,14 @@ use std::collections::BTreeMap;
 
 use sdi_analyzer::*;
 
+/// The fixtures assert end-of-life findings as of this day. The analyzer
+/// itself has no default date: the knowledge service passes the real one.
+const TODAY: Day = (2026, 10, 9);
+
+fn analyze(snapshot: &RepoSnapshot) -> Analysis {
+    analyze_at(snapshot, TODAY)
+}
+
 fn snapshot(full_name: &str, files: &[(&str, &str)], extra_tree: &[&str]) -> RepoSnapshot {
     let mut tree: Vec<TreeEntry> = files
         .iter()

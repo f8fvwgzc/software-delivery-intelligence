@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 
 import type { DraftStep } from '../../lib/plan-template'
 import { StepEditorRow } from './step-editor-row'
+import { count } from '@/lib/intl'
 
 interface PlanEditorProps {
   steps: DraftStep[]
@@ -59,7 +60,7 @@ export function PlanEditor({ steps, errors, onChange, onReset }: PlanEditorProps
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">
-          {steps.length} {steps.length === 1 ? 'step' : 'steps'}. Each key must be unique; "after" lists the steps that must checkpoint first.
+          {count(steps.length, 'step', 'steps')}. Each key must be unique; "after" lists the steps that must checkpoint first.
         </span>
         <Button type="button" variant="ghost" size="xs" onClick={onReset} className="text-muted-foreground">
           <RotateCcwIcon data-icon="inline-start" />

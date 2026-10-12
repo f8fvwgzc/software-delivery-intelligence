@@ -8,15 +8,13 @@
 //! is set, that token is used for every workspace and a warning is logged
 //! once.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 use chrono::{DateTime, Duration, Utc};
+use sdi_common::cache::TtlCache;
 use uuid::Uuid;
 
 use super::{GithubError, Result};
@@ -32,6 +30,13 @@ const REFRESH_MARGIN: Duration = Duration::minutes(5);
 const DEFAULT_LIFETIME: Duration = Duration::minutes(55);
 /// How long the dev-mode fallback is reused before identity is tried again.
 const DEV_RETRY: Duration = Duration::minutes(5);
+/// Workspaces whose token is held at once. A public deployment serves many
+/// more over a day, but only the ones active in the last hour matter; the
+/// rest are re-minted by identity when they come back.
+pub const CACHE_CAPACITY: usize = 4096;
+/// Longest a cached token is kept whatever `expires_at` says (OAuth tokens
+/// have none, so this is their bound).
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// What kind of principal the token represents, which decides how
 /// repositories are listed.
@@ -77,7 +82,7 @@ impl GithubAccess {
 pub struct TokenProvider {
     identity: Identity,
     dev_token: Option<String>,
-    cache: Mutex<HashMap<Uuid, GithubAccess>>,
+    cache: Mutex<TtlCache<Uuid, GithubAccess>>,
     warned: AtomicBool,
 }
 
@@ -86,9 +91,14 @@ impl TokenProvider {
         Self {
             identity,
             dev_token: dev_token.filter(|t| !t.trim().is_empty()),
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(TtlCache::new(CACHE_CAPACITY, CACHE_TTL)),
             warned: AtomicBool::new(false),
         }
+    }
+
+    /// Tokens held right now (diagnostics, tests).
+    pub fn cached_tokens(&self) -> usize {
+        self.lock().len()
     }
 
     pub fn dev_token_configured(&self) -> bool {
@@ -181,10 +191,9 @@ impl TokenProvider {
     }
 
     fn cached(&self, workspace_id: Uuid, now: DateTime<Utc>) -> Option<GithubAccess> {
-        let cache = self.lock();
+        let mut cache = self.lock();
         cache
-            .get(&workspace_id)
-            .filter(|access| access.usable(now))
+            .get_if(&workspace_id, |access| access.usable(now))
             .cloned()
     }
 
@@ -192,7 +201,7 @@ impl TokenProvider {
         self.lock().insert(workspace_id, access);
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, GithubAccess>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, TtlCache<Uuid, GithubAccess>> {
         self.cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -237,6 +246,15 @@ mod tests {
             disabled.access(&caller).await.unwrap_err(),
             GithubError::NoToken(_)
         ));
+    }
+
+    #[test]
+    fn the_token_cache_never_outgrows_its_capacity() {
+        let provider = TokenProvider::new(Identity::disabled(), None);
+        for _ in 0..(CACHE_CAPACITY + 100) {
+            provider.store(Uuid::now_v7(), GithubAccess::dev("t"));
+        }
+        assert_eq!(provider.cached_tokens(), CACHE_CAPACITY);
     }
 
     #[test]

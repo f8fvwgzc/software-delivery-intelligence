@@ -22,6 +22,7 @@ import { hasRole } from '@/features/auth/lib/roles'
 import { usePublishReview } from '../../api/mutations'
 import type { Review, ReviewEvent } from '../../api/types'
 import { REVIEW_EVENT, canPublish } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 const EVENTS: ReviewEvent[] = ['comment', 'request_changes', 'approve']
 
@@ -93,8 +94,8 @@ export function PublishDialog({ review }: { review: Review }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Publish this review to GitHub?</AlertDialogTitle>
             <AlertDialogDescription>
-              Posts a “{REVIEW_EVENT[event].label}” review on #{review.prNumber} with the summary as its body and {review.findingsAccepted}{' '}
-              {review.findingsAccepted === 1 ? 'comment' : 'comments'} for the accepted findings. Dismissed findings stay here.
+              Posts a “{REVIEW_EVENT[event].label}” review on #{review.prNumber} with the summary as its body and{' '}
+              {count(review.findingsAccepted, 'comment', 'comments')} for the accepted findings. Dismissed findings stay here.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

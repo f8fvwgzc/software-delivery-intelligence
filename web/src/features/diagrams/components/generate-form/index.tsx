@@ -80,7 +80,7 @@ export function GenerateForm({ projectId, onGenerated }: GenerateFormProps) {
       <Field className="gap-1.5" data-invalid={touched && missingPrompt ? true : undefined}>
         <FieldLabel htmlFor={`${id}-prompt`} className="text-xs text-muted-foreground">
           {isCustom ? 'Prompt or Mermaid' : 'Focus'}
-          {isCustom ? null : <span className="font-normal text-muted-foreground/70">optional</span>}
+          {isCustom ? null : <span className="font-normal text-muted-foreground">optional</span>}
         </FieldLabel>
         <Textarea
           id={`${id}-prompt`}

@@ -32,7 +32,7 @@ pub fn export(
     workspace_id: Uuid,
 ) -> ReceiverStream<sqlx::Result<(&'static str, String)>> {
     let (tx, rx) = mpsc::channel(EXPORT_BUFFER);
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("workspace-export-rows", async move {
         for (entity, table, order) in TABLES {
             // Table and order come from `TABLES`, never from a caller.
             let sql = format!(

@@ -80,6 +80,20 @@ pub async fn list(exec: impl PgExecutor<'_>, workspace_id: Uuid) -> sqlx::Result
     .await
 }
 
+/// Projects per workspace for the given ids (absent = zero). The one
+/// query that takes several workspaces, for the gateway's switcher.
+pub async fn count_by_workspaces(
+    exec: impl PgExecutor<'_>,
+    workspace_ids: &[Uuid],
+) -> sqlx::Result<Vec<(Uuid, i64)>> {
+    sqlx::query_as::<_, (Uuid, i64)>(
+        "SELECT workspace_id, count(*) FROM projects WHERE workspace_id = ANY($1) GROUP BY workspace_id",
+    )
+    .bind(workspace_ids)
+    .fetch_all(exec)
+    .await
+}
+
 /// `RowNotFound` when the project is absent or belongs to another workspace.
 pub async fn get(
     exec: impl PgExecutor<'_>,

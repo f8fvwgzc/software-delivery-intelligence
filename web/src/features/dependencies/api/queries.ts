@@ -16,7 +16,9 @@ export const dependencyQueries = {
   list: (projectId: string) =>
     queryOptions({
       queryKey: dependencyKeys.list(projectId),
-      queryFn: () =>
-        unwrap(api.GET('/api/v1/projects/{id}/dependencies', { params: { path: { id: projectId } } })),
+      queryFn: ({ signal }) =>
+        unwrap(api.GET('/api/v1/projects/{id}/dependencies', { params: { path: { id: projectId } }, signal })),
+      // Read at the scanned commit; a rescan invalidates the project family.
+      staleTime: 10 * 60_000,
     }),
 }

@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 import { buildJobDag, type JobPlacement } from '../../lib/job-dag'
 import type { PipelineJob } from '../../lib/types'
+import { count } from '@/lib/intl'
 
 /* Fixed geometry: positions derive from (level, row), so no measuring is needed. */
 const CHIP_WIDTH = 120
@@ -43,7 +44,7 @@ function JobChip({ job, style }: JobChipProps) {
       <TooltipContent side="bottom" className="flex flex-col items-start gap-0.5">
         <span className="font-mono">{job.key}</span>
         <span>
-          {job.runsOn ? `Runs on ${job.runsOn}` : 'Runner not set'} · {steps === 1 ? '1 step' : `${steps} steps`}
+          {job.runsOn ? `Runs on ${job.runsOn}` : 'Runner not set'} · {count(steps, 'step', 'steps')}
         </span>
       </TooltipContent>
     </Tooltip>

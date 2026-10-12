@@ -15,6 +15,8 @@ const AUTH_PREFIX = '/api/v1/auth/'
 /** Every request carries the current workspace, so no feature has to know about tenancy. */
 const workspaceHeader: Middleware = {
   onRequest({ request }) {
+    // Development only: the first-paint request budget (src/lib/perf/dev-perf.ts).
+    if (import.meta.env.DEV) window.sdiDevPerf?.recordRequest(request.url)
     const id = workspaceStore.get()
     if (!id || new URL(request.url).pathname.startsWith(AUTH_PREFIX)) return undefined
     if (!request.headers.has(WORKSPACE_HEADER)) request.headers.set(WORKSPACE_HEADER, id)

@@ -123,6 +123,11 @@ LEFT JOIN LATERAL (
 
 const VISIBLE: &str = "(p.workspace_id IS NULL OR p.workspace_id = $1)";
 
+/// Inserts or refreshes a pattern by slug. `estimated_monthly_cost_usd` and
+/// `security_score` are insert-only: the intelligence service learns them
+/// from outcomes, and a restart's catalog seed (or a rescan's learned
+/// upsert) must not reset what was learned. Everything else follows the
+/// release.
 pub async fn upsert(exec: impl PgExecutor<'_>, pattern: &PatternUpsert) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO patterns (id, workspace_id, name, summary, category, technologies, cloud, runtime, iac, delivery, requires, scope, source,
@@ -134,8 +139,7 @@ pub async fn upsert(exec: impl PgExecutor<'_>, pattern: &PatternUpsert) -> sqlx:
            technologies = EXCLUDED.technologies, cloud = EXCLUDED.cloud, runtime = EXCLUDED.runtime,
            iac = EXCLUDED.iac, delivery = EXCLUDED.delivery, requires = EXCLUDED.requires,
            scope = EXCLUDED.scope, source = EXCLUDED.source,
-           estimated_monthly_cost_usd = EXCLUDED.estimated_monthly_cost_usd,
-           security_score = EXCLUDED.security_score, complexity = EXCLUDED.complexity,
+           complexity = EXCLUDED.complexity,
            pros = EXCLUDED.pros, cons = EXCLUDED.cons, plan = EXCLUDED.plan,
            embedding = EXCLUDED.embedding, attributes = EXCLUDED.attributes, updated_at = now()",
     )

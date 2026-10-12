@@ -64,7 +64,7 @@ pub async fn watch(
     let rt = Arc::clone(rt);
     let mut last = i64::try_from(req.after_seq).unwrap_or(i64::MAX);
 
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("watch-execution", async move {
         if replay(&rt, workspace, id, &mut last, &tx).await.is_break() {
             return;
         }
@@ -129,7 +129,7 @@ pub fn watch_platform(
     let mut live = rt.platform.subscribe();
     let (tx, rx) = mpsc::channel(WATCH_BUFFER);
     let workspace = workspace.to_string();
-    tokio::spawn(async move {
+    sdi_common::tasks::spawn("watch-events", async move {
         // The feed never ends on its own; the service's shutdown ends it so
         // graceful shutdown is not pinned by an open browser tab.
         let leaving = sdi_common::shutdown::cancelled();

@@ -43,19 +43,27 @@ pub async fn replace(
         .bind(project_id)
         .execute(&mut *conn)
         .await?;
-    for dep in deps {
+    for batch in deps.chunks(super::INSERT_BATCH) {
+        let ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let ecosystems: Vec<&str> = batch.iter().map(|d| d.ecosystem.as_str()).collect();
+        let names: Vec<&str> = batch.iter().map(|d| d.name.as_str()).collect();
+        let versions: Vec<&str> = batch.iter().map(|d| d.version.as_str()).collect();
+        let manifests: Vec<&str> = batch.iter().map(|d| d.manifest_path.as_str()).collect();
+        let scopes: Vec<&str> = batch.iter().map(|d| d.scope.as_str()).collect();
         sqlx::query(
             "INSERT INTO dependencies (id, workspace_id, project_id, ecosystem, name, version, manifest_path, scope)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             SELECT id, $1, $2, ecosystem, name, version, manifest_path, scope
+               FROM UNNEST($3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
+                 AS t(id, ecosystem, name, version, manifest_path, scope)",
         )
-        .bind(Uuid::now_v7())
         .bind(workspace_id)
         .bind(project_id)
-        .bind(&dep.ecosystem)
-        .bind(&dep.name)
-        .bind(&dep.version)
-        .bind(&dep.manifest_path)
-        .bind(&dep.scope)
+        .bind(&ids)
+        .bind(&ecosystems)
+        .bind(&names)
+        .bind(&versions)
+        .bind(&manifests)
+        .bind(&scopes)
         .execute(&mut *conn)
         .await?;
     }

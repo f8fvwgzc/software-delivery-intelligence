@@ -55,7 +55,7 @@ export function AppSidebar() {
               <li key={group.label} className="flex flex-col gap-0.5">
                 <span
                   className={cn(
-                    'flex h-6 items-center px-2.5 text-2xs font-medium tracking-wide text-muted-foreground/80 select-none',
+                    'flex h-6 items-center px-2.5 text-2xs font-medium tracking-wide text-muted-foreground select-none',
                     groupIndex > 0 && 'mt-2',
                   )}
                   aria-hidden

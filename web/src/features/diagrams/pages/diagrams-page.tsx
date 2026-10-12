@@ -9,6 +9,7 @@ import { Panel } from '@/components/system/panel'
 import { diagramsQuery } from '../api/queries'
 import { DiagramsTable, DiagramsTableSkeleton } from '../components/diagrams-table'
 import { GenerateForm } from '../components/generate-form'
+import { count } from '@/lib/intl'
 
 /** /projects/:projectId/diagrams — the generate form, then every diagram as a dense table. */
 export default function DiagramsPage() {
@@ -37,7 +38,7 @@ function DiagramsBody({ projectId }: { projectId: string }) {
       <DiagramsTable diagrams={diagrams} />
       <FrameFooter>
         <span className="tabular-nums" aria-live="polite">
-          {diagrams.length} {diagrams.length === 1 ? 'diagram' : 'diagrams'}
+          {count(diagrams.length, 'diagram', 'diagrams')}
         </span>
       </FrameFooter>
     </>

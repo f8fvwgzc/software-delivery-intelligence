@@ -27,10 +27,22 @@ export interface EventSourceHandlers {
   onStateChange?: (state: StreamState) => void
 }
 
+/** The subset of `EventSource` the wrapper drives; a test double only needs this much. */
+export interface EventSourceLike {
+  readonly readyState: number
+  onopen: ((event: Event) => void) | null
+  onmessage: ((event: MessageEvent<string>) => void) | null
+  onerror: ((event: Event) => void) | null
+  addEventListener: (type: string, listener: (event: Event) => void) => void
+  close: () => void
+}
+
 export interface EventSourceOptions {
   url: string
   /** Named events that close the stream for good. Default `['end']`. */
   endEvents?: readonly string[]
+  /** Opens the underlying connection; the browser's `EventSource` by default. The stress page injects a fake. */
+  createSource?: (url: string) => EventSourceLike
   minBackoffMs?: number
   maxBackoffMs?: number
   /** How long the document may stay hidden before the stream is paused. */
@@ -38,6 +50,9 @@ export interface EventSourceOptions {
   /** Consecutive refused connections (readyState CLOSED) before giving up. */
   maxRefusals?: number
 }
+
+/** `EventSource.CLOSED`, spelled out so a test double needs no static. */
+const CLOSED = 2
 
 const DEFAULTS = {
   endEvents: ['end'] as readonly string[],
@@ -65,8 +80,9 @@ export function openEventSource(options: EventSourceOptions, handlers: EventSour
   const maxBackoffMs = options.maxBackoffMs ?? DEFAULTS.maxBackoffMs
   const hiddenGraceMs = options.hiddenGraceMs ?? DEFAULTS.hiddenGraceMs
   const maxRefusals = options.maxRefusals ?? DEFAULTS.maxRefusals
+  const createSource = options.createSource ?? ((target: string) => new EventSource(target))
 
-  let source: EventSource | null = null
+  let source: EventSourceLike | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let hiddenTimer: ReturnType<typeof setTimeout> | undefined
   let attempt = 0
@@ -98,7 +114,7 @@ export function openEventSource(options: EventSourceOptions, handlers: EventSour
     setState(attempt === 0 ? 'connecting' : 'reconnecting')
 
     // EventSource cannot send headers; the workspace travels as a query parameter.
-    const next = new EventSource(withWorkspaceParam(url))
+    const next = createSource(withWorkspaceParam(url))
     source = next
 
     next.onopen = () => {
@@ -111,7 +127,7 @@ export function openEventSource(options: EventSourceOptions, handlers: EventSour
     }
 
     for (const name of endEvents) {
-      next.addEventListener(name, (event) => {
+      next.addEventListener(name, (event: Event) => {
         stopped = true
         closeSource()
         setState('closed')
@@ -122,7 +138,7 @@ export function openEventSource(options: EventSourceOptions, handlers: EventSour
     // Fires for a dropped connection and for the gateway's named `error` event.
     next.onerror = () => {
       if (stopped || next !== source) return
-      const refused = next.readyState === EventSource.CLOSED
+      const refused = next.readyState === CLOSED
       closeSource()
       if (refused && attempt + 1 >= maxRefusals) {
         stopped = true

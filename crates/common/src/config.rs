@@ -45,6 +45,8 @@ pub const DEFAULT_KNOWLEDGE_URL: &str = "http://127.0.0.1:50051";
 pub const DEFAULT_INTELLIGENCE_URL: &str = "http://127.0.0.1:50052";
 pub const DEFAULT_EXECUTION_URL: &str = "http://127.0.0.1:50053";
 pub const DEFAULT_IDENTITY_URL: &str = "http://127.0.0.1:50054";
+/// Where the browser reaches the app in development (`SDI_PUBLIC_URL`).
+pub const DEFAULT_PUBLIC_URL: &str = "http://127.0.0.1:5173";
 
 pub fn database_url() -> String {
     env_or("DATABASE_URL", DEFAULT_DATABASE_URL)
@@ -64,4 +66,19 @@ pub fn execution_url() -> String {
 
 pub fn identity_url() -> String {
     env_or("IDENTITY_GRPC_URL", DEFAULT_IDENTITY_URL)
+}
+
+/// `SDI_PUBLIC_URL` without a trailing slash: the origin the browser uses,
+/// what redirects are made absolute against and what decides whether the
+/// session cookie is `Secure` (CONTRACT.md §18).
+pub fn public_url() -> String {
+    env_or("SDI_PUBLIC_URL", DEFAULT_PUBLIC_URL)
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+/// `SHUTDOWN_GRACE_SECS` (default 20): how long a service waits for its
+/// tracked background tasks once the listener closed.
+pub fn shutdown_grace() -> std::time::Duration {
+    std::time::Duration::from_secs(env_parse("SHUTDOWN_GRACE_SECS", 20).unwrap_or(20))
 }

@@ -1,0 +1,93 @@
+# execution (gRPC on 50053). Liveness and readiness use the gRPC health
+# service every Rust service registers (tonic-health), which Kubernetes
+# probes natively (grpc probes, GA since 1.27).
+apiVersion: v1
+kind: Service
+metadata:
+  name: execution
+spec:
+  selector:
+    app.kubernetes.io/name: execution
+  ports:
+    - name: grpc
+      port: 50053
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: execution
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: execution
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: execution
+          image: sdi/execution
+          ports:
+            - name: grpc
+              containerPort: 50053
+          envFrom:
+            - configMapRef:
+                name: sdi-config
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: DATABASE_URL } }
+            - name: EXECUTION_LISTEN
+              value: 0.0.0.0:50053
+            - name: KNOWLEDGE_GRPC_URL
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: KNOWLEDGE_GRPC_URL } }
+            - name: IDENTITY_GRPC_URL
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: IDENTITY_GRPC_URL } }
+            - name: GITHUB_API_URL
+              valueFrom: { configMapKeyRef: { name: sdi-config, key: GITHUB_API_URL } }
+            - name: SDI_RUN_DIR
+              value: /var/lib/sdi/run
+            - name: GITHUB_TOKEN
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: GITHUB_TOKEN, optional: true } }
+          readinessProbe:
+            grpc:
+              port: 50053
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            grpc:
+              port: 50053
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /var/lib/sdi/run
+      volumes:
+        - name: tmp
+          emptyDir:
+            # Streamed repository archives (≤ 50 MB each) land here.
+            sizeLimit: 1Gi
+        - name: run
+          emptyDir:
+            sizeLimit: 5Gi

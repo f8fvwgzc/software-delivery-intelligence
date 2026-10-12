@@ -95,15 +95,19 @@ pub(super) async fn generate(
         let mut generated = diagrams::generate(kind, &input)
             .ok_or_else(|| Status::invalid_argument("kind is required"))?;
         let settings = svc.settings(caller).await?;
-        let access = svc.reasoner_access(caller).await;
-        let reasoner = svc.reasoner_for(&settings, &access);
+        let access = svc.reasoner_access(caller, &settings).await;
+        let reasoner = svc.reasoner_for(caller, &settings, &access);
         let refined = reasoner::diagrams::refine(reasoner.as_ref(), kind, &mut generated).await;
         let mermaid = mermaid::render_kind(kind, &generated.spec, &project_id);
         (
             generated,
             mermaid,
             "generated",
-            if refined { "claude" } else { "heuristic" },
+            if refined {
+                reasoner.name()
+            } else {
+                "heuristic"
+            },
         )
     };
 

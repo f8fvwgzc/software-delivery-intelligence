@@ -4,7 +4,10 @@
 //! rail in the web app follows along; a failure marks the step and the
 //! review `failed` and is recorded in the activity log.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use chrono::Utc;
 use sdi_common::principal::Principal;
@@ -14,11 +17,19 @@ use uuid::Uuid;
 
 use crate::{
     db::reviews::{self as repo, ActivityRow, FindingRow, ReviewRow, StepRecord},
-    domain::review::{self, ReviewInput, rules::Finding},
+    domain::review::{
+        self, ReviewInput,
+        input::{ReviewConfig, RuleLearning},
+        rules::{self, Finding},
+    },
     events::EventBus,
     gateway::KnowledgeGateway,
+    osv::OsvClient,
     reasoner::Reasoner,
 };
+
+/// The vulnerability check must never hold a review up for long.
+const OSV_BUDGET: Duration = Duration::from_secs(20);
 
 /// Everything one run needs, owned, so the task outlives the RPC.
 pub(super) struct ReviewRun {
@@ -30,6 +41,54 @@ pub(super) struct ReviewRun {
     pub workspace: Uuid,
     pub review: ReviewRow,
     pub pull_request: PullRequest,
+    pub osv: Option<Arc<OsvClient>>,
+}
+
+/// The repository's `.sdi.yml` `review:` section at the scanned commit,
+/// read through knowledge and parsed by the analyzer. Missing, unreadable
+/// or invalid means "no review configuration", never a failed review.
+async fn review_config(
+    knowledge: &dyn KnowledgeGateway,
+    principal: &Principal,
+    project_id: &str,
+) -> ReviewConfig {
+    match knowledge
+        .repo_file(principal, project_id, sdi_analyzer::CONFIG_PATH)
+        .await
+    {
+        Ok(file) => {
+            let draft = sdi_analyzer::parse_config(&file.content);
+            if sdi_analyzer::config_is_usable(&draft) {
+                ReviewConfig::from_draft(&draft.review)
+            } else {
+                tracing::debug!(project = project_id, errors = ?draft.errors, ".sdi.yml ignored by the review");
+                ReviewConfig::default()
+            }
+        }
+        Err(error) if error.status.code() == tonic::Code::NotFound => ReviewConfig::default(),
+        Err(error) => {
+            tracing::debug!(%error, project = project_id, ".sdi.yml unavailable to the review");
+            ReviewConfig::default()
+        }
+    }
+}
+
+/// What the project taught so far (CONTRACT.md §20 learnings).
+async fn learnings(pool: &PgPool, workspace: Uuid, project_id: &str) -> Vec<RuleLearning> {
+    match crate::db::learnings::for_project(pool, workspace, project_id).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| RuleLearning {
+                rule: r.rule,
+                accepted: u32::try_from(r.accepted).unwrap_or(0),
+                dismissed: u32::try_from(r.dismissed).unwrap_or(0),
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(%error, "review learnings unavailable; analysing without them");
+            Vec::new()
+        }
+    }
 }
 
 /// The rail at the start: every step pending.
@@ -145,6 +204,7 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
         workspace,
         mut review,
         pull_request,
+        osv,
     } = run;
     let mut steps = review.steps.0.clone();
 
@@ -172,7 +232,15 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
             .await;
         }
     };
-    let input = ReviewInput::from_proto(&pull_request, &context);
+    let today = Utc::now().date_naive();
+    let input = ReviewInput::from_proto(&pull_request, &context)
+        .with_config(review_config(knowledge.as_ref(), &principal, &review.project_id).await)
+        .with_learnings(learnings(&pool, workspace, &review.project_id).await)
+        .with_today((
+            chrono::Datelike::year(&today),
+            chrono::Datelike::month(&today),
+            chrono::Datelike::day(&today),
+        ));
     if !input.project_name.is_empty() {
         review.project_name = input.project_name.clone();
     }
@@ -193,7 +261,7 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
         "context",
         "done",
         &format!(
-            "{} files, {} touched facts, {} impacted nodes{}",
+            "{} files, {} touched facts, {} impacted nodes{}{}{}",
             input.files.len(),
             input.touched_facts.len(),
             input.impacted_nodes.len(),
@@ -201,6 +269,20 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
                 " (file list cut at the limit)"
             } else {
                 ""
+            },
+            if input.config.rules.is_empty() && input.config.ignore_paths.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", .sdi.yml: {} custom rules, {} ignored globs",
+                    input.config.rules.len(),
+                    input.config.ignore_paths.len()
+                )
+            },
+            if input.learnings.is_empty() {
+                String::new()
+            } else {
+                format!(", {} learned rules", input.learnings.len())
             }
         ),
         Some(started),
@@ -211,7 +293,15 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
     set_step(&mut steps, "analyze", "running", "", None);
     persist(&pool, &review, "analyzing", &steps).await?;
     emit(&events, &review, "progress", "analyzing", "analyze");
-    let findings = review::analyze_all(&input);
+    let mut findings = rules::collect(&input);
+    let deps = rules::dependencies::added_dependencies(&input);
+    if let Some(osv) = osv.as_ref().filter(|_| !deps.is_empty()) {
+        match tokio::time::timeout(OSV_BUDGET, osv.check(&deps)).await {
+            Ok(answers) => findings.extend(rules::osv::findings(&deps, &answers)),
+            Err(_) => tracing::warn!(review = %review.id, "osv check timed out; skipped"),
+        }
+    }
+    let findings = rules::finalize(findings, &input);
     let rows: Vec<FindingRow> = findings
         .iter()
         .enumerate()
@@ -259,7 +349,16 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
         &if findings.is_empty() {
             "no findings".to_owned()
         } else {
-            format!("{} findings: {by_severity}", findings.len())
+            let suppressed = findings.iter().filter(|f| f.suppressed).count();
+            format!(
+                "{} findings: {by_severity}{}",
+                findings.len(),
+                if suppressed > 0 {
+                    format!(" ({suppressed} suppressed by project learnings)")
+                } else {
+                    String::new()
+                }
+            )
         },
         Some(started),
     );
@@ -285,11 +384,18 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
     persist(&pool, &review, "analyzing", &steps).await?;
     emit(&events, &review, "progress", "analyzing", "summary");
     let draft = review::summary::walkthrough(&input, &findings);
-    let (summary, reasoner_name) = if reasoner.name() == "claude" {
+    let (summary, reasoner_name) = if reasoner.name() != "heuristic" {
         let context = review::summary::context_json(&input, &findings, &draft);
         let text = reasoner.write_review_summary(&draft, &context).await;
         let rewritten = text != draft;
-        (text, if rewritten { "claude" } else { "heuristic" })
+        (
+            text,
+            if rewritten {
+                reasoner.name()
+            } else {
+                "heuristic"
+            },
+        )
     } else {
         (draft, "heuristic")
     };

@@ -53,7 +53,8 @@ Shared crates:
 - `crates/common` — config, telemetry, db pool per schema, lazy gRPC channels,
   shutdown, `embed::embed()` (256-dim local hashing embeddings), time helpers.
 - `crates/analyzer` — pure functions `wanted_files(tree)` and
-  `analyze(&RepoSnapshot) -> Analysis`. No I/O.
+  `analyze_at(&RepoSnapshot, today) -> Analysis`. No I/O, no clock: the
+  caller passes the date (there is no default one in the crate).
 
 ## 3. Environment
 
@@ -61,8 +62,11 @@ Shared crates:
 |---|---|---|
 | `DATABASE_URL` | `postgres://sdi:sdi@127.0.0.1:5440/sdi` | all services |
 | `GITHUB_TOKEN` | — | knowledge (dev fallback only: used for every workspace while `IDENTITY_GRPC_URL` is unreachable, logged once; `scripts/dev.sh` exports `gh auth token`) |
-| `ANTHROPIC_API_KEY` | — | intelligence (optional; enables the `claude` reasoner) |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
+| `LLM_PROVIDER` | `anthropic` | intelligence (instance-wide reasoner fallback, §19: `anthropic` or `openai_compatible`) |
+| `LLM_BASE_URL` | — | intelligence (OpenAI-compatible endpoint: OpenAI, Azure OpenAI with `?api-version=`, Ollama, vLLM, OpenRouter, Gemini) |
+| `LLM_API_KEY` / `ANTHROPIC_API_KEY` | — | intelligence (optional dev fallback key; `ANTHROPIC_API_KEY` is the alias) |
+| `LLM_MODEL` / `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
+| `OSV_API_URL` | `https://api.osv.dev` | intelligence (§20 dependency vulnerabilities; `off` disables) |
 | `KNOWLEDGE_GRPC_URL` | `http://127.0.0.1:50051` | gateway, intelligence, execution |
 | `IDENTITY_GRPC_URL` | `http://127.0.0.1:50054` | gateway, knowledge (tokens, data controls, audit), intelligence, execution |
 | `INTELLIGENCE_GRPC_URL` | `http://127.0.0.1:50052` | gateway |
@@ -286,9 +290,9 @@ come from Y. Constraints act on `overall` only: `exclude` removes candidates,
 `unmet_requirements`. Option ids are `opt-<pattern_id>` so they survive
 re-ranking; every revision bumps `revision` and sets
 `changed_recommendation` on the reply when rank 1 changed. Every assistant
-reply cites `Evidence`. If `ANTHROPIC_API_KEY` is set the reply text is
-written by Claude from the structured context (model `ANTHROPIC_MODEL`); the
-ranking is always deterministic.
+reply cites `Evidence`. When the workspace's reasoner is on (§19) the
+reply text is written by the configured LLM from the structured context,
+within the token budget; the ranking is always deterministic.
 
 **Budget.** `GenerateProposalRequest.budget_monthly_usd`, the project's
 `.sdi.yml` budget, or a negotiation turn ("under $15 a month", "max 20
@@ -310,6 +314,26 @@ its `recommended_patterns`.
 files (§14). Artifacts are generated once per revision from the project's
 facts and config; negotiation that changes a parameter (region, port,
 runtime) regenerates them.
+
+**Realtime.** `GenerateProposal` answers as soon as the options are ranked
+(within 2 s for a project with 50 candidate patterns; measured by
+`generate_proposal_answers_fast_and_fills_artifacts_in_the_background`)
+with `status=proposed` and empty `artifacts`. While it works it streams
+`PlatformEvent{entity="proposal", action="progress", status="generating",
+data.step}` with `step` = `retrieving_context` → `ranking` →
+`generating_artifacts`; the files are generated in a background step
+(`spawn_blocking`) that updates the proposal's options and emits
+`action="updated", status="proposed", data.step="done"` (plus `revision`).
+The update is skipped when a negotiation re-ranked the proposal meanwhile
+(it regenerated the files itself). The web app shows the options at once
+and fills the files in on `done`. Negotiation turns stay synchronous.
+
+**Memory without a rescan.** Decisions (`CreateDecision`, negotiation,
+accepted proposals) and open-question answers live in intelligence and
+are read on every ranking: a decision `cloud:aws` changes the `policy`
+signal of the next proposal without the project being scanned again, and
+the constraints a negotiation adds stay on the proposal through every
+later revision (`decisions_rerank_without_a_rescan_and_constraints_persist`).
 
 ## 7. Execution state machine
 
@@ -493,7 +517,27 @@ test:
   port: 8080
 scan:
   exclude: ["docs/legacy/**", "vendor/**"]   # glob, applied to wanted_files
+review:                           # tunes pull request reviews (§20)
+  ignore_paths: ["gen/**", "vendor/**"]      # no rule reads these files
+  require_tests_for: ["src/billing/**"]      # a change here without a test change is `tests.required` (high), test framework or not
+  severity:                                  # overrides by rule id
+    correctness.todo: high
+    docker.latest_tag: info
+  rules:                                     # repository rules over added lines → `custom.<id>`
+    - id: no-moment                          # [a-z0-9_-], unique
+      pattern: "from ['\"]moment['\"]"       # regex; an invalid one makes the file invalid
+      severity: medium                       # info | low | medium | high | critical
+      message: Use date-fns instead of moment
+      paths: ["web/**"]                      # globs; all files when omitted
 ```
+
+Globs are the `scan.exclude` grammar (`*` within a segment, `**` across,
+a bare directory name means everything below it). The `review:` section
+is read by the review pipeline from the repository's `.sdi.yml` at the
+scanned commit (through `GetRepoFile`) and parsed by the same analyzer
+parser, so a file that is invalid for the scan is invalid for the review
+too; the scan records one configured fact `config:review.rules`
+summarising it.
 
 Everything that is *not* a configuration value stays a generated document
 (README, architecture, deployment guide, runbook, ADR, UAT plan, reports) in
@@ -519,7 +563,9 @@ Eight axes, each 0–100, from facts only (never from guesses):
 iac 0.1, dependencies 0.15, docs 0.05, secrets 0.1, runtime 0.1); `stage`
 is `legacy` < 35, `transitional` 35–69, `modern` ≥ 70. Runtime currency uses a
 curated EOL table (`crates/analyzer/src/eol.rs`: Node, Python, Java, .NET,
-PHP, Ruby, Go, Rust edition, Ubuntu/Debian/Alpine base images) read from
+PHP, Ruby, Go, Rust edition, Ubuntu/Debian/Alpine base images) judged
+against the date the knowledge service passes to `analyze_at` (the
+analyzer has no default date), read from
 `.nvmrc`, `.node-version`, `.tool-versions`, `engines`, `runtime.txt`,
 `pyproject requires-python`, `pom maven.compiler`, `<TargetFramework>`,
 `go.mod go`, `Cargo.toml edition`, Dockerfile base images.
@@ -600,10 +646,10 @@ captioned with its file name) and edges follow the importer → imported
 direction with verbs read from the importing file (`tokio::spawn` /
 `Command::new` → "starts"/"runs", HTTP clients → "calls", store writes →
 "records", reads → "reads", channels/SSE → "streams", config parsing →
-"loads", validation → "validates", else "uses"). When `ANTHROPIC_API_KEY` is set and the
-reasoner is `claude`, the reasoner writes the `explanation` and may rename
-labels / regroup nodes but can only *remove* edges, never add unsupported
-ones. Limits: 34 nodes, 48 edges, 3–6 groups (split into overview + detail
+"loads", validation → "validates", else "uses"). When the workspace's reasoner is
+on (§19), the LLM writes the `explanation` (reply capped at 250 tokens,
+JSON mode where the provider has one) and may rename labels / regroup
+nodes but can only *remove* edges, never add unsupported ones. Limits: 34 nodes, 48 edges, 3–6 groups (split into overview + detail
 beyond that). `architecture` targets 18–24 nodes and ≤ 32 edges for
 readability: single-file components fold into their directory (or package
 root) unless they are entry points, hubs imported by ≥ 4 sampled files or
@@ -785,15 +831,17 @@ directory and no way to grant someone more than GitHub already grants them.
   `DeleteWorkspaceData` OWNER. Outgoing knowledge/execution calls forward
   the caller's principal; a decision's `approved_by` defaults to the caller.
   **BYOK reasoner**: per call, intelligence resolves the reasoner from
-  `Identity.GetDataControls` (`reasoner` must be `claude`) and the
+  `Identity.GetDataControls` (`reasoner` must not be `off`) and the
   workspace's own key from the internal `Identity.GetReasonerKey`
   (`workspace_id → api_key, model`; `NOT_FOUND` = no key; never exposed
-  through the gateway, never logged). `ANTHROPIC_API_KEY` is the dev
-  fallback only when the workspace allows the reasoner and holds no key;
-  with the controls `off` (default) even an environment key does nothing.
-  The model is the settings row's, else the key's, else `ANTHROPIC_MODEL`.
-  `IntelligenceSettings.api_key_configured` means "this workspace can reach
-  Claude". When identity is unreachable the reasoner stays off.
+  through the gateway, never logged). `LLM_API_KEY` (alias
+  `ANTHROPIC_API_KEY`) is the dev fallback only when the workspace allows
+  the reasoner and holds no key; with the controls `off` (default) even an
+  environment key does nothing. An OpenAI-compatible endpoint (§19) needs
+  no key. The model is the settings row's, else the key's, else
+  `LLM_MODEL`/`ANTHROPIC_MODEL`. `IntelligenceSettings.api_key_configured`
+  means "this workspace can reach its provider". When identity is
+  unreachable the reasoner stays off.
 - **Execution tenancy** (migration `0003_workspaces`): every table carries
   `workspace_id` (pre-tenancy rows → bootstrap workspace); `executions`
   also store `created_by` (`x-sdi-user`). **Policies and identities are
@@ -862,7 +910,8 @@ choose". The architecture has to make that checkable:
 | File contents (code browser, diagram inputs) | `knowledge.repo_files` | `code_cache`: `none` (never stored) / `session` (default, TTL 24 h, purged on disconnect) / `persistent` | yes |
 | Generated artifacts, proposals, decisions, documents, diagrams | `intelligence` schema | until deleted | n/a |
 | Execution logs and outputs | `execution` schema | until deleted; workdirs removed after each run | n/a |
-| LLM requests | none stored; sent only when `reasoner=claude` with the workspace's own key; payload = structured context (facts, options, spec), never raw files | — | yes (default off) |
+| LLM requests | none stored; sent only when the data controls allow the reasoner, to the workspace's configured provider with its own key; payload = structured context (findings, options, facts, diagram spec), never raw files, trimmed to the token budget below | `reasoner_usage` keeps token counts per workspace and day (no content) | yes (default off) |
+| OSV lookups (§20) | package coordinates (`ecosystem`, `name`, `version`) of dependencies a pull request adds, sent to `OSV_API_URL`; answers cached in `osv_cache` (shared, not per tenant) | 24 h TTL | `OSV_API_URL=off` |
 | Audit entries | `identity.audit` | `audit_retention_days` (default 365) | no |
 | GitHub tokens | installation tokens are minted per request and cached ≤ 55 min in memory; OAuth tokens encrypted at rest with `SDI_SESSION_SECRET` | session lifetime | — |
 
@@ -902,6 +951,35 @@ accepted); execution `execution.start`, `execution.resolve` (entity
 `approved`/`rejected`), `policy.update` (entity `policy`, entity_id =
 action type, detail `OLD -> NEW`), `identity.grant` (entity `identity`).
 
+**Any LLM, token-efficient.** The reasoner is provider-agnostic
+(`intelligence/src/reasoner/provider.rs`): `Provider::Anthropic` (Messages
+API) or `Provider::OpenAiCompatible { base_url }` (chat completions:
+OpenAI, Azure OpenAI with the deployment URL and `?api-version=`, Ollama,
+vLLM, OpenRouter, Gemini's OpenAI endpoint), chosen per workspace by
+`IntelligenceSettings.reasoner_provider` / `reasoner_base_url` /
+`reasoner_model` (the same value as `model`), with `LLM_PROVIDER`,
+`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` as environment fallbacks.
+Every call is one `ReasonerRequest { system, context_json, instruction,
+max_tokens, json }`: the context is trimmed deterministically to ≤ 6 000
+estimated tokens (4 characters per token) by key priority — findings and
+options first, then effects/decisions, facts, areas, and the diagram or
+graph last; a cut key is shortened (arrays lose their tail) and listed
+under `_truncated` — and replies are capped (review summary 600,
+negotiation reply 400, diagram explanation 250). OpenAI-compatible calls
+ask for JSON mode (`response_format: json_object`) when the reply must be
+JSON. 429 and 5xx are retried three times with exponential backoff; every
+attempt has a 20 s timeout. Each workspace has a daily token ceiling
+(`reasoner_daily_token_cap`, default 200 000, UTC days): a call whose
+estimated input plus reply cap would cross it is not made, and actual
+usage (the provider's counts, else the estimate) is recorded in
+`reasoner_usage` and shown in `IntelligenceStats.reasoner_tokens_today`,
+`reasoner_daily_token_cap`, `reasoner_calls_today`. Any failure, the cap
+included, falls back to the templated text. The stored reasoner name is
+`claude` for Anthropic, `llm` for an OpenAI-compatible endpoint,
+`heuristic` otherwise. Both protocols are unit-tested against a fake HTTP
+server (request shape, auth header, budget trimming, cap enforcement,
+retries).
+
 Guarantees enforced in code: secrets-looking paths are never read (§15);
 no third-party telemetry; exports are complete (`data/export`) and deletes
 are real (`DELETE /workspaces/{id}` cascades every schema and is audited);
@@ -919,10 +997,28 @@ shows as a rail, like executions:
 | step | what happens |
 |---|---|
 | `context` | knowledge fetches the PR (`GetPullRequest`: files, bounded unified diff ≤ 300 KB / 200 files, touched facts, impacted graph nodes via `AnalyzeImpact` on each changed path) |
-| `analyze` | deterministic analyzers over the diff, each a pure function `fn(&ReviewInput) -> Vec<Finding>` in `intelligence/src/domain/review/rules/`: `secrets` (keys/tokens/private keys in added lines), `security` (shell injection, `eval`, SQL built by format, disabled TLS verification, `chmod 777`, hard-coded hosts), `dependencies` (new deps without lockfile change, EOL runtimes introduced, version pins loosened), `docker` (root user, `latest` tags, secrets in `ENV`, missing healthcheck), `ci` (workflows without permissions block, `pull_request_target` with checkout, unpinned actions), `iac` (public buckets/0.0.0.0/0 ingress, missing tags/state), `tests` (source changed without tests when the project has a test framework), `docs` (README/CONTRACT claims touched vs code), `correctness` (TODO/FIXME added, unwrap/expect/`!` in non-test Rust/TS, swallowed errors, `console.log`), `maturity` (the change moves a maturity axis up or down). Every finding carries `path`, `line`, `rule`, evidence in `detail` and, when mechanical, a `suggestion` block |
-| `findings` | status `proposed`; the human accepts or dismisses each (`DecideFinding`) with a note |
-| `summary` | walkthrough Markdown: intent (from title/body/commits), what changed per file group, impacted components (graph), risk, and what to verify — templated from the facts; when the workspace reasoner is `claude`, rewritten in prose from the structured context (never raw files) |
+| `analyze` | deterministic analyzers over the diff, each a pure function `fn(&ReviewInput) -> Vec<Finding>` in `intelligence/src/domain/review/rules/`: `secrets` (keys/tokens/private keys in added lines; `config_credential`: password/secret/token/api_key keys with literal values in yaml/json/toml/env/properties files, references like `${VAR}`/`secretKeyRef` and placeholders excluded), `security` (shell injection, `eval`, SQL built by format, disabled TLS verification, `chmod 777`, hard-coded hosts; insecure defaults `debug_enabled`, `cors_wildcard`, `insecure_cookie` outside local/dev/example files), `dependencies` (new deps without lockfile change, EOL runtimes introduced — judged by the analyzer's EOL table against the review date —, version pins loosened, `vulnerable`: see OSV below), `docker` (root user, `latest` tags, secrets in `ENV`, missing healthcheck), `ci` (workflows without permissions block, `pull_request_target` with checkout, unpinned actions), `iac` (public buckets/0.0.0.0/0 ingress, missing tags/state), `tests` (`missing`: source changed without tests when the project has a test framework; `required`: a path matching `.sdi.yml review.require_tests_for` changed without a test change, high), `docs` (README/CONTRACT claims touched vs code), `correctness` (TODO/FIXME added, unwrap/expect/`!` in non-test Rust/TS, swallowed errors, `console.log`; `unhandled_promise`: `.then(` chains without `.catch`/`.finally` and floating `fetch`/`axios`/`save()`-style calls in TS/JS; `unhandled_result`: a dropped `.await;` in Rust, an ignored error return in Go; `large_function`: more than 120 added lines in one function; `duplicate_block`: 6+ meaningful added lines repeated elsewhere in the pull request, reported once per copy pointing at the first), `migrations` (`drop`: DROP TABLE/COLUMN and the ORM equivalents; `alter_type`: a column's type changed in place; `not_null_without_default`: NOT NULL added or set without a default on a table the migration does not itself create), `maturity` (the change moves a maturity axis up or down), `custom` (`.sdi.yml review.rules`, §12), `review.truncated` (info: the pull request was over the limits, naming what was not read). Every finding carries `path`, `line`, `rule`, evidence in `detail` and, when mechanical, a `suggestion` block; findings are deduplicated on `(rule, path, line)`. Diff edge cases every rule family handles through `ReviewInput`: CRLF (`\r` stripped before matching and quoting), binary files and pure renames (no hunks: not reviewable, never asked for tests), whole-file rewrites (counted as a real change however short), truncated patches and file lists over 200 files (skipped and named in `review.truncated`) |
+| `findings` | status `proposed`; the human accepts or dismisses each (`DecideFinding`) with a note. **Learnings**: every verdict updates `review_learnings(workspace, project, rule, accepted, dismissed, last_note)` (a changed verdict moves the count, never double-counts); before each analysis the project's rows are loaded into `ReviewInput.learnings`: a rule dismissed ≥ 3 times with no accept is emitted with `severity=info` and `detail` prefixed "Suppressed by project learnings" (the stored signal; the domain `Finding` also carries a `suppressed` flag), unless the finding is `critical`; a rule the project accepted at least once orders one severity step higher (its stored severity is unchanged). Learnings are exported and deleted with the workspace (entity `review_learning`) |
+| `summary` | walkthrough Markdown: intent (from title/body/commits), what changed per file group, impacted components (graph), risk, and what to verify — templated from the facts; when the workspace reasoner is on (§19), rewritten in prose by the configured LLM from the structured context (never raw files), reply capped at 600 tokens |
 | `publish` | `PublishReview` posts a GitHub PR review (`github` token with `pull_requests:write`) with the summary as the body and one review comment per **accepted** finding (`suggestion` blocks become GitHub suggestions); event `comment` / `request_changes` / `approve` |
+
+**OSV.** Nothing about vulnerabilities is bundled. For every dependency
+the pull request adds with an exact version (`package.json`,
+`Cargo.toml`, `pyproject.toml`/`Pipfile`/`requirements*.txt`, `go.mod`,
+`Gemfile`, `composer.json`; ranges are not looked up) the runner asks
+`OSV_API_URL` (`POST /v1/querybatch`, then `GET /v1/vulns/{id}` for at
+most 25 advisories) and emits `dependencies.vulnerable` at the line that
+adds the package, with the advisory ids, summaries, severities (GHSA word,
+else from the CVSS vector) and the first fixed version. Answers are cached
+in `osv_cache` per `(ecosystem, name, version)` for 24 h, shared across
+workspaces. The check has a 20 s budget and fails soft: no network, a
+broken endpoint or a slow one means no finding, never a failed review.
+
+**Configuration.** The repository's `.sdi.yml` `review:` section (§12)
+is applied by the rule engine: `ignore_paths` removes files before any
+rule runs, `rules` adds `custom.<id>` findings, `severity` overrides a
+rule's severity after all rules ran, `require_tests_for` drives
+`tests.required`.
 
 Rules: never publish automatically; webhooks `pull_request` (opened,
 synchronize) only *start* a review when the workspace setting

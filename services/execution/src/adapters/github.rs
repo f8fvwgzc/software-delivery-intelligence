@@ -104,13 +104,14 @@ impl GithubAdapter {
         body: Option<Value>,
         allow: &[StatusCode],
     ) -> Result<(StatusCode, Value), ApiError> {
-        let url = format!("{}{path}", self.api);
+        let (token, api) = self.github_for(ctx);
+        let url = format!("{api}{path}");
         let mut request = self
             .http
             .request(method.clone(), &url)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(token) = &self.token {
+        if let Some(token) = token {
             request = request.bearer_auth(token);
         }
         if let Some(body) = body {
@@ -146,8 +147,18 @@ impl GithubAdapter {
         })
     }
 
+    /// The token and API base a step writes with: the workspace's
+    /// (identity-minted, GHES-aware) when the context carries them, else
+    /// the process-wide `GITHUB_TOKEN` / `GITHUB_API_URL`.
+    fn github_for<'a>(&'a self, ctx: &'a RunContext) -> (Option<&'a str>, &'a str) {
+        match &ctx.github {
+            Some(access) => (Some(access.token.as_str()), access.api_base_url.as_str()),
+            None => (self.token.as_deref(), self.api.as_str()),
+        }
+    }
+
     async fn open_pull_request(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
-        if self.token.is_none() {
+        if self.github_for(ctx).0.is_none() {
             return StepOutcome::Failed {
                 code: diagnosis::PERMISSION_DENIED.to_owned(),
                 raw_output: format!("GITHUB_TOKEN is not configured; {SCOPE_HINT}"),
@@ -757,8 +768,13 @@ mod tests {
     }
 
     async fn serve(fake: Fake) -> (Shared, String) {
+        serve_at(fake, "").await
+    }
+
+    /// The fake under `prefix` (`/api/v3` for an enterprise host).
+    async fn serve_at(fake: Fake, prefix: &'static str) -> (Shared, String) {
         let fake = Arc::new(fake);
-        let app = Router::new()
+        let routes = Router::new()
             .route("/repos/{o}/{r}", get(repo))
             .route("/repos/{o}/{r}/git/ref/{*reference}", get(get_ref))
             .route("/repos/{o}/{r}/git/refs", post(create_ref))
@@ -773,6 +789,11 @@ mod tests {
             .route("/repos/{o}/{r}/git/commits", post(create_commit))
             .route("/repos/{o}/{r}/pulls", get(pulls).post(create_pull))
             .with_state(Arc::clone(&fake));
+        let app = if prefix.is_empty() {
+            routes
+        } else {
+            Router::new().nest(prefix, routes)
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -803,6 +824,49 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
             attempt: 1,
+        }
+    }
+
+    /// An organisation on GitHub Enterprise Server: identity minted the
+    /// token and the `/api/v3` base, which the context carries; the
+    /// process-wide defaults (dead port, no token) are never used.
+    #[tokio::test]
+    async fn writes_through_the_workspace_api_base_on_enterprise_hosts() {
+        let (fake, base) = serve_at(Fake::default(), "/api/v3").await;
+        let adapter = GithubAdapter::new(None, "http://127.0.0.1:1");
+        let mut ctx = ctx(&[("Dockerfile", "FROM scratch\n")]);
+        ctx.github = Some(super::super::GithubAccess {
+            token: "ghs_enterprise".into(),
+            api_base_url: format!("{base}/api/v3"),
+        });
+        let outcome = adapter
+            .run(&step(&[("repo", "o/r"), ("title", "Containerize")]), &ctx)
+            .await;
+        let StepOutcome::Succeeded { outputs, .. } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(
+            outputs["pull_request_url"],
+            "https://github.com/o/r/pull/42"
+        );
+        let calls = fake.calls.lock().unwrap().clone();
+        assert!(!calls.is_empty());
+
+        // Without any access at all the step is PERMISSION_DENIED with the
+        // scope hint, before a single request.
+        let outcome = adapter
+            .run(&step(&[("repo", "o/r")]), &ctx_without_github(&ctx))
+            .await;
+        assert!(
+            matches!(outcome, StepOutcome::Failed { ref code, .. } if code == diagnosis::PERMISSION_DENIED),
+            "{outcome:?}"
+        );
+    }
+
+    fn ctx_without_github(ctx: &RunContext) -> RunContext {
+        RunContext {
+            github: None,
+            ..ctx.clone()
         }
     }
 

@@ -1,6 +1,8 @@
 //! The public pattern catalog from CONTRACT.md §5.6, seeded on every start.
 //! Upserting by slug keeps `pattern_usage` (and so success rates) intact
-//! while letting a release refresh plans and scores.
+//! while letting a release refresh names, summaries, plans and
+//! technologies; the cost estimate and security score are written once and
+//! then belong to what the platform learns (`db::patterns::upsert`).
 
 use sdi_common::embed::embed;
 use sqlx::PgPool;

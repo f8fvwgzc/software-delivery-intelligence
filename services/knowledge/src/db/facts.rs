@@ -34,23 +34,40 @@ pub async fn replace(
         .execute(&mut *conn)
         .await?;
     let mut inserted = 0;
-    for fact in facts {
+    for batch in facts.chunks(super::INSERT_BATCH) {
+        let ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let kinds: Vec<String> = batch
+            .iter()
+            .map(|f| fact_kind_to_db(fact_kind(f.kind)))
+            .collect();
+        let categories: Vec<String> = batch
+            .iter()
+            .map(|f| fact_category_to_db(fact_category(f.category)))
+            .collect();
+        let keys: Vec<&str> = batch.iter().map(|f| f.key.as_str()).collect();
+        let labels: Vec<&str> = batch.iter().map(|f| f.label.as_str()).collect();
+        let values: Vec<&str> = batch.iter().map(|f| f.value.as_str()).collect();
+        let confidences: Vec<f64> = batch.iter().map(|f| f.confidence.clamp(0.0, 1.0)).collect();
+        let paths: Vec<&str> = batch.iter().map(|f| f.source_path.as_str()).collect();
+        let evidence: Vec<&str> = batch.iter().map(|f| f.evidence.as_str()).collect();
         let result = sqlx::query(
             "INSERT INTO facts (id, workspace_id, project_id, kind, category, key, label, value, confidence, source_path, evidence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             SELECT id, $1, $2, kind, category, key, label, value, confidence, source_path, evidence
+               FROM UNNEST($3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::float8[], $10::text[], $11::text[])
+                 AS t(id, kind, category, key, label, value, confidence, source_path, evidence)
              ON CONFLICT (project_id, key) DO NOTHING",
         )
-        .bind(Uuid::now_v7())
         .bind(workspace_id)
         .bind(project_id)
-        .bind(fact_kind_to_db(fact_kind(fact.kind)))
-        .bind(fact_category_to_db(fact_category(fact.category)))
-        .bind(&fact.key)
-        .bind(&fact.label)
-        .bind(&fact.value)
-        .bind(fact.confidence.clamp(0.0, 1.0))
-        .bind(&fact.source_path)
-        .bind(&fact.evidence)
+        .bind(&ids)
+        .bind(&kinds)
+        .bind(&categories)
+        .bind(&keys)
+        .bind(&labels)
+        .bind(&values)
+        .bind(&confidences)
+        .bind(&paths)
+        .bind(&evidence)
         .execute(&mut *conn)
         .await?;
         inserted += result.rows_affected() as usize;

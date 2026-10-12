@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import type { Workspace } from '@/features/auth/api/types'
 
 import { initials } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 /** GitHub's page for an installation, where the repository selection is changed. */
 export function installationSettingsUrl(workspace: Pick<Workspace, 'githubHost' | 'slug' | 'installationId'>) {
@@ -50,8 +51,8 @@ export function InstallationCard({ workspace }: { workspace: Workspace }) {
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">In this workspace</span>
           <span className="tabular-nums">
-            {workspace.projectCount.toLocaleString()} {workspace.projectCount === 1 ? 'project' : 'projects'} ·{' '}
-            {workspace.memberCount.toLocaleString()} {workspace.memberCount === 1 ? 'member' : 'members'}
+            {count(workspace.projectCount, 'project', 'projects')} ·{' '}
+            {count(workspace.memberCount, 'member', 'members')}
           </span>
         </div>
       </CardContent>

@@ -39,6 +39,8 @@ export function useEventSource<T>({
   minBackoffMs,
   maxBackoffMs,
   hiddenGraceMs,
+  maxRefusals,
+  createSource,
 }: UseEventSourceOptions<T>): EventSourceStatus {
   const [state, setState] = useState<StreamState>(enabled ? 'connecting' : 'closed')
   const [lastEventAt, setLastEventAt] = useState<number | null>(null)
@@ -62,10 +64,10 @@ export function useEventSource<T>({
   useEffect(() => {
     if (!enabled) return
     return openEventSource(
-      { url, endEvents, minBackoffMs, maxBackoffMs, hiddenGraceMs },
+      { url, endEvents, minBackoffMs, maxBackoffMs, hiddenGraceMs, maxRefusals, createSource },
       { onMessage: handleMessage, onEnd: handleEnd, onStateChange: handleState },
     )
-  }, [url, enabled, endEvents, minBackoffMs, maxBackoffMs, hiddenGraceMs])
+  }, [url, enabled, endEvents, minBackoffMs, maxBackoffMs, hiddenGraceMs, maxRefusals, createSource])
 
   const effectiveState = enabled ? state : 'closed'
   return { state: effectiveState, connected: effectiveState === 'open', lastEventAt }

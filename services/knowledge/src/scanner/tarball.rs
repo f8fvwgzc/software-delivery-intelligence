@@ -20,13 +20,17 @@ pub const MAX_TARBALL_BYTES: usize = 50 * 1024 * 1024;
 
 /// Keeps only regular files whose stripped path is in `wanted` and that are
 /// at most `max_file_bytes`; bytes are decoded lossily because the analyzer
-/// only reads text. A damaged archive is an error: the caller then falls back.
-pub fn unpack(
-    bytes: &[u8],
+/// only reads text (a file of garbage bytes becomes replacement glyphs,
+/// never a panic). Symlinks, hard links and anything that is not a regular
+/// file are skipped. A damaged archive is an error: the caller then falls
+/// back to per-file downloads. `source` is the gzipped archive: a byte
+/// slice in tests, the streamed temporary file in a scan.
+pub fn unpack<R: Read>(
+    source: R,
     wanted: &HashSet<String>,
     max_file_bytes: usize,
 ) -> Result<BTreeMap<String, String>> {
-    let mut archive = Archive::new(GzDecoder::new(bytes));
+    let mut archive = Archive::new(GzDecoder::new(source));
     let mut files = BTreeMap::new();
     for entry in archive.entries().context("tar entries")? {
         let mut entry = entry.context("tar entry")?;
@@ -115,7 +119,7 @@ mod tests {
             ("README.md", b"# x\n"),
             ("target/debug/junk.bin", b"\x00\x01\x02"),
         ]);
-        let files = unpack(&bytes, &wanted(&["Cargo.toml", "src/main.rs"]), 1024).unwrap();
+        let files = unpack(&bytes[..], &wanted(&["Cargo.toml", "src/main.rs"]), 1024).unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files["Cargo.toml"], "[package]\nname = \"x\"\n");
         assert_eq!(files["src/main.rs"], "fn main() {}\n");
@@ -130,7 +134,7 @@ mod tests {
             ("bin.dat", b"\xff\xfeok"),
             ("ok.txt", b"fine"),
         ]);
-        let files = unpack(&bytes, &wanted(&["big.txt", "bin.dat", "ok.txt"]), 200).unwrap();
+        let files = unpack(&bytes[..], &wanted(&["big.txt", "bin.dat", "ok.txt"]), 200).unwrap();
         assert_eq!(files.len(), 2, "the oversized file is dropped");
         assert_eq!(files["ok.txt"], "fine");
         assert!(
@@ -141,7 +145,7 @@ mod tests {
 
     #[test]
     fn garbage_is_an_error_and_root_stripping_is_strict() {
-        assert!(unpack(b"not a tarball", &wanted(&["x"]), 10).is_err());
+        assert!(unpack(&b"not a tarball"[..], &wanted(&["x"]), 10).is_err());
         assert_eq!(
             strip_root("owner-repo-sha/a/b.rs").as_deref(),
             Some("a/b.rs")

@@ -45,7 +45,11 @@ GITHUB_APP_SLUG=…
 GITHUB_APP_PRIVATE_KEY=…
 GITHUB_WEBHOOK_SECRET=…
 
-#ANTHROPIC_API_KEY=                            # optional instance-wide default; workspaces can bring their own
+#LLM_PROVIDER=anthropic                        # or openai_compatible (OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter, Gemini)
+#LLM_BASE_URL=                                 # OpenAI-compatible endpoint, e.g. http://ollama:11434/v1
+#LLM_API_KEY=                                  # optional instance-wide default (alias ANTHROPIC_API_KEY); workspaces can bring their own
+#LLM_MODEL=                                    # alias ANTHROPIC_MODEL
+#OSV_API_URL=https://api.osv.dev               # `off` disables the review's vulnerability lookups
 #SDI_DEV_LOGIN=1                               # never on a shared instance
 ```
 
@@ -81,9 +85,15 @@ not paste its output anywhere.
 | `GITHUB_OAUTH_*` | individuals sign in |
 | `GITHUB_APP_*`, `GITHUB_WEBHOOK_SECRET` | organisations install the App |
 | `GITHUB_TOKEN` | a personal instance without an OAuth app (`SDI_DEV_LOGIN=1`), or the `github` adapter on a personal workspace |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | an instance-wide reasoner key; workspaces may store their own instead |
-| `GITHUB_API_URL` | GitHub Enterprise Server |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` (aliases `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`) | an instance-wide reasoner provider and key; workspaces may configure their own provider in the intelligence settings and store their own key instead |
+| `OSV_API_URL` | where reviews look up added dependencies (`off` for an air-gapped instance) |
+| `GITHUB_API_URL` | GitHub Enterprise Server (`https://<host>/api/v3`); organisations on other hosts get their base from their installation |
 | `SDI_HTTP_PORT`, `SDI_TAG`, `RUST_LOG` | the port the edge publishes, the image tag, log verbosity |
+| `DB_MAX_CONNECTIONS` (20), `DB_STATEMENT_TIMEOUT_MS` (30000) | Postgres pool per service and the session statement timeout; five services × the pool must fit the server's `max_connections` (§9) |
+| `GATEWAY_AUTH_CACHE_MAX` (10000), `SSE_MAX_PER_WORKSPACE` (50), `WEBHOOK_QUEUE_MAX` (256) | per-replica bounds of the gateway (§9) |
+| `SCAN_STAGE_TIMEOUT_SECS` (600), `SCAN_TIMEOUT_SECS` (1800) | a scan stage, or a whole scan, that overruns fails with the stage named instead of sitting `running` |
+| `SHUTDOWN_GRACE_SECS` (20) | how long a stopping service waits for scans, runners and audit entries in flight |
+| `SDI_DOCKER_PUBLISH_HOST` (127.0.0.1) | where the `docker` adapter publishes a test container's port |
 | `COMPOSE_PROFILES=local-exec` | never on a shared host; see `adapters.md` |
 
 ## 3. What is running
@@ -289,3 +299,56 @@ docker volume rm sdi_pgdata sdi_rundata sdi_docker-sock   # everything SDI store
 Uninstall the GitHub App from each organisation and delete the OAuth app
 on GitHub; the credentials they issued are then useless regardless of any
 backup.
+
+## 9. Capacity, bounds and Kubernetes
+
+Every in-memory structure a service keeps is bounded and expires, so a
+public instance's memory is flat however many tenants pass through it
+([`performance.md`](performance.md) has the measurements):
+
+| Where | What | Bound |
+|---|---|---|
+| gateway | `Identity.Authorize` answers (per replica) | `GATEWAY_AUTH_CACHE_MAX` entries, 60 s each |
+| gateway | open SSE streams per workspace (per replica) | `SSE_MAX_PER_WORKSPACE`; the next one is `429 resource_exhausted` until a tab closes |
+| gateway | webhook deliveries waiting for the worker | `WEBHOOK_QUEUE_MAX`; the handler answers `202` at once and `503 Retry-After: 30` when the queue is full, so GitHub redelivers |
+| knowledge | GitHub ETag bodies | 256 entries, 1 h |
+| knowledge | workspace tokens, data controls | 4096 workspaces each; tokens until 5 min before expiry, controls 60 s |
+| knowledge | repository archives | streamed to `/tmp`, never the heap; 50 MB cap, then per-file downloads; one file ≤ 1 MiB, one pull-request diff ≤ 300 KB |
+| identity | installation tokens | 4096 installations, dropped before expiry |
+| execution | per-execution event channels | dropped when the run ends; the seed note resets past 10 000 workspaces |
+| all | gRPC messages | 16 MiB in either direction |
+| all | Postgres | `DB_MAX_CONNECTIONS` per service, `DB_STATEMENT_TIMEOUT_MS` per statement |
+
+**Gateway replicas are stateless.** The caches above are per replica, so
+two replicas behind `least_conn` (or ten behind a cloud balancer) need no
+sticky sessions: a request that lands on a replica that has not seen its
+session costs one `Identity.Authorize`. Redirects are absolute on
+`SDI_PUBLIC_URL` and the session cookie is `Secure` when that origin is
+`https` or the edge forwards `X-Forwarded-Proto: https`.
+
+**Health endpoints.** Every gRPC service registers `grpc.health.v1.Health`
+(what the compose healthcheck's TCP probe stands in for and what
+Kubernetes gRPC probes read); the gateway answers `GET /api/v1/health`,
+the web container `GET /healthz`, and `GET /api/v1/system/status` reports
+the gRPC health of each service behind a gateway.
+
+**Kubernetes.** `deploy/k8s/` is a kustomization of the same stack:
+Deployments and Services for the five services and the web pods, a
+StatefulSet for Postgres (swap it for a managed instance by setting
+`DATABASE_URL` and dropping `postgres.yaml` from `resources`), an
+ingress-nginx Ingress with buffering off and an hour of read timeout for
+the SSE routes, a HorizontalPodAutoscaler on the gateway (2–10 replicas at
+70 % CPU) with a PodDisruptionBudget, a ConfigMap with the bounds above and
+a Secret generated from `deploy/k8s/secrets.env`:
+
+```sh
+cp deploy/k8s/secrets.example.env deploy/k8s/secrets.env   # fill in
+kubectl kustomize deploy/k8s | less                         # review
+kubectl apply -k deploy/k8s
+```
+
+Probes: gRPC liveness/readiness on each service's port, `httpGet` on the
+gateway's `/api/v1/health` and the web's `/healthz`. The archives
+knowledge and execution stream to `/tmp` land on an `emptyDir`; the
+execution workdir is an `emptyDir` too (a paused run survives a pod
+restart only with a persistent volume there).

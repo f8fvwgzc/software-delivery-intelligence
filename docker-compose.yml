@@ -40,6 +40,14 @@ x-rust-env: &rust-env
   DATABASE_URL: postgres://sdi:sdi@postgres:5432/sdi
   LOG_FORMAT: json
   RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+  # Postgres pool per service (five services × this must fit the server's
+  # max_connections, 100 by default) and the session statement timeout
+  # that keeps a runaway query from pinning a connection (docs/self-hosting.md).
+  DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-20}
+  DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-30000}
+  # How long a stopping service waits for its background tasks (scans,
+  # runners, audit entries) before exiting; keep under stop_grace_period.
+  SHUTDOWN_GRACE_SECS: ${SHUTDOWN_GRACE_SECS:-10}
 
 x-rust-build: &rust-build
   context: .
@@ -57,6 +65,9 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # Five services × DB_MAX_CONNECTIONS (20) plus tooling must fit; the
+    # image's default of 100 is exactly the pools' sum.
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-200}"]
     environment:
       POSTGRES_USER: sdi
       POSTGRES_PASSWORD: sdi
@@ -136,6 +147,10 @@ services:
       # by identity instead (Identity.GetInstallationToken).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       IDENTITY_GRPC_URL: http://identity:50054
+      # A stage that hangs (GitHub, a transaction) fails the scan after
+      # this; the whole pipeline after SCAN_TIMEOUT_SECS.
+      SCAN_STAGE_TIMEOUT_SECS: ${SCAN_STAGE_TIMEOUT_SECS:-600}
+      SCAN_TIMEOUT_SECS: ${SCAN_TIMEOUT_SECS:-1800}
     networks:
       - backend
     depends_on:
@@ -144,7 +159,8 @@ services:
       identity:
         condition: service_healthy
     deploy:
-      # Repository analysis holds file trees in memory; give it headroom.
+      # Repository analysis holds file trees in memory (archives stream to
+      # /tmp, never the heap); give it headroom.
       resources:
         limits:
           cpus: "1.00"
@@ -164,7 +180,14 @@ services:
       INTELLIGENCE_LISTEN: 0.0.0.0:50052
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
       EXECUTION_GRPC_URL: http://execution:50053
-      # Optional: enables the Claude reasoner; ranking stays deterministic.
+      # Optional reasoner (CONTRACT.md §19): `anthropic` (Messages API) or
+      # `openai_compatible` (OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter)
+      # with its base URL, key and model. ANTHROPIC_* stay as aliases of the
+      # Anthropic defaults; ranking stays deterministic without any of them.
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
     networks:
@@ -271,7 +294,9 @@ services:
     logging: *logging
 
   # Two replicas of one image behind nginx's least_conn pool. gateway-1 owns
-  # the build; gateway-2 reuses the tag and never pulls.
+  # the build; gateway-2 reuses the tag and never pulls. Replicas are
+  # stateless (the authorize cache and stream counters are per replica
+  # and bounded), so any number may run behind any balancer, sticky or not.
   gateway-1:
     <<: *rust-service
     image: sdi/gateway:${SDI_TAG:-local}
@@ -291,8 +316,16 @@ services:
       SDI_PUBLIC_URL: ${SDI_PUBLIC_URL:-http://localhost}
       SDI_DEV_LOGIN: ${SDI_DEV_LOGIN:-}
       # POST /api/v1/webhooks/github is verified at the HTTP surface
-      # (HMAC over the raw body, CONTRACT.md §18) before anything is parsed.
+      # (HMAC over the raw body, CONTRACT.md §18) before anything is parsed,
+      # answered 202 and worked off a per-replica queue of this depth.
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      WEBHOOK_QUEUE_MAX: ${WEBHOOK_QUEUE_MAX:-256}
+      # Per-replica memory bounds: Authorize answers kept (60 s each) and
+      # open SSE streams one workspace may hold on this replica (429 past
+      # it). Replicas share nothing, so no sticky sessions are needed: a
+      # miss costs one Identity.Authorize.
+      GATEWAY_AUTH_CACHE_MAX: ${GATEWAY_AUTH_CACHE_MAX:-10000}
+      SSE_MAX_PER_WORKSPACE: ${SSE_MAX_PER_WORKSPACE:-50}
     networks:
       - frontend
       - backend

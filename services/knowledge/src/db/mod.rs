@@ -30,6 +30,12 @@ pub mod workspace;
 
 use uuid::Uuid;
 
+/// Rows per multi-row `INSERT`. A scan of a 50k-file monorepo writes
+/// thousands of facts, nodes, edges, dependencies and chunks; one statement
+/// per row was one round trip per row. Columns travel as arrays through
+/// `UNNEST`, so the statement text never grows with the batch.
+pub const INSERT_BATCH: usize = 500;
+
 /// The workspace every row created before tenancy belongs to (migration
 /// `0004_tenancy`): the single-tenant installation that preceded
 /// workspaces. Dev mode's personal workspace maps to it.

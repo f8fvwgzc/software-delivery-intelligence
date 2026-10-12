@@ -29,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tar.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -36,3 +37,7 @@ tonic.workspace = true
 tonic-health.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# Fake GitHub / identity endpoints for the connector tests.
+axum.workspace = true

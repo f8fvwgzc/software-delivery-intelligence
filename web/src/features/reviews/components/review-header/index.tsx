@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 import type { Review } from '../../api/types'
 import { REVIEW_STATUS, actorAvatarUrl, shortSha } from '../../lib/labels'
+import { count } from '@/lib/intl'
 
 interface ReviewHeaderProps {
   review: Review
@@ -44,7 +45,7 @@ export function ReviewHeader({ review, actions }: ReviewHeaderProps) {
           </span>
           <span className="font-mono">{shortSha(review.headSha)}</span>
           <span className="tabular-nums">
-            {review.filesReviewed} {review.filesReviewed === 1 ? 'file' : 'files'} reviewed
+            {count(review.filesReviewed, 'file', 'files')} reviewed
           </span>
           <span>reasoner {review.reasoner || 'heuristic'}</span>
           <span>

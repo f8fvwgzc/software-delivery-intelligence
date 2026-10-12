@@ -9,7 +9,7 @@ export const approvalQueries = {
   list: (filters: ApprovalListFilters = {}) =>
     queryOptions({
       queryKey: approvalKeys.list(filters),
-      queryFn: () => unwrap(api.GET('/api/v1/approvals', { params: { query: filters } })),
+      queryFn: ({ signal }) => unwrap(api.GET('/api/v1/approvals', { params: { query: filters }, signal })),
     }),
 
   /** The human work queue. */

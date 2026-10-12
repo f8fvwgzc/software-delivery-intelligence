@@ -14,6 +14,7 @@ export function IntelligenceSummary({ stats }: { stats: IntelligenceStats }) {
         { label: 'Active decisions', value: <Count value={stats.decisionsActive} /> },
         { label: 'Documents', value: <Count value={stats.documents} /> },
         { label: 'Negotiation messages', value: <Count value={stats.messages} /> },
+        { label: 'Reasoner calls today', value: <Count value={stats.reasonerCallsToday} /> },
       ]}
     />
   )

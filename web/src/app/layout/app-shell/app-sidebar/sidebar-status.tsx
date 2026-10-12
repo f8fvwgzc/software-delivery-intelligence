@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
@@ -14,13 +15,31 @@ import { cn } from '@/lib/utils'
 const POLL_INTERVAL = 30_000
 
 /**
+ * True once the browser has been idle after mount: the shell's first paint
+ * only spends requests on the session and the gateway status (CONTRACT.md
+ * §21); the avatar is decoration and waits its turn.
+ */
+function useAfterIdle() {
+  const [idle, setIdle] = useState(false)
+  useEffect(() => {
+    if ('requestIdleCallback' in window) {
+      const handle = window.requestIdleCallback(() => setIdle(true), { timeout: 2_000 })
+      return () => window.cancelIdleCallback(handle)
+    }
+    const timer = setTimeout(() => setIdle(true), 1_000)
+    return () => clearTimeout(timer)
+  }, [])
+  return idle
+}
+
+/**
  * Footer of the sidebar: one health dot, one line, and who the GitHub token
  * belongs to. Polls the gateway; collapses to the dot in icon mode.
  */
 export function SidebarStatus() {
   const { state, isMobile } = useSidebar()
   const status = useQuery({ ...systemQueries.status(), refetchInterval: POLL_INTERVAL })
-  const account = useQuery(githubQueries.account())
+  const account = useQuery({ ...githubQueries.account(), enabled: useAfterIdle() })
   const live = useLiveEvents()
 
   const compact = !isMobile && state === 'collapsed'

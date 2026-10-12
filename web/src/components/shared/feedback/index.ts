@@ -1,4 +1,5 @@
 export { EmptyState } from './empty-state'
-export { ErrorState } from './error-state'
+export { describeError, ErrorState } from './error-state'
+export { OfflineBanner, useOnline } from './offline-banner'
 export { ListSkeleton, PageSkeleton } from './page-skeleton'
 export { QueryBoundary } from './query-boundary'

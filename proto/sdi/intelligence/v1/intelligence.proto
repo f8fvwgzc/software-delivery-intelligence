@@ -686,7 +686,10 @@ message ListReviewActivityResponse {
 // Ranking defaults and the reasoner. Changed from the settings page.
 message IntelligenceSettings {
   ScoreWeights default_weights = 1;
-  // "heuristic" | "claude". "claude" needs ANTHROPIC_API_KEY; falls back otherwise.
+  // "heuristic" | "claude" ("llm" is accepted as an alias): "claude" means
+  // the configured provider (CONTRACT.md §19), whichever it is. The LLM
+  // only answers when the workspace's data controls allow the reasoner and
+  // a key exists; it falls back to the heuristic otherwise.
   string reasoner = 2;
   string model = 3;
   bool api_key_configured = 4;
@@ -695,6 +698,20 @@ message IntelligenceSettings {
   // Code review (CONTRACT.md §20): `pull_request` webhooks (opened, synchronize)
   // start a review that stops at `proposed`. Default off.
   bool auto_review = 6;
+  // Which API the reasoner speaks (CONTRACT.md §19): "anthropic" (Messages
+  // API) or "openai_compatible" (chat completions: OpenAI, Azure OpenAI,
+  // Ollama, vLLM, OpenRouter, Gemini's OpenAI endpoint). Empty reads
+  // LLM_PROVIDER, else "anthropic".
+  string reasoner_provider = 7;
+  // Base URL of an OpenAI-compatible endpoint (e.g. http://ollama:11434/v1,
+  // https://<res>.openai.azure.com/openai/deployments/<d>?api-version=...).
+  // Empty reads LLM_BASE_URL, else the provider's public endpoint.
+  string reasoner_base_url = 8;
+  // Same value as `model`; the explicit name next to provider and base URL.
+  string reasoner_model = 9;
+  // Tokens (input + output) the workspace may spend per UTC day before the
+  // reasoner falls back to the heuristic. Default 200000.
+  uint64 reasoner_daily_token_cap = 10;
 }
 
 message GetSettingsRequest {}
@@ -712,6 +729,11 @@ message IntelligenceStats {
   uint32 decisions_active = 4;
   uint32 documents = 5;
   uint32 messages = 6;
+  // Reasoner budget (CONTRACT.md §19): tokens spent today (UTC), the cap
+  // and the calls made today.
+  uint64 reasoner_tokens_today = 7;
+  uint64 reasoner_daily_token_cap = 8;
+  uint32 reasoner_calls_today = 9;
 }
 
 // ---------------------------------------------------------------------------

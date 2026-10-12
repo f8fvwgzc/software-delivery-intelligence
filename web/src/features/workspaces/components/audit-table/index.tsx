@@ -6,6 +6,7 @@ import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components
 
 import type { AuditEntry } from '../../api/types'
 import { AuditRow } from './audit-row'
+import { count } from '@/lib/intl'
 
 export { AuditTableSkeleton } from './skeleton'
 
@@ -67,7 +68,7 @@ export function AuditTable({ entries, actionPrefix, hasEarlier, loadingEarlier, 
       </div>
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs tabular-nums text-muted-foreground">
-          {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+          {count(entries.length, 'entry', 'entries')}
           {hasEarlier ? ', more before' : ''}
         </span>
         {hasEarlier ? (

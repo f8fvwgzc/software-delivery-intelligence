@@ -1,6 +1,7 @@
 import type { StatusTone } from '@/components/shared/data'
 
 import type { ServiceStatus, SystemStatus } from '../api/types'
+import { count } from '@/lib/intl'
 
 /** Health check result → display label and StatusBadge tone. */
 export const SERVICE_STATUS: Record<ServiceStatus, { label: string; tone: StatusTone }> = {
@@ -46,7 +47,7 @@ export function overallHealth(status: SystemStatus): OverallHealth {
   if (down === 0) return { tone: 'success', label: 'All services up', down, total }
   return {
     tone: down === total ? 'destructive' : 'warning',
-    label: `${down} ${down === 1 ? 'service' : 'services'} down`,
+    label: `${count(down, 'service', 'services')} down`,
     down,
     total,
   }

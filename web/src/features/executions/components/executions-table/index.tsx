@@ -1,11 +1,13 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseInfiniteQuery } from '@tanstack/react-query'
 import { ActivityIcon, FilterXIcon } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { EmptyState } from '@/components/shared/feedback'
+import { FrameFooter } from '@/components/system/frame'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { components } from '@/lib/api/schema'
+import { count } from '@/lib/intl'
 
 import { executionQueries } from '../../api/queries'
 import { adapterLabel } from '../../lib/labels'
@@ -32,9 +34,13 @@ function countByAdapter(executions: Execution[]) {
   return counts
 }
 
-/** Every execution, newest first; live while any is non-terminal. The adapter filter is client-side. */
+/**
+ * Executions newest first, one page at a time with "Load earlier" at the
+ * foot; live while any is non-terminal. The adapter filter is client-side.
+ */
 export function ExecutionsTable({ projectId, emptyAction }: ExecutionsTableProps) {
-  const { data: executions } = useSuspenseQuery(executionQueries.list(projectId ? { projectId } : {}))
+  const query = useSuspenseInfiniteQuery(executionQueries.pages(projectId ? { projectId } : {}))
+  const executions = query.data.pages.flat()
   const [adapter, setAdapter] = useState<AdapterFilter>('all')
   const showProject = !projectId
 
@@ -76,7 +82,7 @@ export function ExecutionsTable({ projectId, emptyAction }: ExecutionsTableProps
         />
       ) : (
         <div className="overflow-hidden rounded-lg ring-1 ring-border">
-          <Table>
+          <Table aria-busy={query.isFetchingNextPage || undefined}>
             <TableHeader className="bg-muted/40">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="h-10 text-xs">#</TableHead>
@@ -94,6 +100,14 @@ export function ExecutionsTable({ projectId, emptyAction }: ExecutionsTableProps
               ))}
             </TableBody>
           </Table>
+          {query.hasNextPage ? (
+            <FrameFooter className="justify-between">
+              <span className="tabular-nums">{count(executions.length, 'execution', 'executions')} loaded, more before</span>
+              <Button variant="ghost" size="xs" onClick={() => query.fetchNextPage()} loading={query.isFetchingNextPage}>
+                Load earlier
+              </Button>
+            </FrameFooter>
+          ) : null}
         </div>
       )}
     </div>

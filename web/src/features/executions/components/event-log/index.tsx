@@ -3,17 +3,19 @@ import { ArrowDownToLineIcon, TerminalIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ComboboxField } from '@/components/shared/form'
+import { useScrollRows } from '@/components/system/virtual-rows'
 import { Toggle } from '@/components/ui/toggle'
 import { approvalKeys } from '@/features/approvals/api/keys'
 import type { components } from '@/lib/api/schema'
+import { count } from '@/lib/intl'
 import { cn } from '@/lib/utils'
 
 import { executionKeys } from '../../api/keys'
 import { executionQueries } from '../../api/queries'
 import { isTerminal } from '../../lib/labels'
-import { EventRow } from './event-row'
+import { EventRow, EVENT_ROW_HEIGHT } from './event-row'
 import { LogTerminal } from './log-terminal'
-import { appendEvent, useEventStream, type ExecutionEvent, type StreamState } from './use-event-stream'
+import { appendEvents, useEventStream, type ExecutionEvent, type StreamState } from './use-event-stream'
 
 export { EventLogSkeleton } from './skeleton'
 
@@ -25,12 +27,14 @@ interface EventLogProps {
 
 const ALL_STEPS = '__all'
 const INVALIDATE_DEBOUNCE = 250
+/** Streamed events are appended to the cache in one batch per animation frame, so a burst costs one render. */
+const APPEND_FLUSH_MS = 32
 const FOLLOW_THRESHOLD = 24
 /**
- * Rows rendered while following a long run. The list is not virtualised, so
- * a run that streams thousands of adapter lines would otherwise reconcile
- * every row per line; the newest window is what an operator watches, and
- * the rest is one click away.
+ * Adapter log lines rendered while following a long run. The terminal is
+ * not windowed (its lines wrap), so the newest window is what an operator
+ * watches and the rest is one click away. The timeline above it is
+ * windowed and shows every event.
  */
 const TAIL_WINDOW = 300
 
@@ -52,6 +56,8 @@ function tail<T>(rows: T[], showAll: boolean) {
 /**
  * Dense mono timeline of the execution's structured events, tailed over SSE,
  * with the adapter's `log` lines in a separate terminal block underneath.
+ * The timeline is windowed: ten thousand events keep a few dozen rows in
+ * the DOM, and a burst of streamed events lands in the cache once per frame.
  */
 export function EventLog({ executionId, status, steps }: EventLogProps) {
   const queryClient = useQueryClient()
@@ -63,6 +69,8 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
   const [showAll, setShowAll] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const pendingRef = useRef<ExecutionEvent[]>([])
+  const appendTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Resume point for the stream, fixed at mount: streamed events are
   // appended to the cache, which is the one list everything (this log, the
@@ -79,15 +87,23 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
     }, INVALIDATE_DEBOUNCE)
   }
 
-  const appendToCache = (event: ExecutionEvent) => {
-    queryClient.setQueryData<ExecutionEvent[]>(executionKeys.events(executionId), (cached = []) =>
-      appendEvent(cached, event),
-    )
+  const flushPending = () => {
+    appendTimer.current = undefined
+    const batch = pendingRef.current
+    if (batch.length === 0) return
+    pendingRef.current = []
+    queryClient.setQueryData<ExecutionEvent[]>(executionKeys.events(executionId), (cached = []) => appendEvents(cached, batch))
+  }
+
+  const queueAppend = (event: ExecutionEvent) => {
+    pendingRef.current.push(event)
+    appendTimer.current ??= setTimeout(flushPending, APPEND_FLUSH_MS)
   }
 
   useEffect(() => {
     return () => {
       if (invalidateTimer.current) clearTimeout(invalidateTimer.current)
+      if (appendTimer.current) clearTimeout(appendTimer.current)
     }
   }, [])
 
@@ -96,10 +112,13 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
     afterSeq,
     enabled: !isTerminal(status),
     onEvent: (event) => {
-      appendToCache(event)
+      queueAppend(event)
       scheduleInvalidate()
     },
-    onEnd: scheduleInvalidate,
+    onEnd: () => {
+      flushPending()
+      scheduleInvalidate()
+    },
   })
 
   const { timeline, logs } = useMemo(() => {
@@ -109,18 +128,22 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
     return { timeline, logs }
   }, [initial])
 
-  const visible = stepFilter === ALL_STEPS ? timeline : timeline.filter((event) => event.stepKey === stepFilter)
+  const visible = useMemo(
+    () => (stepFilter === ALL_STEPS ? timeline : timeline.filter((event) => event.stepKey === stepFilter)),
+    [timeline, stepFilter],
+  )
   const visibleLogs = stepFilter === ALL_STEPS ? logs : logs.filter((event) => event.stepKey === stepFilter)
   const visibleCount = visible.length
-  const shown = tail(visible, showAll)
   const shownLogs = tail(visibleLogs, showAll)
+
+  const rows = useScrollRows({ count: visibleCount, estimateSize: EVENT_ROW_HEIGHT, scrollRef: viewportRef })
+  const { scrollToIndex } = rows
 
   // Keep the newest line in view while following. Scroll position is DOM state, not React state.
   useEffect(() => {
-    const viewport = viewportRef.current
-    if (!follow || visibleCount === 0 || !viewport) return
-    viewport.scrollTop = viewport.scrollHeight
-  }, [follow, visibleCount])
+    if (!follow || visibleCount === 0) return
+    scrollToIndex(visibleCount - 1, { align: 'end' })
+  }, [follow, visibleCount, scrollToIndex])
 
   const handleScroll = () => {
     const viewport = viewportRef.current
@@ -167,29 +190,35 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
       <div
         ref={viewportRef}
         onScroll={handleScroll}
-        className={cn('overflow-y-auto bg-muted/20', showLogs ? 'h-[20rem]' : 'h-[32rem]')}
+        role="region"
+        aria-label="Event timeline"
+        tabIndex={0}
+        className={cn('overflow-y-auto bg-muted/20 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset', showLogs ? 'h-[20rem]' : 'h-[32rem]')}
         style={{ scrollbarGutter: 'stable' }}
+        data-virtual={rows.virtual || undefined}
       >
         {visible.length === 0 ? (
           <p className="px-3 py-6 text-center text-xs text-muted-foreground">
             {timeline.length === 0 ? 'No events yet. Start the execution to see them arrive.' : 'No events for this step.'}
           </p>
         ) : (
-          <ol className="flex flex-col py-1">
-            {shown.hidden > 0 ? (
-              <li className="px-3 py-1">
-                <button
-                  type="button"
-                  onClick={() => setShowAll(true)}
-                  className="rounded-sm text-xs text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
-                >
-                  Show {shown.hidden} earlier {shown.hidden === 1 ? 'event' : 'events'}
-                </button>
-              </li>
-            ) : null}
-            {shown.rows.map((event) => (
-              <EventRow key={event.seq} event={event} />
-            ))}
+          <ol
+            className={cn('flex flex-col py-1', rows.virtual && 'relative')}
+            style={rows.virtual ? { height: rows.totalSize } : undefined}
+          >
+            {rows.items.map((item) => {
+              const event = visible[item.index]
+              if (!event) return null
+              return (
+                <EventRow
+                  key={event.seq}
+                  event={event}
+                  index={item.index}
+                  measure={rows.virtual ? rows.measure : undefined}
+                  style={rows.virtual ? { position: 'absolute', top: 0, left: 0, right: 0, transform: `translateY(${item.start}px)` } : undefined}
+                />
+              )
+            })}
           </ol>
         )}
       </div>
@@ -206,9 +235,7 @@ export function EventLog({ executionId, status, steps }: EventLogProps) {
           <TerminalIcon data-icon="inline-start" />
           Show logs
         </Toggle>
-        <span className="text-2xs tabular-nums text-muted-foreground">
-          {visibleLogs.length} {visibleLogs.length === 1 ? 'line' : 'lines'}
-        </span>
+        <span className="text-2xs tabular-nums text-muted-foreground">{count(visibleLogs.length, 'line', 'lines')}</span>
         {showLogs ? (
           <Toggle
             size="sm"

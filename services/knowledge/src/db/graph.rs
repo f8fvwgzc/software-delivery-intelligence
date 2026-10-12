@@ -105,28 +105,45 @@ pub async fn sync(
         .execute(&mut *conn)
         .await?;
 
-    let mut ids: HashMap<&str, Uuid> = HashMap::new();
-    for node in nodes {
-        let id: Uuid = sqlx::query_scalar(
+    // Nodes are upserted by key in batches; the returned (key, id) pairs
+    // map the analyzer's keys onto rows for the edges below.
+    let mut ids: HashMap<String, Uuid> = HashMap::with_capacity(nodes.len());
+    for batch in nodes.chunks(super::INSERT_BATCH) {
+        let new_ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let kinds: Vec<String> = batch
+            .iter()
+            .map(|n| node_kind_to_db(node_kind(n.kind)))
+            .collect();
+        let node_keys: Vec<&str> = batch.iter().map(|n| n.key.as_str()).collect();
+        let labels: Vec<&str> = batch.iter().map(|n| n.label.as_str()).collect();
+        let descriptions: Vec<&str> = batch.iter().map(|n| n.description.as_str()).collect();
+        let paths: Vec<&str> = batch.iter().map(|n| n.source_path.as_str()).collect();
+        let attributes: Vec<serde_json::Value> = batch
+            .iter()
+            .map(|n| serde_json::to_value(&n.attributes).unwrap_or_default())
+            .collect();
+        let rows: Vec<(String, Uuid)> = sqlx::query_as(
             "INSERT INTO graph_nodes (id, workspace_id, project_id, kind, key, label, description, source_path, attributes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             SELECT id, $1, $2, kind, key, label, description, source_path, attributes
+               FROM UNNEST($3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+                 AS t(id, kind, key, label, description, source_path, attributes)
              ON CONFLICT (project_id, key) DO UPDATE SET
                kind = EXCLUDED.kind, label = EXCLUDED.label, description = EXCLUDED.description,
                source_path = EXCLUDED.source_path, attributes = EXCLUDED.attributes
-             RETURNING id",
+             RETURNING key, id",
         )
-        .bind(Uuid::now_v7())
         .bind(workspace_id)
         .bind(project_id)
-        .bind(node_kind_to_db(node_kind(node.kind)))
-        .bind(&node.key)
-        .bind(&node.label)
-        .bind(&node.description)
-        .bind(&node.source_path)
-        .bind(Json(&node.attributes))
-        .fetch_one(&mut *conn)
+        .bind(&new_ids)
+        .bind(&kinds)
+        .bind(&node_keys)
+        .bind(&labels)
+        .bind(&descriptions)
+        .bind(&paths)
+        .bind(&attributes)
+        .fetch_all(&mut *conn)
         .await?;
-        ids.insert(node.key.as_str(), id);
+        ids.extend(rows);
     }
 
     let current: Vec<EdgeKeyRow> = sqlx::query_as(
@@ -152,9 +169,7 @@ pub async fn sync(
     // Edges pointing at unknown nodes are analyzer bugs; dropping them beats failing the scan.
     let wanted: Vec<&EdgeDraft> = edges
         .iter()
-        .filter(|e| {
-            ids.contains_key(e.source_key.as_str()) && ids.contains_key(e.target_key.as_str())
-        })
+        .filter(|e| ids.contains_key(&e.source_key) && ids.contains_key(&e.target_key))
         .collect();
     let wanted_keys: Vec<EdgeKey> = wanted
         .iter()
@@ -187,27 +202,44 @@ pub async fn sync(
         .await?;
     }
 
-    for edge in wanted {
-        let key = EdgeKey {
-            source_key: edge.source_key.clone(),
-            target_key: edge.target_key.clone(),
-            relation: edge.relation.clone(),
-        };
-        if !diff.opened.contains(&key) {
-            continue;
-        }
+    let opened: Vec<&EdgeDraft> = wanted
+        .iter()
+        .copied()
+        .filter(|edge| {
+            diff.opened.contains(&EdgeKey {
+                source_key: edge.source_key.clone(),
+                target_key: edge.target_key.clone(),
+                relation: edge.relation.clone(),
+            })
+        })
+        .collect();
+    for batch in opened.chunks(super::INSERT_BATCH) {
+        let new_ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let sources: Vec<Uuid> = batch.iter().map(|e| ids[&e.source_key]).collect();
+        let targets: Vec<Uuid> = batch.iter().map(|e| ids[&e.target_key]).collect();
+        let relations: Vec<&str> = batch.iter().map(|e| e.relation.as_str()).collect();
+        let categories: Vec<String> = batch
+            .iter()
+            .map(|e| relation_category_to_db(relation_category(e.category)))
+            .collect();
+        let attributes: Vec<serde_json::Value> = batch
+            .iter()
+            .map(|e| serde_json::to_value(&e.attributes).unwrap_or_default())
+            .collect();
         sqlx::query(
             "INSERT INTO graph_edges (id, workspace_id, project_id, source_id, target_id, relation, category, valid_from, attributes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)",
+             SELECT id, $1, $2, source_id, target_id, relation, category, now(), attributes
+               FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::text[], $7::text[], $8::jsonb[])
+                 AS t(id, source_id, target_id, relation, category, attributes)",
         )
-        .bind(Uuid::now_v7())
         .bind(workspace_id)
         .bind(project_id)
-        .bind(ids[edge.source_key.as_str()])
-        .bind(ids[edge.target_key.as_str()])
-        .bind(&edge.relation)
-        .bind(relation_category_to_db(relation_category(edge.category)))
-        .bind(Json(&edge.attributes))
+        .bind(&new_ids)
+        .bind(&sources)
+        .bind(&targets)
+        .bind(&relations)
+        .bind(&categories)
+        .bind(&attributes)
         .execute(&mut *conn)
         .await?;
     }

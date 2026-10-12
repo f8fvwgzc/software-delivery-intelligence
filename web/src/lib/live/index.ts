@@ -1,4 +1,5 @@
 export { fallbackPoll, liveConnection, type LiveConnection } from './connection-store'
-export { backoffDelay, openEventSource, type EventSourceHandlers, type EventSourceOptions, type StreamState } from './event-source'
+export { backoffDelay, openEventSource, type EventSourceHandlers, type EventSourceLike, type EventSourceOptions, type StreamState } from './event-source'
+export { createInvalidationCoalescer, DEFAULT_INTERVAL_MS, type Family, type InvalidationCoalescer } from './invalidation-coalescer'
 export { useEventSource, type EventSourceStatus } from './use-event-source'
 export { LiveEventsContext, useLiveEvents } from './use-live-events'

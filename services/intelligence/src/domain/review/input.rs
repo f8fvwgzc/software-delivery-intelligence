@@ -4,8 +4,9 @@
 //! touched facts, impacted graph nodes). Built once from the knowledge
 //! service's answers; every rule is a pure function of it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use sdi_analyzer::{CustomRuleDraft, Day, ReviewConfigDraft};
 use sdi_proto::knowledge::v1::{
     ChangedFile as ProtoChangedFile, FactCategory, ProjectContext, PullRequest as ProtoPullRequest,
 };
@@ -35,6 +36,13 @@ pub struct ChangedFile {
     pub truncated: bool,
 }
 
+/// A diff line without its trailing carriage return: a CRLF file must
+/// match the same patterns as an LF one, and a finding must never quote
+/// a `\r`.
+fn body(line: &str) -> &str {
+    line[1..].strip_suffix('\r').unwrap_or(&line[1..])
+}
+
 impl ChangedFile {
     /// Added lines with their line number in the new file.
     pub fn added_lines(&self) -> Vec<(u32, &str)> {
@@ -44,7 +52,7 @@ impl ChangedFile {
             for line in &hunk.lines {
                 match line.as_bytes().first() {
                     Some(b'+') => {
-                        out.push((line_no, &line[1..]));
+                        out.push((line_no, body(line)));
                         line_no += 1;
                     }
                     Some(b'-') => {}
@@ -63,7 +71,7 @@ impl ChangedFile {
             for line in &hunk.lines {
                 match line.as_bytes().first() {
                     Some(b'-') => {
-                        out.push((line_no, &line[1..]));
+                        out.push((line_no, body(line)));
                         line_no += 1;
                     }
                     Some(b'+') => {}
@@ -72,6 +80,35 @@ impl ChangedFile {
             }
         }
         out
+    }
+
+    /// A binary file, or one GitHub sent without a patch: nothing to read.
+    /// (A truncated patch is not binary; it is simply too big to show.)
+    pub fn is_binary(&self) -> bool {
+        self.hunks.is_empty() && !self.truncated && self.additions == 0 && self.deletions == 0
+    }
+
+    /// Moved without a change to its content: no new lines to review and
+    /// no reason to ask for tests.
+    pub fn is_pure_rename(&self) -> bool {
+        self.status == "renamed" && self.additions == 0 && self.deletions == 0
+    }
+
+    /// The patch replaces the whole file (every line of the new file is
+    /// added and the old one is gone): a rewrite, not an edit.
+    pub fn is_whole_rewrite(&self) -> bool {
+        self.hunks.len() == 1
+            && self.additions > 0
+            && self.deletions > 0
+            && self.status == "modified"
+            && self.hunks[0].old_start <= 1
+            && self.hunks[0].old_lines == self.deletions
+            && self.hunks[0].lines.iter().all(|l| !l.starts_with(' '))
+    }
+
+    /// Whether anything in this file can be reviewed line by line.
+    pub fn is_reviewable(&self) -> bool {
+        !self.is_removed() && !self.is_binary() && !self.is_pure_rename() && !self.truncated
     }
 
     /// Every added line joined, for whole-file checks (a workflow without a
@@ -252,6 +289,46 @@ pub struct NodeRef {
     pub source_path: String,
 }
 
+/// What a project taught the review about one rule (CONTRACT.md §20):
+/// how many of its findings were accepted and dismissed so far.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleLearning {
+    pub rule: String,
+    pub accepted: u32,
+    pub dismissed: u32,
+}
+
+/// Dismissals with no acceptance after which a rule is suppressed.
+pub const SUPPRESS_AFTER_DISMISSALS: u32 = 3;
+
+/// `.sdi.yml` `review:` as the rules read it (CONTRACT.md §12).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewConfig {
+    pub ignore_paths: Vec<String>,
+    pub rules: Vec<CustomRuleDraft>,
+    pub severity: BTreeMap<String, String>,
+    pub require_tests_for: Vec<String>,
+}
+
+impl ReviewConfig {
+    pub fn from_draft(draft: &ReviewConfigDraft) -> Self {
+        Self {
+            ignore_paths: draft.ignore_paths.clone(),
+            rules: draft.rules.clone(),
+            severity: draft.severity.clone(),
+            require_tests_for: draft.require_tests_for.clone(),
+        }
+    }
+
+    pub fn ignores(&self, path: &str) -> bool {
+        sdi_analyzer::matches_any_glob(path, &self.ignore_paths)
+    }
+
+    pub fn requires_tests(&self, path: &str) -> bool {
+        sdi_analyzer::matches_any_glob(path, &self.require_tests_for)
+    }
+}
+
 /// One delivery-maturity axis as the last scan scored it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AxisScore {
@@ -278,9 +355,34 @@ pub struct ReviewInput {
     pub files_truncated: bool,
     pub touched_facts: Vec<FactRef>,
     pub impacted_nodes: Vec<NodeRef>,
+    /// The repository's `.sdi.yml` `review:` section, when usable.
+    pub config: ReviewConfig,
+    /// What this project's earlier reviews taught, by rule.
+    pub learnings: Vec<RuleLearning>,
+    /// The day the review runs, for end-of-life checks (never a default).
+    pub today: Day,
 }
 
 impl ReviewInput {
+    pub fn with_config(mut self, config: ReviewConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn with_learnings(mut self, learnings: Vec<RuleLearning>) -> Self {
+        self.learnings = learnings;
+        self
+    }
+
+    pub fn with_today(mut self, today: Day) -> Self {
+        self.today = today;
+        self
+    }
+
+    pub fn learning(&self, rule: &str) -> Option<&RuleLearning> {
+        self.learnings.iter().find(|l| l.rule == rule)
+    }
+
     /// Joins the knowledge service's two answers. Facts and nodes are
     /// resolved by id against the context so the rules see labels, not ids.
     pub fn from_proto(pr: &ProtoPullRequest, context: &ProjectContext) -> Self {
@@ -367,6 +469,14 @@ impl ReviewInput {
             files_truncated,
             touched_facts,
             impacted_nodes,
+            config: context
+                .config
+                .as_ref()
+                .filter(|c| c.present && !c.errors.iter().any(|e| e.starts_with("error:")))
+                .map(|_| ReviewConfig::default())
+                .unwrap_or_default(),
+            learnings: Vec::new(),
+            today: (1970, 1, 1),
         }
     }
 
@@ -527,6 +637,95 @@ mod tests {
         assert_eq!(file.added_lines(), vec![(1, "name: ci"), (2, "on: push")]);
         assert_eq!(file.first_line(), 1);
         assert_eq!(file.added_text(), "name: ci\non: push");
+    }
+
+    #[test]
+    fn crlf_binary_rename_and_rewrite_are_recognised() {
+        let crlf = ChangedFile {
+            path: "a.ts".into(),
+            status: "modified".into(),
+            additions: 1,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                lines: vec!["-old\r".into(), "+const x = 1;\r".into()],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(crlf.added_lines(), vec![(1, "const x = 1;")]);
+        assert_eq!(crlf.removed_lines(), vec![(1, "old")]);
+        assert!(crlf.is_reviewable());
+
+        let binary = ChangedFile {
+            path: "logo.png".into(),
+            status: "added".into(),
+            ..Default::default()
+        };
+        assert!(binary.is_binary() && !binary.is_reviewable());
+
+        let renamed = ChangedFile {
+            path: "src/new.rs".into(),
+            previous_path: "src/old.rs".into(),
+            status: "renamed".into(),
+            ..Default::default()
+        };
+        assert!(renamed.is_pure_rename() && !renamed.is_reviewable());
+        let renamed_and_edited = ChangedFile {
+            additions: 2,
+            hunks: vec![Hunk {
+                new_start: 3,
+                new_lines: 2,
+                lines: vec!["+a".into(), "+b".into()],
+                ..Default::default()
+            }],
+            ..renamed
+        };
+        assert!(!renamed_and_edited.is_pure_rename() && renamed_and_edited.is_reviewable());
+
+        let truncated = ChangedFile {
+            path: "big.json".into(),
+            status: "modified".into(),
+            additions: 9000,
+            truncated: true,
+            ..Default::default()
+        };
+        assert!(!truncated.is_binary() && !truncated.is_reviewable());
+
+        let rewrite = ChangedFile {
+            path: "src/lib.rs".into(),
+            status: "modified".into(),
+            additions: 2,
+            deletions: 3,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 3,
+                new_start: 1,
+                new_lines: 2,
+                lines: vec![
+                    "-a".into(),
+                    "-b".into(),
+                    "-c".into(),
+                    "+x".into(),
+                    "+y".into(),
+                ],
+            }],
+            ..Default::default()
+        };
+        assert!(rewrite.is_whole_rewrite());
+        assert!(rewrite.is_reviewable());
+        let edit = ChangedFile {
+            hunks: vec![Hunk {
+                old_start: 10,
+                old_lines: 2,
+                new_start: 10,
+                new_lines: 2,
+                lines: vec![" keep".into(), "-a".into(), "+b".into()],
+            }],
+            ..rewrite.clone()
+        };
+        assert!(!edit.is_whole_rewrite());
     }
 
     #[test]

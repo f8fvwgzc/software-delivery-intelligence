@@ -9,6 +9,7 @@ import { FrameFooter } from '@/components/system/frame'
 import type { PullRequestFilter } from '../../api/keys'
 import { pullRequestQueries } from '../../api/queries'
 import { PullRequestRow } from './pull-request-row'
+import { count } from '@/lib/intl'
 
 interface PullRequestListProps {
   projectId: string
@@ -40,7 +41,7 @@ export function PullRequestList({ projectId, state }: PullRequestListProps) {
       </RowList>
       <FrameFooter>
         <span className="tabular-nums">
-          {data.pullRequests.length} {data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}
+          {count(data.pullRequests.length, 'pull request', 'pull requests')}
         </span>
         {data.syncedAt ? (
           <span className="ml-auto">

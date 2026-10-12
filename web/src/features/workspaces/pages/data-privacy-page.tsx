@@ -1,5 +1,8 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
-import { ExternalLinkIcon } from 'lucide-react'
+import { ArrowRightIcon } from 'lucide-react'
+import { Link } from 'react-router'
+
+import { routes } from '@/app/router/routes'
 
 import { Page, PageHeader } from '@/components/shared/page'
 import { Frame } from '@/components/system/frame'
@@ -14,7 +17,6 @@ import { DataControlsForm } from '../components/data-controls-form'
 import { DataControlsSkeleton } from '../components/data-controls-form/skeleton'
 import { StorageTable } from '../components/storage-table'
 
-const TRUST_URL = 'https://github.com/f8fvwgzc/software-delivery-intelligence/blob/main/TRUST.md'
 
 function ControlsPanel() {
   const { currentWorkspace } = useAuth()
@@ -40,10 +42,10 @@ export default function DataPrivacyPage() {
         description="What SDI keeps about this workspace, the switches that change it, and the two guarantees: a complete export and a real delete."
         actions={
           <Button asChild variant="ghost" size="sm">
-            <a href={TRUST_URL} target="_blank" rel="noreferrer">
+            <Link to={routes.trustDoc('trust')}>
               Read TRUST.md
-              <ExternalLinkIcon data-icon="inline-end" />
-            </a>
+              <ArrowRightIcon data-icon="inline-end" />
+            </Link>
           </Button>
         }
       />
