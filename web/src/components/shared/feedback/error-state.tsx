@@ -21,6 +21,8 @@ interface ErrorStateProps {
   onRetry?: () => void
   retryLabel?: string
   retrying?: boolean
+  /** Inside a frame body: no box of its own, less padding. */
+  compact?: boolean
   className?: string
 }
 
@@ -31,6 +33,7 @@ export function ErrorState({
   onRetry,
   retryLabel = 'Try again',
   retrying = false,
+  compact = false,
   className,
 }: ErrorStateProps) {
   const resolvedTitle =
@@ -44,7 +47,12 @@ export function ErrorState({
         : 'An unexpected error occurred.')
 
   return (
-    <Empty className={cn('rounded-lg border border-destructive/20 bg-destructive/[0.03] py-10', className)}>
+    <Empty
+      className={cn(
+        compact ? 'gap-3 py-6' : 'rounded-lg border border-destructive/20 bg-destructive/[0.03] py-10',
+        className,
+      )}
+    >
       <EmptyHeader>
         <EmptyMedia variant="icon" className="bg-destructive/10 text-destructive">
           <AlertCircleIcon className="size-4" />

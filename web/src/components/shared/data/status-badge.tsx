@@ -1,28 +1,11 @@
 import type { ReactNode } from 'react'
 
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { Tag, TAG_DOT_CLASS, type TagTone } from '@/components/system/tag'
 
-export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'destructive' | 'brand'
+export type StatusTone = TagTone
 
-const TONE_CLASS: Record<StatusTone, string> = {
-  neutral: 'border-border bg-muted text-muted-foreground',
-  info: 'border-info/20 bg-info/10 text-info',
-  success: 'border-success/20 bg-success/10 text-success',
-  warning: 'border-warning/25 bg-warning/10 text-warning',
-  destructive: 'border-destructive/20 bg-destructive/10 text-destructive',
-  brand: 'border-brand/20 bg-brand/10 text-brand',
-}
-
-/** 6px dot fill per tone; StatusDot and the badge read the same. */
-export const TONE_DOT_CLASS: Record<StatusTone, string> = {
-  neutral: 'bg-muted-foreground/60',
-  info: 'bg-info',
-  success: 'bg-success',
-  warning: 'bg-warning',
-  destructive: 'bg-destructive',
-  brand: 'bg-brand',
-}
+/** 6px dot fill per tone; StatusDot and the tag read the same. */
+export const TONE_DOT_CLASS = TAG_DOT_CLASS
 
 interface StatusBadgeProps {
   tone: StatusTone
@@ -33,19 +16,11 @@ interface StatusBadgeProps {
   className?: string
 }
 
-/** Tinted badge with an optional status dot. Use for every lifecycle state. */
+/** Lifecycle state as a system `Tag` with a status dot. */
 export function StatusBadge({ tone, children, live = false, dot = true, className }: StatusBadgeProps) {
   return (
-    <Badge variant="outline" className={cn('gap-1.5 font-normal', TONE_CLASS[tone], className)}>
-      {dot && (
-        <span className="relative flex size-1.5">
-          {live && (
-            <span className={cn('absolute inline-flex size-full rounded-full opacity-60 motion-safe:animate-ping', TONE_DOT_CLASS[tone])} />
-          )}
-          <span className={cn('relative inline-flex size-1.5 rounded-full', TONE_DOT_CLASS[tone])} />
-        </span>
-      )}
+    <Tag tone={tone} dot={dot} live={live} className={className}>
       {children}
-    </Badge>
+    </Tag>
   )
 }

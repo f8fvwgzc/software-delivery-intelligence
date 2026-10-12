@@ -46,17 +46,24 @@ pub async fn get(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> sqlx::Result<Do
 }
 
 /// Markdown bodies are left out: list responses omit them (proto contract).
+/// Newest first, at most `limit`, generated strictly before `before`.
 pub async fn list(
     pool: &PgPool,
     workspace_id: Uuid,
     project_id: &str,
+    limit: i64,
+    before: Option<DateTime<Utc>>,
 ) -> sqlx::Result<Vec<DocumentRow>> {
     sqlx::query_as(
         "SELECT id, workspace_id, project_id, kind, title, '' AS markdown, commit_sha, facts_used, generated_at \
-         FROM documents WHERE workspace_id = $1 AND project_id = $2 ORDER BY generated_at DESC",
+         FROM documents WHERE workspace_id = $1 AND project_id = $2 \
+           AND ($3::timestamptz IS NULL OR generated_at < $3) \
+         ORDER BY generated_at DESC LIMIT $4",
     )
     .bind(workspace_id)
     .bind(project_id)
+    .bind(before)
+    .bind(limit)
     .fetch_all(pool)
     .await
 }

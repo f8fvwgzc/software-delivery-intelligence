@@ -7,6 +7,7 @@ pub mod diagrams;
 pub mod documents;
 pub mod messages;
 pub mod proposals;
+pub mod reviews;
 pub mod settings;
 pub mod workspace;
 

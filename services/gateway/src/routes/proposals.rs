@@ -46,6 +46,8 @@ async fn list_proposals(
         .intelligence()
         .list_proposals(proto::ListProposalsRequest {
             project_id: query.project_id.unwrap_or_default(),
+            limit: query.limit.unwrap_or(0),
+            before: query.before.map(sdi_common::time::to_proto),
         })
         .await?
         .into_inner();

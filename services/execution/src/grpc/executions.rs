@@ -213,9 +213,16 @@ pub async fn list(
         0 => DEFAULT_LIST_LIMIT,
         n => n.min(MAX_LIST_LIMIT),
     };
-    let rows = db::executions::list(&rt.pool, caller.workspace, req.project_id.trim(), limit)
-        .await
-        .map_err(db_status)?;
+    let before = sdi_common::time::opt_from_proto(req.before.as_ref());
+    let rows = db::executions::list(
+        &rt.pool,
+        caller.workspace,
+        req.project_id.trim(),
+        limit,
+        before,
+    )
+    .await
+    .map_err(db_status)?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let mut steps = db::steps::list_for_many(&rt.pool, caller.workspace, &ids)
         .await

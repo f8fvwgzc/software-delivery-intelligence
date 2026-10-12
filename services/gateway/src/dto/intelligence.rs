@@ -346,6 +346,10 @@ impl From<proto::Proposal> for Proposal {
 pub struct ListProposalsQuery {
     /// Only proposals of this project. Empty lists every project.
     pub project_id: Option<String>,
+    /// Page size, newest first (default 50, max 200).
+    pub limit: Option<u32>,
+    /// Cursor: proposals created strictly before this time.
+    pub before: Option<DateTime<Utc>>,
 }
 
 /// Body of `POST /proposals`.
@@ -397,6 +401,8 @@ pub struct IntelligenceSettings {
     pub api_key_configured: bool,
     /// Options above this monthly cost lose ranking unless a budget says otherwise.
     pub cost_ceiling_usd: f64,
+    /// `pull_request` webhooks (opened, synchronize) start a review that stops at `proposed` (CONTRACT.md §20). Default off.
+    pub auto_review: bool,
 }
 
 impl From<proto::IntelligenceSettings> for IntelligenceSettings {
@@ -407,6 +413,7 @@ impl From<proto::IntelligenceSettings> for IntelligenceSettings {
             model: settings.model,
             api_key_configured: settings.api_key_configured,
             cost_ceiling_usd: settings.cost_ceiling_usd,
+            auto_review: settings.auto_review,
         }
     }
 }
@@ -419,6 +426,7 @@ impl From<IntelligenceSettings> for proto::IntelligenceSettings {
             model: settings.model,
             api_key_configured: settings.api_key_configured,
             cost_ceiling_usd: settings.cost_ceiling_usd,
+            auto_review: settings.auto_review,
         }
     }
 }
@@ -436,6 +444,8 @@ pub struct IntelligenceSettingsPatch {
     pub model: Option<String>,
     /// Options above this monthly cost lose ranking unless a budget says otherwise.
     pub cost_ceiling_usd: Option<f64>,
+    /// Whether `pull_request` webhooks start a review.
+    pub auto_review: Option<bool>,
 }
 
 impl IntelligenceSettingsPatch {
@@ -447,6 +457,7 @@ impl IntelligenceSettingsPatch {
             model: self.model.unwrap_or(current.model),
             api_key_configured: current.api_key_configured,
             cost_ceiling_usd: self.cost_ceiling_usd.unwrap_or(current.cost_ceiling_usd),
+            auto_review: self.auto_review.unwrap_or(current.auto_review),
         }
     }
 }
@@ -786,13 +797,17 @@ mod tests {
             model: "m".into(),
             api_key_configured: true,
             cost_ceiling_usd: 500.0,
+            auto_review: false,
         };
-        let patch: IntelligenceSettingsPatch =
-            serde_json::from_str(r#"{"reasoner": "claude", "apiKeyConfigured": false}"#).unwrap();
+        let patch: IntelligenceSettingsPatch = serde_json::from_str(
+            r#"{"reasoner": "claude", "apiKeyConfigured": false, "autoReview": true}"#,
+        )
+        .unwrap();
         let merged = patch.apply(current);
         assert_eq!(merged.reasoner, "claude");
         assert_eq!(merged.model, "m");
         assert!(merged.api_key_configured);
         assert_eq!(merged.cost_ceiling_usd, 500.0);
+        assert!(merged.auto_review);
     }
 }

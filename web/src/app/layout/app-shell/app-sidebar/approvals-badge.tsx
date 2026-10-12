@@ -17,7 +17,10 @@ export function ApprovalsBadge() {
   if (!count) return null
 
   return (
-    <SidebarMenuBadge className="bg-warning/10 font-medium tabular-nums text-warning" aria-label={`${count} pending approvals`}>
+    <SidebarMenuBadge
+      className="top-2! h-5 min-w-5 rounded-[4px] bg-warning/10 px-1 text-2xs font-medium tabular-nums text-warning"
+      aria-label={`${count} pending approvals`}
+    >
       {count > 99 ? '99+' : count}
     </SidebarMenuBadge>
   )

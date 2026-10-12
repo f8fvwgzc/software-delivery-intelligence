@@ -1,7 +1,7 @@
 import { useParams } from 'react-router'
 
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 
 import { ExecutionsTable, ExecutionsTableSkeleton } from '../components/executions-table'
 import { NewDryRunDialog } from '../components/new-dry-run-dialog'
@@ -17,12 +17,12 @@ export default function ProjectExecutionsPage() {
         description="Runs of accepted plans for this project. Live rows refresh on their own."
         actions={<NewDryRunDialog projectId={projectId} variant="outline" size="sm" />}
       />
-      <QueryBoundary fallback={<ExecutionsTableSkeleton showProject={false} />}>
+      <Panel title="Executions" padding="none" skeleton={<ExecutionsTableSkeleton showProject={false} />}>
         <ExecutionsTable
           projectId={projectId}
           emptyAction={<NewDryRunDialog projectId={projectId} variant="outline" size="sm" />}
         />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

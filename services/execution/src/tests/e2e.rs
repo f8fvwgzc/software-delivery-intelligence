@@ -589,6 +589,7 @@ async fn full_flight_with_approvals_fault_and_replan() {
         .list_executions(req(ListExecutionsRequest {
             project_id: String::new(),
             limit: 0,
+            before: None,
         }))
         .await
         .unwrap()
@@ -597,6 +598,20 @@ async fn full_flight_with_approvals_fault_and_replan() {
     assert_eq!(listing.len(), 1);
     assert_eq!(listing[0].steps.len(), 5);
     assert!(listing[0].failure.is_none());
+    // The `before` cursor excludes rows updated at or after it.
+    let cut = listing[0].updated_at;
+    let paged = h
+        .svc
+        .list_executions(req(ListExecutionsRequest {
+            project_id: String::new(),
+            limit: 0,
+            before: cut,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .executions;
+    assert!(paged.is_empty());
 
     h.teardown().await;
 }

@@ -2,8 +2,9 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { RefreshCwIcon } from 'lucide-react'
 
 import { RelativeTime } from '@/components/shared/data'
-import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { FrameFooter } from '@/components/system/frame'
+import { Panel } from '@/components/system/panel'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/features/auth/lib/auth-context'
 import { hasRole } from '@/features/auth/lib/roles'
@@ -21,14 +22,14 @@ function MembersPanel() {
   const { data } = useSuspenseQuery(workspaceQueries.members(currentWorkspace.id))
 
   return (
-    <div className="flex flex-col gap-2">
+    <>
       <MembersTable
         workspaceId={currentWorkspace.id}
         members={data.members}
         currentUserId={user.id}
         canEdit={hasRole(currentWorkspace.myRole, 'admin')}
       />
-      <p className="text-xs text-muted-foreground">
+      <FrameFooter>
         {data.syncedAt ? (
           <>
             Last read from GitHub <RelativeTime value={data.syncedAt} />.
@@ -36,8 +37,8 @@ function MembersPanel() {
         ) : (
           'Not read from GitHub yet.'
         )}
-      </p>
-    </div>
+      </FrameFooter>
+    </>
   )
 }
 
@@ -58,11 +59,14 @@ export default function MembersPage() {
           </Button>
         }
       />
-      <Section title={currentWorkspace.name} description="Membership is read from GitHub on sync, on webhooks, and when someone new opens the workspace.">
-        <QueryBoundary fallback={<MembersTableSkeleton />}>
-          <MembersPanel />
-        </QueryBoundary>
-      </Section>
+      <Panel
+        title={currentWorkspace.name}
+        description="Membership is read from GitHub on sync, on webhooks, and when someone new opens the workspace."
+        padding="none"
+        skeleton={<MembersTableSkeleton />}
+      >
+        <MembersPanel />
+      </Panel>
     </Page>
   )
 }

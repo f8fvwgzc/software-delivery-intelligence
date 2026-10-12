@@ -57,6 +57,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         (name = "decisions", description = "Decision memory with provenance"),
         (name = "documents", description = "Generated documents and reports"),
         (name = "diagrams", description = "Evidence-based diagrams generated from the knowledge graph"),
+        (name = "reviews", description = "Pull request reviews: evidence first, a human decides, then SDI posts (§20)"),
         (name = "executions", description = "Policy-gated plan execution"),
         (name = "approvals", description = "Human approvals"),
         (name = "policies", description = "Action policies and scoped identities"),
@@ -385,9 +386,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let paths = json["paths"].as_object().expect("paths object");
         // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1, plus the
-        // two code browser routes of §15, the two diagram routes of §16 and
-        // the 17 identity routes of §18.
-        assert_eq!(paths.len(), 76, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // two code browser routes of §15, the two diagram routes of §16, the
+        // 17 identity routes of §18 and the 8 review routes of §20.
+        assert_eq!(paths.len(), 84, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -418,6 +419,14 @@ mod tests {
             "/api/v1/workspaces/{id}/data-controls",
             "/api/v1/workspaces/{id}/data-controls/reasoner-key",
             "/api/v1/workspaces/{id}/data/export",
+            "/api/v1/projects/{id}/pull-requests",
+            "/api/v1/projects/{id}/pull-requests/{number}",
+            "/api/v1/projects/{id}/pull-requests/{number}/reviews",
+            "/api/v1/reviews",
+            "/api/v1/reviews/{id}",
+            "/api/v1/findings/{id}/decide",
+            "/api/v1/reviews/{id}/publish",
+            "/api/v1/activity",
             "/api/v1/workspaces/{id}/data/purge-code-cache",
         ] {
             assert!(paths.contains_key(path), "missing {path}");
@@ -1165,6 +1174,234 @@ mod tests {
 
         let (_, json) = webhook(app().await, "ping", &json!({"zen": "x"}), "hook-secret").await;
         assert_eq!(json["outcome"], "ignored");
+    }
+
+    // --- Code review (§20) --------------------------------------------------
+
+    #[tokio::test]
+    async fn pull_requests_carry_their_latest_review_and_the_detail_has_the_diff() {
+        let app = app_with_every_fake().await.app;
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/pull-requests?state=all&refresh=true&limit=10",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let prs = json["pullRequests"].as_array().unwrap();
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0]["number"], 1);
+        assert_eq!(prs[0]["state"], "all");
+        // The newest review of PR 1 wins; PR 2 has its own.
+        assert_eq!(prs[0]["latestReviewId"], "r-new");
+        assert_eq!(prs[1]["latestReviewId"], "r-2");
+        assert_eq!(json["syncedAt"], "2023-11-14T22:15:00Z");
+
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/pull-requests/2",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["summary"]["number"], 2);
+        assert_eq!(json["body"], "Adds a Dockerfile.");
+        assert_eq!(json["files"][0]["path"], "Dockerfile");
+        assert_eq!(
+            json["files"][0]["hunks"][0]["lines"][0],
+            "+FROM node:latest"
+        );
+        assert_eq!(json["files"][0]["previousPath"], Value::Null);
+        assert_eq!(json["touchedFactIds"][0], "f1");
+
+        let (status, json) = send(app, "GET", "/api/v1/projects/p1/pull-requests/9", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+    }
+
+    #[tokio::test]
+    async fn reviews_follow_the_role_matrix_and_publish_needs_an_approver() {
+        let stack = app_with_every_fake().await;
+        // A viewer cannot start a review.
+        let (status, _, _) = send_as(
+            stack.app.clone(),
+            Some("t-viewer"),
+            "POST",
+            "/api/v1/projects/p1/pull-requests/1/reviews",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // A member can; the answer is the review in its first state.
+        let (status, json, _) = send_as(
+            stack.app.clone(),
+            Some("t-member"),
+            "POST",
+            "/api/v1/projects/p1/pull-requests/1/reviews",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["status"], "context");
+        assert_eq!(json["requestedBy"], "u1");
+        assert_eq!(json["summary"], Value::Null);
+        assert_eq!(json["steps"].as_array().unwrap().len(), 5);
+
+        let (status, json) = send(
+            stack.app.clone(),
+            "GET",
+            "/api/v1/reviews?projectId=p1",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let listed = json.as_array().unwrap();
+        assert_eq!(listed.len(), 3);
+        assert!(listed[0]["findings"].as_array().unwrap().is_empty());
+        assert_eq!(listed[0]["summary"], Value::Null);
+
+        let (status, json) = send(stack.app.clone(), "GET", "/api/v1/reviews/r1", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["status"], "proposed");
+        assert_eq!(json["findings"].as_array().unwrap().len(), 2);
+        assert_eq!(json["findings"][0]["severity"], "medium");
+        assert_eq!(json["findings"][0]["decision"], "pending");
+        assert_eq!(json["findings"][0]["suggestion"], "FROM node:22");
+
+        let (status, json, _) = send_as(
+            stack.app.clone(),
+            Some("t-member"),
+            "POST",
+            "/api/v1/findings/f1/decide",
+            Some(json!({"decision": "accepted", "note": "yes"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["decision"], "accepted");
+        assert_eq!(json["decisionNote"], "yes");
+        assert_eq!(json["decidedBy"], "u1");
+
+        // Publishing is approver work.
+        let (status, _, _) = send_as(
+            stack.app.clone(),
+            Some("t-member"),
+            "POST",
+            "/api/v1/reviews/r1/publish",
+            Some(json!({"event": "approve"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, json, _) = send_as(
+            stack.app.clone(),
+            Some("t-approver"),
+            "POST",
+            "/api/v1/reviews/r1/publish",
+            Some(json!({"event": "approve"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["status"], "published");
+        assert!(json["publishedUrl"].as_str().unwrap().ends_with("approve"));
+        // Without a body the event defaults to a comment.
+        let (status, json, _) = send_as(
+            stack.app.clone(),
+            Some("t-approver"),
+            "POST",
+            "/api/v1/reviews/r1/publish",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert!(json["publishedUrl"].as_str().unwrap().ends_with("comment"));
+        for _ in 0..50 {
+            if *stack.recorder.last_action.lock().unwrap() == "review.publish" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            *stack.recorder.last_action.lock().unwrap(),
+            "review.publish"
+        );
+
+        let (status, json) = send(
+            stack.app.clone(),
+            "GET",
+            "/api/v1/activity?projectId=p1&before=2023-11-14T22:14:00Z",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let activity = json.as_array().unwrap();
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0]["action"], "review.started");
+        assert_eq!(activity[0]["actor"], "u-member");
+    }
+
+    #[tokio::test]
+    async fn webhook_pull_request_starts_a_review_only_with_auto_review_on() {
+        let opened = json!({
+            "action": "opened",
+            "installation": {"id": 777},
+            "organization": {"login": "acme"},
+            "repository": {"full_name": "acme/repo", "default_branch": "main"},
+            "pull_request": {"number": 1, "draft": false}
+        });
+        fakes::intelligence::AUTO_REVIEW.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (status, json) = webhook(
+            app_with_every_fake().await.app,
+            "pull_request",
+            &opened,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["outcome"], "ignored");
+
+        fakes::intelligence::AUTO_REVIEW.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (status, json) = webhook(
+            app_with_every_fake().await.app,
+            "pull_request",
+            &opened,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["outcome"], "review_started");
+
+        // Drafts, closes and unknown repositories never start one.
+        let mut draft = opened.clone();
+        draft["pull_request"]["draft"] = json!(true);
+        let (_, json) = webhook(
+            app_with_every_fake().await.app,
+            "pull_request",
+            &draft,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        let mut closed = opened.clone();
+        closed["action"] = json!("closed");
+        let (_, json) = webhook(
+            app_with_every_fake().await.app,
+            "pull_request",
+            &closed,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        let mut other = opened.clone();
+        other["repository"]["full_name"] = json!("acme/other");
+        let (_, json) = webhook(
+            app_with_every_fake().await.app,
+            "pull_request",
+            &other,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        fakes::intelligence::AUTO_REVIEW.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     // --- Streams -----------------------------------------------------------

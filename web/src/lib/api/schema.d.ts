@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The review activity log, newest first. Page with `before`. */
+        get: operations["list_activity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals": {
         parameters: {
             query?: never;
@@ -234,7 +251,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Executions, newest first, optionally of one project. */
+        /**
+         * Executions, newest first, optionally of one project. `before` pages
+         *     backwards through time.
+         */
         get: operations["list_executions"];
         put?: never;
         /**
@@ -349,6 +369,23 @@ export interface paths {
         put?: never;
         /** Runs the policy check and moves the plan to `waiting_for_approval` or `authorized`. */
         post: operations["start_execution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/findings/{id}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accepts or dismisses a finding. Only accepted findings are published. */
+        post: operations["decide_finding"];
         delete?: never;
         options?: never;
         head?: never;
@@ -693,7 +730,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Diagrams of a project, without their spec and Mermaid. */
+        /** Diagrams of a project, newest first, without their spec and Mermaid. */
         get: operations["list_diagrams"];
         put?: never;
         /**
@@ -714,7 +751,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Documents of a project, without their markdown bodies. */
+        /** Documents of a project, newest first, without their markdown bodies. */
         get: operations["list_documents"];
         put?: never;
         /** Generates a document from the knowledge model. */
@@ -863,6 +900,67 @@ export interface paths {
         get: operations["list_pipelines"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pull requests of a project from the knowledge cache (synced from GitHub
+         *     on `refresh` or when empty), each with the id of its latest SDI review.
+         */
+        get: operations["list_pull_requests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/pull-requests/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One pull request with its changed files, bounded diff (≤ 300 KB, ≤ 200
+         *     files), touched facts and impacted graph nodes.
+         */
+        get: operations["get_pull_request"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/pull-requests/{number}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts a review of the pull request at its current head commit and
+         *     returns at once; progress arrives as `review` events. Starting a review
+         *     that already exists for the head returns it (a failed one is retried).
+         */
+        post: operations["start_review"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1108,6 +1206,60 @@ export interface paths {
         put?: never;
         /** Answers a question. Asked once, remembered afterwards. */
         post: operations["answer_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reviews, newest first, without their summary and findings. */
+        get: operations["list_reviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One review with its rail, summary and findings. */
+        get: operations["get_review"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Posts the review to GitHub: the summary as the body and one comment per
+         *     accepted finding (suggestions become GitHub suggestions). Never automatic.
+         */
+        post: operations["publish_review"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1530,6 +1682,31 @@ export interface components {
             /** @description Why it was cancelled. */
             reason: string;
         };
+        /** @description A file the pull request changes, with its bounded diff. */
+        ChangedFile: {
+            /**
+             * Format: int32
+             * @description Lines added.
+             */
+            additions: number;
+            /**
+             * Format: int32
+             * @description Lines removed.
+             */
+            deletions: number;
+            /** @description Diff hunks; empty when `truncated`. */
+            hunks: components["schemas"]["DiffHunk"][];
+            /** @description Language inferred from the path. */
+            language: string;
+            /** @description Path in the head commit. */
+            path: string;
+            /** @description Path before a rename; null otherwise. */
+            previousPath?: string | null;
+            /** @description `added` | `modified` | `removed` | `renamed`. */
+            status: string;
+            /** @description The patch was larger than the limit (300 KB across the pull request) and was not read. */
+            truncated: boolean;
+        };
         /** @description Body of `POST /projects`. */
         ConnectProjectRequest: {
             /** @description `owner/name` of the repository to connect. */
@@ -1660,6 +1837,13 @@ export interface components {
             /** @description Who decided. */
             decidedBy?: string | null;
             /** @description Optional note. */
+            note?: string | null;
+        };
+        /** @description Body of `POST /findings/{id}/decide`. */
+        DecideFindingRequest: {
+            /** @description `accepted` or `dismissed`. */
+            decision: components["schemas"]["FindingDecision"];
+            /** @description Why, in a sentence. */
             note?: string | null;
         };
         /** @description A remembered decision with provenance. */
@@ -1963,6 +2147,31 @@ export interface components {
             groups?: components["schemas"]["DiagramGroup"][];
             nodes?: components["schemas"]["DiagramNode"][];
         };
+        /** @description One `@@` section of a unified diff. */
+        DiffHunk: {
+            /** @description Diff lines including their leading ` `, `+` or `-`. */
+            lines: string[];
+            /**
+             * Format: int32
+             * @description Lines of the hunk in the new file.
+             */
+            newLines: number;
+            /**
+             * Format: int32
+             * @description First line of the hunk in the new file.
+             */
+            newStart: number;
+            /**
+             * Format: int32
+             * @description Lines of the hunk in the old file.
+             */
+            oldLines: number;
+            /**
+             * Format: int32
+             * @description First line of the hunk in the old file.
+             */
+            oldStart: number;
+        };
         /** @description A document generated from the knowledge model. */
         Document: {
             /** @description Commit it was generated from. */
@@ -2196,6 +2405,58 @@ export interface components {
             /** @description Step to fail. */
             stepKey: string;
         };
+        /** @description One analyzer finding. */
+        Finding: {
+            /** @description `secrets` | `security` | `dependencies` | `docker` | `ci` | `iac` | `tests` | `docs` | `correctness` | `maturity`. */
+            category: string;
+            /**
+             * Format: date-time
+             * @description When.
+             */
+            decidedAt?: string | null;
+            /** @description Who decided. */
+            decidedBy?: string | null;
+            /** @description The human's verdict. */
+            decision: components["schemas"]["FindingDecision"];
+            /** @description Note left with the decision. */
+            decisionNote?: string | null;
+            /** @description Markdown: the evidence and the fix. */
+            detail: string;
+            /**
+             * Format: int32
+             * @description Last line of the range; equals `line` for a single line.
+             */
+            endLine: number;
+            /** @description Finding id. */
+            id: string;
+            /**
+             * Format: int32
+             * @description Line in the new file; 0 for a file-level finding.
+             */
+            line: number;
+            /** @description File the finding points at. */
+            path: string;
+            /** @description Review it belongs to. */
+            reviewId: string;
+            /** @description Rule id, e.g. `secrets.aws_key`. */
+            rule: string;
+            /** @description Severity. */
+            severity: components["schemas"]["FindingSeverity"];
+            /** @description Replacement for the referenced lines, when the fix is mechanical; becomes a GitHub suggestion. */
+            suggestion?: string | null;
+            /** @description Short title. */
+            title: string;
+        };
+        /**
+         * @description The human's verdict on a finding.
+         * @enum {string}
+         */
+        FindingDecision: "unspecified" | "pending" | "accepted" | "dismissed";
+        /**
+         * @description How much a finding matters.
+         * @enum {string}
+         */
+        FindingSeverity: "unspecified" | "info" | "low" | "medium" | "high" | "critical";
         /** @description Body of `POST /projects/{id}/diagrams`. */
         GenerateDiagramRequest: {
             /** @description Kind of diagram to build. */
@@ -2403,6 +2664,8 @@ export interface components {
         IntelligenceSettings: {
             /** @description True when `ANTHROPIC_API_KEY` is configured. Read-only. */
             apiKeyConfigured: boolean;
+            /** @description `pull_request` webhooks (opened, synchronize) start a review that stops at `proposed` (CONTRACT.md §20). Default off. */
+            autoReview: boolean;
             /**
              * Format: double
              * @description Options above this monthly cost lose ranking unless a budget says otherwise.
@@ -2419,6 +2682,8 @@ export interface components {
          *     unset fields keep their current value. `apiKeyConfigured` is read-only.
          */
         IntelligenceSettingsPatch: {
+            /** @description Whether `pull_request` webhooks start a review. */
+            autoReview?: boolean | null;
             /**
              * Format: double
              * @description Options above this monthly cost lose ranking unless a budget says otherwise.
@@ -3193,6 +3458,87 @@ export interface components {
          * @enum {string}
          */
         ProposalStatus: "unspecified" | "proposed" | "negotiating" | "accepted" | "rejected" | "superseded";
+        /** @description Body of `POST /reviews/{id}/publish`. */
+        PublishReviewRequest: {
+            /** @description `comment` (default), `request_changes` or `approve`. */
+            event?: string | null;
+        };
+        /** @description One pull request with its files, diff and knowledge links. */
+        PullRequest: {
+            /** @description Description (Markdown) as written on GitHub. */
+            body: string;
+            /** @description Changed files, at most 200. */
+            files: components["schemas"]["ChangedFile"][];
+            /** @description Graph node ids the change reaches (impact walk from every changed path, at most 60). */
+            impactedNodeIds: string[];
+            /** @description The summary. */
+            summary: components["schemas"]["PullRequestSummary"];
+            /** @description Facts whose evidence lives in a changed file. */
+            touchedFactIds: string[];
+        };
+        /** @description A pull request as GitHub lists it, with the id of its latest SDI review. */
+        PullRequestSummary: {
+            /**
+             * Format: int32
+             * @description Lines added.
+             */
+            additions: number;
+            /** @description Author login. */
+            author: string;
+            /** @description Author avatar. */
+            authorAvatarUrl: string;
+            /** @description Target branch. */
+            baseRef: string;
+            /**
+             * Format: int32
+             * @description Files changed, as GitHub counts them.
+             */
+            changedFiles: number;
+            /**
+             * Format: date-time
+             * @description When it was opened.
+             */
+            createdAt?: string | null;
+            /**
+             * Format: int32
+             * @description Lines removed.
+             */
+            deletions: number;
+            /** @description Source branch. */
+            headRef: string;
+            /** @description Head commit; a review is identified by it. */
+            headSha: string;
+            /** @description Link to the pull request on GitHub. */
+            htmlUrl: string;
+            /** @description The latest SDI review of this pull request, if any. */
+            latestReviewId?: string | null;
+            /**
+             * Format: int64
+             * @description GitHub number.
+             */
+            number: number;
+            /** @description Project the pull request belongs to. */
+            projectId: string;
+            /** @description `open` | `closed` | `merged` | `draft`. */
+            state: string;
+            /** @description Title. */
+            title: string;
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updatedAt?: string | null;
+        };
+        /** @description Response of `GET /projects/{id}/pull-requests`. */
+        PullRequestsResponse: {
+            /** @description The pull requests. */
+            pullRequests: components["schemas"]["PullRequestSummary"][];
+            /**
+             * Format: date-time
+             * @description When the list was last synced from GitHub; null before the first sync.
+             */
+            syncedAt?: string | null;
+        };
         /** @description Response of `POST /workspaces/{id}/data/purge-code-cache`. */
         PurgeResult: {
             /**
@@ -3312,6 +3658,115 @@ export interface components {
             instruction?: string | null;
             /** @description One of the failure's remediation option ids. */
             optionId?: string | null;
+        };
+        /** @description A review of one pull request at one head commit. */
+        Review: {
+            /**
+             * Format: date-time
+             * @description When it was started.
+             */
+            createdAt: string;
+            /** @description Why it failed, when it did. */
+            error?: string | null;
+            /**
+             * Format: int32
+             * @description Files the review read.
+             */
+            filesReviewed: number;
+            /** @description Findings. Empty in list responses. */
+            findings: components["schemas"]["Finding"][];
+            /**
+             * Format: int32
+             * @description Findings accepted so far.
+             */
+            findingsAccepted: number;
+            /**
+             * Format: int32
+             * @description Findings proposed.
+             */
+            findingsTotal: number;
+            /** @description Head commit reviewed. */
+            headSha: string;
+            /** @description Review id. */
+            id: string;
+            /** @description Pull request author. */
+            prAuthor: string;
+            /**
+             * Format: int64
+             * @description Pull request number.
+             */
+            prNumber: number;
+            /** @description Pull request title. */
+            prTitle: string;
+            /** @description Project. */
+            projectId: string;
+            /** @description Project display name. */
+            projectName: string;
+            /** @description GitHub review URL once published. */
+            publishedUrl?: string | null;
+            /** @description `heuristic` | `claude`. */
+            reasoner: string;
+            /** @description Who started it (`system` for webhooks). */
+            requestedBy: string;
+            /** @description Where the review is. */
+            status: components["schemas"]["ReviewStatus"];
+            /** @description The rail. */
+            steps: components["schemas"]["ReviewStep"][];
+            /** @description Markdown walkthrough. `null` in list responses. */
+            summary?: string | null;
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updatedAt: string;
+        };
+        /** @description One entry of the review activity log. */
+        ReviewActivity: {
+            /** @description `review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed`. */
+            action: string;
+            /** @description Who did it (`system` for the pipeline). */
+            actor: string;
+            /**
+             * Format: date-time
+             * @description When.
+             */
+            at: string;
+            /** @description What happened, in a line. */
+            detail: string;
+            /** @description Entry id. */
+            id: string;
+            /**
+             * Format: int64
+             * @description Pull request number.
+             */
+            prNumber: number;
+            /** @description Project. */
+            projectId: string;
+            /** @description Project display name. */
+            projectName: string;
+            /** @description Review. */
+            reviewId: string;
+        };
+        /**
+         * @description Where a review is in its pipeline.
+         * @enum {string}
+         */
+        ReviewStatus: "unspecified" | "context" | "analyzing" | "proposed" | "published" | "failed";
+        /** @description One step of the review rail. */
+        ReviewStep: {
+            /** @description What the step found or why it failed. */
+            detail: string;
+            /**
+             * Format: int32
+             * @description Wall time of the step.
+             */
+            durationMs: number;
+            /** @description `context` | `analyze` | `findings` | `summary` | `publish`. */
+            key: string;
+            /** @description Label. */
+            label: string;
+            /** @description `pending` | `running` | `done` | `failed`. */
+            status: string;
         };
         /**
          * @description How much damage an action can do. Drives the approval policy.
@@ -3833,6 +4288,104 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_activity: {
+        parameters: {
+            query?: {
+                /** @description Only activity of this project. Empty lists every project. */
+                projectId?: string;
+                /** @description Cursor: entries strictly before this time. */
+                before?: string;
+                /** @description Page size, newest first (default 50, max 200). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewActivity"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_approvals: {
         parameters: {
             query?: {
@@ -5187,8 +5740,10 @@ export interface operations {
             query?: {
                 /** @description Only executions of this project. Empty lists every project. */
                 projectId?: string;
-                /** @description Maximum number, newest first. 0 uses the service default. */
+                /** @description Page size, newest first (default 50). */
                 limit?: number;
+                /** @description Cursor: executions updated strictly before this time. */
+                before?: string;
             };
             header?: never;
             path?: never;
@@ -5882,6 +6437,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Execution"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    decide_finding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideFindingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Finding"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */
@@ -7860,7 +8513,12 @@ export interface operations {
     };
     list_diagrams: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size, newest first (default 50, max 200). */
+                limit?: number;
+                /** @description Cursor: items created strictly before this time. */
+                before?: string;
+            };
             header?: never;
             path: {
                 /** @description Project id */
@@ -8052,7 +8710,12 @@ export interface operations {
     };
     list_documents: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size, newest first (default 50, max 200). */
+                limit?: number;
+                /** @description Cursor: items created strictly before this time. */
+                before?: string;
+            };
             header?: never;
             path: {
                 /** @description Project id */
@@ -9018,6 +9681,299 @@ export interface operations {
             };
         };
     };
+    list_pull_requests: {
+        parameters: {
+            query?: {
+                /** @description `open` (default), `closed` or `all`. */
+                state?: string;
+                /** @description Re-sync from GitHub before answering. */
+                refresh?: boolean;
+                /** @description Page size, most recently updated first (default 50, max 200). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestsResponse"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_pull_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+                /** @description Pull request number */
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequest"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    start_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+                /** @description Pull request number */
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_questions: {
         parameters: {
             query?: {
@@ -9596,6 +10552,10 @@ export interface operations {
             query?: {
                 /** @description Only proposals of this project. Empty lists every project. */
                 projectId?: string;
+                /** @description Page size, newest first (default 50, max 200). */
+                limit?: number;
+                /** @description Cursor: proposals created strictly before this time. */
+                before?: string;
             };
             header?: never;
             path?: never;
@@ -10478,6 +11438,294 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Question"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_reviews: {
+        parameters: {
+            query?: {
+                /** @description Only reviews of this project. Empty lists every project. */
+                projectId?: string;
+                /** @description Page size, newest first (default 50, max 200). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Review id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    publish_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Review id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishReviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */

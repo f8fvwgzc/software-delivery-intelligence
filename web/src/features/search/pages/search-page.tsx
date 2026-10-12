@@ -3,6 +3,7 @@ import { useDeferredValue, useState } from 'react'
 
 import { ErrorState } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
 
 import { searchQuery } from '../api/queries'
 import { SearchForm } from '../components/search-form'
@@ -42,24 +43,36 @@ export default function SearchPage() {
         onKindsChange={setKinds}
         searching={searching}
       />
-      {!active ? (
-        <SearchIdle />
-      ) : results.isPending ? (
-        <SearchResultsSkeleton />
-      ) : results.isError ? (
-        <ErrorState error={results.error} onRetry={() => results.refetch()} retrying={results.isFetching} />
-      ) : (
-        <SearchResults
-          hits={results.data}
-          query={deferredQuery}
-          stale={results.isPlaceholderData || results.isFetching}
-          filtered={filtered}
-          onClearFilters={() => {
-            setProjectId('')
-            setKinds([])
-          }}
-        />
-      )}
+      <Frame
+        title="Results"
+        padding="none"
+        meta={
+          active && results.data ? (
+            <span className="text-2xs tabular-nums text-muted-foreground" aria-live="polite">
+              {results.data.length} {results.data.length === 1 ? 'hit' : 'hits'}
+            </span>
+          ) : undefined
+        }
+      >
+        {!active ? (
+          <SearchIdle />
+        ) : results.isPending ? (
+          <SearchResultsSkeleton />
+        ) : results.isError ? (
+          <ErrorState compact error={results.error} onRetry={() => results.refetch()} retrying={results.isFetching} />
+        ) : (
+          <SearchResults
+            hits={results.data}
+            query={deferredQuery}
+            stale={results.isPlaceholderData || results.isFetching}
+            filtered={filtered}
+            onClearFilters={() => {
+              setProjectId('')
+              setKinds([])
+            }}
+          />
+        )}
+      </Frame>
     </Page>
   )
 }

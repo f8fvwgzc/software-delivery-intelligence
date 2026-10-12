@@ -1,21 +1,22 @@
-import { Section } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
 import { Skeleton } from '@/components/ui/skeleton'
 
 /** Section title, filter chips, header line and four rows shaped like queue rows. */
 export function WorkQueueSkeleton({ rows = 4 }: { rows?: number }) {
   return (
-    <Section
+    <Frame
       title="Work queue"
       description="Oldest first. Paused executions, approvals and open questions."
       actions={
         <div className="flex gap-1">
           {Array.from({ length: 4 }, (_, index) => (
-            <Skeleton key={index} className="h-7 w-20" />
+            <Skeleton key={index} className="h-6 w-16" />
           ))}
         </div>
       }
+      padding="none"
     >
-      <div className="flex flex-col overflow-hidden rounded-lg ring-1 ring-border">
+      <div className="flex flex-col">
         <div className="flex h-9 items-center gap-6 border-b bg-muted/30 px-3">
           <Skeleton className="h-3 w-10" />
           <Skeleton className="h-3 w-14" />
@@ -35,6 +36,6 @@ export function WorkQueueSkeleton({ rows = 4 }: { rows?: number }) {
           </div>
         ))}
       </div>
-    </Section>
+    </Frame>
   )
 }

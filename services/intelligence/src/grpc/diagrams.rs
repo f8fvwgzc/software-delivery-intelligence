@@ -263,9 +263,15 @@ pub(super) async fn list(
     request: ListDiagramsRequest,
 ) -> Result<ListDiagramsResponse, Status> {
     let project_id = require("project_id", &request.project_id)?;
-    let rows = repo::list(&svc.pool, caller.workspace, &project_id)
-        .await
-        .map_err(db_status)?;
+    let rows = repo::list(
+        &svc.pool,
+        caller.workspace,
+        &project_id,
+        super::page_limit(request.limit),
+        super::before(request.before.as_ref()),
+    )
+    .await
+    .map_err(db_status)?;
     Ok(ListDiagramsResponse {
         diagrams: rows
             .iter()

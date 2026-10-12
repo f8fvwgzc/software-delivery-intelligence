@@ -62,8 +62,8 @@ export default function ProjectLayout() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <div ref={observeBandHeight} className="sticky top-12 z-10 bg-background">
-        <div className="flex w-full min-w-0 flex-col gap-4 px-4 pt-5 md:px-6 md:pt-6">
+      <div ref={observeBandHeight} className="sticky top-(--header-h) z-10 bg-background">
+        <div className="flex w-full min-w-0 flex-col gap-3 px-4 pt-4 md:px-6 md:pt-5">
           <QueryBoundary fallback={<ProjectBandSkeleton />}>
             <ProjectBand projectId={projectId} />
           </QueryBoundary>

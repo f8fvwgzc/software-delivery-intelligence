@@ -1,8 +1,9 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { ExternalLinkIcon } from 'lucide-react'
 
-import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
+import { Panel } from '@/components/system/panel'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/features/auth/lib/auth-context'
 import { hasRole } from '@/features/auth/lib/roles'
@@ -47,19 +48,26 @@ export default function DataPrivacyPage() {
         }
       />
 
-      <Section title="What we store" description="CONTRACT.md §19, as enforced in code. Nothing is trained on; no telemetry leaves the deployment.">
+      <Frame
+        title="What we store"
+        description="CONTRACT.md §19, as enforced in code. Nothing is trained on; no telemetry leaves the deployment."
+        padding="none"
+      >
         <StorageTable />
-      </Section>
+      </Frame>
 
-      <div className="grid gap-6 lg:grid-cols-12 lg:items-start">
-        <Section title="Controls" description="Per workspace. Defaults: per-commit cache for 24 hours, whole chunks, reasoner off, audit kept a year." className="lg:col-span-7">
-          <QueryBoundary fallback={<DataControlsSkeleton />}>
-            <ControlsPanel />
-          </QueryBoundary>
-        </Section>
-        <Section title="Actions" description={`Everything below applies to ${currentWorkspace.name} only.`} className="lg:col-span-5">
+      <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+        <Panel
+          title="Controls"
+          description="Per workspace. Defaults: per-commit cache for 24 hours, whole chunks, reasoner off, audit kept a year."
+          className="lg:col-span-7"
+          skeleton={<DataControlsSkeleton />}
+        >
+          <ControlsPanel />
+        </Panel>
+        <Frame title="Actions" description={`Applies to ${currentWorkspace.name} only.`} className="lg:col-span-5">
           <DataActions workspace={currentWorkspace} />
-        </Section>
+        </Frame>
       </div>
     </Page>
   )

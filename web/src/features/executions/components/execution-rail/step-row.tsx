@@ -24,10 +24,10 @@ export function StepRow({ step, emphasized = false, liveLine }: StepRowProps) {
   const running = step.status === 'running' || step.status === 'verifying'
 
   return (
-    <div className={cn('flex min-w-0 flex-col gap-1', dimmed && 'opacity-70')}>
+    <div className={cn('flex min-w-0 flex-1 flex-col gap-1', dimmed && 'opacity-70')}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         {running ? <Spinner className="size-3.5 text-brand" aria-hidden="true" /> : null}
-        <span className={cn('text-sm', emphasized ? 'font-semibold' : 'font-medium')}>{step.title}</span>
+        <span className={cn('text-sm leading-5', emphasized ? 'font-semibold' : 'font-medium')}>{step.title}</span>
         <ActionTypeChip>{step.actionType}</ActionTypeChip>
         <RiskDot risk={step.risk} />
         <StatusBadge tone={status.tone} live={status.live} className="ml-auto">

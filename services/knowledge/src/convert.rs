@@ -11,11 +11,12 @@ use sdi_common::time::{opt_to_proto, to_proto};
 use sdi_proto::{
     common::v1::{CostLine, KnowledgeScope, PlanStep},
     knowledge::v1::{
-        Dependency, Deployment as DeploymentMsg, DeploymentStatus, Fact, FactCategory, FactKind,
-        GraphEdge, GraphNode, KnowledgeKind, KnowledgeSettings, MaturityAxis, MaturityScore,
-        NodeKind, Pattern, PatternSource, PatternStatus, Pipeline, PipelineJob, PipelineRun,
-        Project, ProjectConfig, ProjectMode, ProjectStatus, Question, RelationCategory, RunFailure,
-        RunStatus, Scan, ScanStage, ScanStatus, StageStatus, Understanding, UnderstandingSection,
+        ChangedFile, Dependency, Deployment as DeploymentMsg, DeploymentStatus, DiffHunk, Fact,
+        FactCategory, FactKind, GraphEdge, GraphNode, KnowledgeKind, KnowledgeSettings,
+        MaturityAxis, MaturityScore, NodeKind, Pattern, PatternSource, PatternStatus, Pipeline,
+        PipelineJob, PipelineRun, Project, ProjectConfig, ProjectMode, ProjectStatus,
+        PullRequestSummary, Question, RelationCategory, RunFailure, RunStatus, Scan, ScanStage,
+        ScanStatus, StageStatus, Understanding, UnderstandingSection,
     },
 };
 
@@ -29,6 +30,7 @@ use crate::db::{
     patterns::PatternRow,
     pipelines::PipelineRow,
     projects::ProjectRow,
+    pull_requests::{FileRecord, PullRequestRow},
     questions::QuestionRow,
     scans::ScanRow,
     settings::SettingsRow,
@@ -592,6 +594,52 @@ pub fn plan_step(step: crate::db::patterns::PlanStepRow) -> PlanStep {
 
 fn to_hash_map(map: BTreeMap<String, String>) -> HashMap<String, String> {
     map.into_iter().collect()
+}
+
+/// `latest_review_id` stays empty: reviews live in intelligence and the
+/// gateway fills it in (CONTRACT.md §20).
+pub fn pull_request_summary(row: PullRequestRow) -> PullRequestSummary {
+    PullRequestSummary {
+        project_id: row.project_id.to_string(),
+        number: row.number.max(0) as u64,
+        title: row.title,
+        author: row.author,
+        author_avatar_url: row.author_avatar_url,
+        state: row.state,
+        base_ref: row.base_ref,
+        head_ref: row.head_ref,
+        head_sha: row.head_sha,
+        changed_files: row.changed_files.max(0) as u32,
+        additions: row.additions.max(0) as u32,
+        deletions: row.deletions.max(0) as u32,
+        html_url: row.html_url,
+        created_at: opt_to_proto(row.pr_created_at),
+        updated_at: opt_to_proto(row.pr_updated_at),
+        latest_review_id: String::new(),
+    }
+}
+
+pub fn changed_file(record: FileRecord) -> ChangedFile {
+    ChangedFile {
+        path: record.path,
+        previous_path: record.previous_path,
+        status: record.status,
+        additions: record.additions,
+        deletions: record.deletions,
+        language: record.language,
+        hunks: record
+            .hunks
+            .into_iter()
+            .map(|h| DiffHunk {
+                old_start: h.old_start,
+                old_lines: h.old_lines,
+                new_start: h.new_start,
+                new_lines: h.new_lines,
+                lines: h.lines,
+            })
+            .collect(),
+        truncated: record.truncated,
+    }
 }
 
 #[cfg(test)]

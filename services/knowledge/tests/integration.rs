@@ -1203,3 +1203,244 @@ async fn rpcs_without_a_principal_are_unauthenticated() {
         Code::PermissionDenied
     );
 }
+
+#[tokio::test]
+async fn pull_request_caches_round_trip_filter_and_expire() {
+    let Some((pool, schema)) = connect().await else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    use sdi_knowledge::{
+        db::pull_requests::{self, FileRecord, NewFiles, NewPullRequest},
+        domain::diff::Hunk,
+    };
+    let ws = Uuid::now_v7();
+    let project = db::projects::insert(&pool, ws, &project("acme/prs"))
+        .await
+        .unwrap();
+
+    let pull = |number: i64, state: &str| NewPullRequest {
+        number,
+        title: format!("PR {number}"),
+        author: "ana".into(),
+        state: state.into(),
+        base_ref: "main".into(),
+        head_ref: format!("feat/{number}"),
+        head_sha: format!("sha{number}"),
+        changed_files: 1,
+        pr_updated_at: Some(chrono::Utc::now() - chrono::Duration::minutes(number)),
+        ..Default::default()
+    };
+    let mut conn = pool.acquire().await.unwrap();
+    pull_requests::upsert_all(
+        &mut conn,
+        ws,
+        project.id,
+        &[
+            pull(1, "open"),
+            pull(2, "draft"),
+            pull(3, "merged"),
+            pull(4, "closed"),
+        ],
+    )
+    .await
+    .unwrap();
+    let open = pull_requests::list(
+        &pool,
+        ws,
+        project.id,
+        pull_requests::states_for_filter("open"),
+        50,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        open.iter().map(|p| p.number).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let closed = pull_requests::list(
+        &pool,
+        ws,
+        project.id,
+        pull_requests::states_for_filter("closed"),
+        50,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        closed.iter().map(|p| p.number).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert_eq!(
+        pull_requests::list(
+            &pool,
+            ws,
+            project.id,
+            pull_requests::states_for_filter("all"),
+            3
+        )
+        .await
+        .unwrap()
+        .len(),
+        3
+    );
+    assert!(
+        pull_requests::last_synced(&pool, ws, project.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        pull_requests::list(
+            &pool,
+            Uuid::now_v7(),
+            project.id,
+            pull_requests::states_for_filter("all"),
+            50
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "another workspace sees nothing"
+    );
+
+    // A complete open sync closes what GitHub no longer lists.
+    let changed = pull_requests::close_missing_open(&pool, ws, project.id, &[2])
+        .await
+        .unwrap();
+    assert_eq!(changed, 1);
+    assert_eq!(
+        pull_requests::get(&pool, ws, project.id, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "closed"
+    );
+
+    // Files are cached per head commit; a new head replaces the old one.
+    let files = vec![FileRecord {
+        path: "src/main.rs".into(),
+        status: "modified".into(),
+        additions: 1,
+        language: "rust".into(),
+        hunks: vec![Hunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![" a".into(), "+b".into()],
+        }],
+        ..Default::default()
+    }];
+    pull_requests::upsert_files(
+        &mut conn,
+        ws,
+        project.id,
+        &NewFiles {
+            number: 2,
+            head_sha: "sha2",
+            files: &files,
+            truncated: false,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let cached = pull_requests::get_files(&pool, ws, project.id, 2, "sha2")
+        .await
+        .unwrap()
+        .expect("files at sha2");
+    assert_eq!(cached.files.0, files);
+    pull_requests::upsert_files(
+        &mut conn,
+        ws,
+        project.id,
+        &NewFiles {
+            number: 2,
+            head_sha: "sha2b",
+            files: &files,
+            truncated: true,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        pull_requests::get_files(&pool, ws, project.id, 2, "sha2")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        pull_requests::get_files(&pool, ws, project.id, 2, "sha2b")
+            .await
+            .unwrap()
+            .unwrap()
+            .truncated
+    );
+
+    // An expired row is a miss and the sweeper removes it.
+    let expired = chrono::Utc::now() - chrono::Duration::minutes(1);
+    pull_requests::upsert_files(
+        &mut conn,
+        ws,
+        project.id,
+        &NewFiles {
+            number: 3,
+            head_sha: "sha3",
+            files: &files,
+            truncated: false,
+            expires_at: Some(expired),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        pull_requests::get_files(&pool, ws, project.id, 3, "sha3")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(pull_requests::sweep_expired(&pool).await.unwrap(), 1);
+
+    // Purging the code cache takes the diffs with it; summaries stay.
+    let purged = db::code::purge(&mut conn, ws, Some(project.id))
+        .await
+        .unwrap();
+    assert_eq!(purged.files, 1);
+    assert!(
+        pull_requests::get_files(&pool, ws, project.id, 2, "sha2b")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        pull_requests::list(
+            &pool,
+            ws,
+            project.id,
+            pull_requests::states_for_filter("all"),
+            50
+        )
+        .await
+        .unwrap()
+        .len(),
+        4
+    );
+
+    // Facts by several paths at once.
+    let ids = db::facts::ids_for_paths(&pool, ws, project.id, &["src/main.rs".to_owned()])
+        .await
+        .unwrap();
+    assert!(ids.is_empty());
+    assert!(
+        db::facts::ids_for_paths(&pool, ws, project.id, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    drop(conn);
+    drop_schema(&pool, &schema).await;
+}

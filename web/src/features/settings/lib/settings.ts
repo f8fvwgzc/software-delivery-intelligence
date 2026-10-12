@@ -94,6 +94,7 @@ function mergeKnowledge(current: KnowledgeSettings, patch: KnowledgeSettingsPatc
 function mergeIntelligence(current: IntelligenceSettings, patch: IntelligenceSettingsPatch): IntelligenceSettings {
   return {
     apiKeyConfigured: current.apiKeyConfigured,
+    autoReview: patch.autoReview ?? current.autoReview,
     costCeilingUsd: patch.costCeilingUsd ?? current.costCeilingUsd,
     defaultWeights: patch.defaultWeights ?? current.defaultWeights,
     model: patch.model ?? current.model,

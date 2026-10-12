@@ -27,7 +27,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(delivery_stats))
 }
 
-/// Executions, newest first, optionally of one project.
+/// Executions, newest first, optionally of one project. `before` pages
+/// backwards through time.
 #[utoipa::path(
     get,
     path = "/executions",
@@ -44,6 +45,7 @@ async fn list_executions(
         .list_executions(proto::ListExecutionsRequest {
             project_id: query.project_id.unwrap_or_default(),
             limit: query.limit.unwrap_or(0),
+            before: query.before.map(sdi_common::time::to_proto),
         })
         .await?
         .into_inner();

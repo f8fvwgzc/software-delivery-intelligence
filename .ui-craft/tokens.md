@@ -4,8 +4,9 @@ Source of truth is `web/src/index.css`. This file records the decisions.
 
 ## Type
 
-- Root 15px. Body `text-sm` (14px / 20px). Metadata `text-xs` (12px) and
-  `text-2xs` (11px, labels only, may be tracked uppercase at that size).
+- Root 15px, but the scale is pinned in pixels: body `text-sm` 13px/20,
+  metadata `text-xs` 12px/16, tags and labels `text-2xs` 11px/16. Frame
+  titles 12px/500, page title 15px/600. Small caps only on stat labels.
 - Sans: Geist Variable. Mono: Geist Mono Variable for ids, SHAs, timestamps,
   durations, code and `<Kbd>`.
 - Headings `tracking-tight`; page title 18px/600, section 14px/500.
@@ -18,7 +19,7 @@ Source of truth is `web/src/index.css`. This file records the decisions.
 | `--background` | `1 0 0` | `0.17 0.006 265` | page |
 | `--foreground` | `0.24 0.008 265` | `0.94 0.004 265` | text |
 | `--muted-foreground` | `0.54 0.012 265` | `0.68 0.012 265` | secondary text |
-| `--border` | `0.938 0.003 265` | `1 0 0 / 7%` | hairlines |
+| `--border` | foreground `/ 7%` | `1 0 0 / 8%` | hairlines, one contrast in both themes |
 | `--brand` | `0.55 0.17 268` | `0.7 0.14 268` | the one accent |
 | `--success` | `0.6 0.13 158` | `0.72 0.14 158` | status only |
 | `--warning` | `0.7 0.14 72` | `0.78 0.13 78` | status only |
@@ -48,9 +49,18 @@ shadows.
 
 ## Motion
 
-Colour/opacity 150ms ease-out; panels 200–300ms; sidebar 300ms ease-out.
-Exit ≈ 75% of enter. Only the live status dot pulses. `prefers-reduced-motion`
+Tokens: `--motion-fast` 120ms (colour, opacity), `--motion-base` 180ms
+(presence, rail steps), `--motion-slow` 250ms (the ceiling); easings
+`--motion-ease` (standard) and `--motion-ease-out` (expo). Page enter is a
+150ms fade + 4px rise through `motion` (`PageTransition`); list rows stagger
+80ms in CSS. Only the live status dot pulses. `prefers-reduced-motion`
 disables all of it.
+
+## System primitives
+
+`web/src/components/system` (Frame, Panel, Tag, Row, Rail, Toolbar, Stat,
+Code, Stack/Inline, PageTransition) is the layer every page composes;
+`web/DESIGN.md` describes the world, the folder's README the contract.
 
 ## Icons
 

@@ -12,14 +12,16 @@ use sdi_proto::{
         GetExecutionRequest, execution_service_client::ExecutionServiceClient,
     },
     identity::v1::{
-        AuditEntry, DataControls, GetDataControlsRequest, GetReasonerKeyRequest, ReasonerKey,
-        RecordAuditRequest, identity_service_client::IdentityServiceClient,
+        AuditEntry, DataControls, GetDataControlsRequest, GetInstallationTokenRequest,
+        GetReasonerKeyRequest, InstallationToken, ReasonerKey, RecordAuditRequest,
+        identity_service_client::IdentityServiceClient,
     },
     knowledge::v1::{
-        GetGraphRequest, GetProjectContextRequest, GetRepoFileRequest, GetRepoTreeRequest, Graph,
-        IndexKnowledgeRequest, ListPatternsRequest, ListPipelineRunsRequest,
-        ListSimilarProjectsRequest, Pattern, PipelineRun, ProjectContext, RepoFile, RepoTree,
-        SimilarProject, knowledge_service_client::KnowledgeServiceClient,
+        GetGraphRequest, GetProjectContextRequest, GetPullRequestRequest, GetRepoFileRequest,
+        GetRepoTreeRequest, Graph, IndexKnowledgeRequest, ListPatternsRequest,
+        ListPipelineRunsRequest, ListSimilarProjectsRequest, Pattern, PipelineRun, ProjectContext,
+        PullRequest, RepoFile, RepoTree, SimilarProject,
+        knowledge_service_client::KnowledgeServiceClient,
     },
 };
 use tonic::{Code, Request, Status, transport::Channel};
@@ -117,6 +119,14 @@ pub trait KnowledgeGateway: Send + Sync {
         project_id: &str,
         path: &str,
     ) -> Result<RepoFile, GatewayError>;
+    /// A pull request with its bounded diff, touched facts and impacted
+    /// nodes (CONTRACT.md §20).
+    async fn pull_request(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        number: u64,
+    ) -> Result<PullRequest, GatewayError>;
 }
 
 #[async_trait]
@@ -152,6 +162,12 @@ pub trait IdentityGateway: Send + Sync {
     /// background and a failure is only logged. Audit must never slow down
     /// or fail the action it records.
     fn record_audit(&self, principal: &Principal, entry: AuditEntry);
+    /// The workspace's GitHub access (installation token or the user's
+    /// OAuth token, with its API base), for publishing a review.
+    async fn installation_token(
+        &self,
+        principal: &Principal,
+    ) -> Result<InstallationToken, GatewayError>;
 }
 
 fn knowledge_err(status: Status) -> GatewayError {
@@ -339,6 +355,26 @@ impl KnowledgeGateway for GrpcKnowledge {
             .map(|r| r.into_inner())
             .map_err(knowledge_err)
     }
+
+    async fn pull_request(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        number: u64,
+    ) -> Result<PullRequest, GatewayError> {
+        self.client
+            .clone()
+            .get_pull_request(outgoing(
+                principal,
+                GetPullRequestRequest {
+                    project_id: project_id.to_owned(),
+                    number,
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
 }
 
 #[derive(Clone)]
@@ -463,6 +499,23 @@ impl IdentityGateway for GrpcIdentity {
             }
         });
     }
+
+    async fn installation_token(
+        &self,
+        principal: &Principal,
+    ) -> Result<InstallationToken, GatewayError> {
+        self.client
+            .clone()
+            .get_installation_token(outgoing(
+                principal,
+                GetInstallationTokenRequest {
+                    workspace_id: principal.workspace_id.clone(),
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(identity_err)
+    }
 }
 
 #[cfg(test)]
@@ -484,6 +537,8 @@ pub mod fake {
         pub indexed: Mutex<Vec<IndexKnowledgeRequest>>,
         pub tree: Vec<RepoTreeEntry>,
         pub files: BTreeMap<String, String>,
+        /// Pull requests by number; `None` for every number otherwise.
+        pub pull_requests: BTreeMap<u64, PullRequest>,
         /// Paths asked for through `repo_file`, in order.
         pub files_read: Mutex<Vec<String>>,
         /// The principal every call arrived with, in order.
@@ -605,6 +660,20 @@ pub mod fake {
                 ..Default::default()
             })
         }
+
+        async fn pull_request(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+            number: u64,
+        ) -> Result<PullRequest, GatewayError> {
+            self.project_context(principal, project_id).await?;
+            self.pull_requests.get(&number).cloned().ok_or_else(|| {
+                knowledge_err(Status::not_found(format!(
+                    "pull request #{number} not found"
+                )))
+            })
+        }
     }
 
     #[derive(Default)]
@@ -663,6 +732,8 @@ pub mod fake {
         pub controls: Mutex<BTreeMap<String, DataControls>>,
         pub keys: Mutex<BTreeMap<String, ReasonerKey>>,
         pub audit: Mutex<Vec<(Principal, AuditEntry)>>,
+        /// GitHub access per workspace: `(token, api base url)`.
+        pub tokens: Mutex<BTreeMap<String, (String, String)>>,
     }
 
     impl FakeIdentity {
@@ -733,6 +804,25 @@ pub mod fake {
 
         fn record_audit(&self, principal: &Principal, entry: AuditEntry) {
             self.audit.lock().unwrap().push((principal.clone(), entry));
+        }
+
+        async fn installation_token(
+            &self,
+            principal: &Principal,
+        ) -> Result<InstallationToken, GatewayError> {
+            self.tokens
+                .lock()
+                .unwrap()
+                .get(&principal.workspace_id)
+                .cloned()
+                .map(|(token, api_base_url)| InstallationToken {
+                    token,
+                    api_base_url,
+                    expires_at: None,
+                })
+                .ok_or_else(|| {
+                    identity_err(Status::not_found("no GitHub access for this workspace"))
+                })
         }
     }
 }

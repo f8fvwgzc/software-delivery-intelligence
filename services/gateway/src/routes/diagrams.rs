@@ -6,8 +6,9 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::map_all;
 use crate::{
+    dto::common::PageQuery,
     dto::diagrams::{Diagram, GenerateDiagramRequest, UpdateDiagramRequest},
-    error::{ApiError, ApiJson, ApiPath, ApiResult, ErrorResponses},
+    error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
     state::{AppState, Scoped},
 };
 
@@ -17,21 +18,26 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_diagram, update_diagram, delete_diagram))
 }
 
-/// Diagrams of a project, without their spec and Mermaid.
+/// Diagrams of a project, newest first, without their spec and Mermaid.
 #[utoipa::path(
     get,
     path = "/projects/{id}/diagrams",
     tag = "diagrams",
-    params(("id" = String, Path, description = "Project id")),
+    params(("id" = String, Path, description = "Project id"), PageQuery),
     responses((status = 200, body = Vec<Diagram>), ErrorResponses),
 )]
 async fn list_diagrams(
     state: Scoped,
     ApiPath(id): ApiPath<String>,
+    ApiQuery(page): ApiQuery<PageQuery>,
 ) -> ApiResult<Json<Vec<Diagram>>> {
     let response = state
         .intelligence()
-        .list_diagrams(proto::ListDiagramsRequest { project_id: id })
+        .list_diagrams(proto::ListDiagramsRequest {
+            project_id: id,
+            limit: page.limit.unwrap_or(0),
+            before: page.before.map(sdi_common::time::to_proto),
+        })
         .await?
         .into_inner();
     Ok(Json(map_all(response.diagrams)))

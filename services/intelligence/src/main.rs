@@ -8,6 +8,7 @@ mod domain;
 mod events;
 mod gateway;
 mod generators;
+mod github;
 mod grpc;
 mod reasoner;
 
@@ -48,7 +49,14 @@ async fn main() -> Result<()> {
         anthropic_model: settings.anthropic_model.clone(),
     };
 
-    let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, identity, reasoner);
+    let github_token = sdi_common::config::env_opt("GITHUB_TOKEN");
+    if github_token.is_some() {
+        tracing::info!(
+            "GITHUB_TOKEN set: reviews are published with it while identity is unreachable (dev mode)"
+        );
+    }
+    let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, identity, reasoner)
+        .with_github_dev_token(github_token);
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<IntelligenceServiceServer<grpc::IntelligenceGrpc>>()

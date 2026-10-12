@@ -79,6 +79,26 @@ pub async fn list(
     .await
 }
 
+/// Ids of the facts whose evidence came from any of `paths`, in the list order.
+pub async fn ids_for_paths(
+    exec: impl PgExecutor<'_>,
+    workspace_id: Uuid,
+    project_id: Uuid,
+    paths: &[String],
+) -> sqlx::Result<Vec<Uuid>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM facts WHERE workspace_id = $1 AND project_id = $2 AND source_path = ANY($3) ORDER BY category, kind, key",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(paths)
+    .fetch_all(exec)
+    .await
+}
+
 /// Ids of the facts whose evidence came from `path`, in the list order.
 pub async fn ids_for_path(
     exec: impl PgExecutor<'_>,

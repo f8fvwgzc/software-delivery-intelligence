@@ -107,6 +107,7 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (&Method::POST, ["approvals", _, "decide"]) => Role::Approver,
         (&Method::POST, ["identities", _, "grants"]) => Role::Approver,
         (&Method::POST, ["proposals", _, "pull-request"]) => Role::Approver,
+        (&Method::POST, ["reviews", _, "publish"]) => Role::Approver,
         (&Method::POST, ["executions"]) if real_adapter => Role::Approver,
         (&Method::POST, ["proposals", _, "accept"]) if real_adapter => Role::Approver,
         _ => Role::Member,
@@ -244,6 +245,11 @@ pub fn audit_action(method: &Method, path: &str) -> (String, String, String) {
             (owned("decision.supersede"), "decision", id)
         }
         (&Method::PATCH, ["diagrams", id]) => (owned("diagram.update"), "diagram", id),
+        (&Method::POST, ["projects", _, "pull-requests", number, "reviews"]) => {
+            (owned("review.start"), "pull_request", number)
+        }
+        (&Method::POST, ["findings", id, "decide"]) => (owned("finding.decide"), "finding", id),
+        (&Method::POST, ["reviews", id, "publish"]) => (owned("review.publish"), "review", id),
         (&Method::DELETE, ["diagrams", id]) => (owned("diagram.delete"), "diagram", id),
         (&Method::POST, ["executions"]) => (owned("execution.create"), "execution", ""),
         (&Method::POST, ["executions", id, verb]) => (format!("execution.{verb}"), "execution", id),
@@ -533,6 +539,24 @@ mod tests {
         );
         assert_eq!(r(Method::DELETE, "/api/v1/workspaces/w", None), Role::Owner);
         assert_eq!(r(Method::POST, "/api/v1/auth/logout", None), Role::Viewer);
+        // Code review (§20): start and decide are member work, publishing needs an approver.
+        assert_eq!(
+            r(
+                Method::POST,
+                "/api/v1/projects/p/pull-requests/4/reviews",
+                None
+            ),
+            Role::Member
+        );
+        assert_eq!(
+            r(Method::POST, "/api/v1/findings/f/decide", None),
+            Role::Member
+        );
+        assert_eq!(
+            r(Method::POST, "/api/v1/reviews/r/publish", None),
+            Role::Approver
+        );
+        assert_eq!(r(Method::GET, "/api/v1/activity", None), Role::Viewer);
     }
 
     #[test]
@@ -565,6 +589,18 @@ mod tests {
         assert_eq!(
             a(Method::DELETE, "/api/v1/workspaces/w"),
             ("workspace.delete".into(), "workspace".into(), "w".into())
+        );
+        assert_eq!(
+            a(Method::POST, "/api/v1/projects/p/pull-requests/4/reviews"),
+            ("review.start".into(), "pull_request".into(), "4".into())
+        );
+        assert_eq!(
+            a(Method::POST, "/api/v1/findings/f1/decide"),
+            ("finding.decide".into(), "finding".into(), "f1".into())
+        );
+        assert_eq!(
+            a(Method::POST, "/api/v1/reviews/r1/publish"),
+            ("review.publish".into(), "review".into(), "r1".into())
         );
         // Unknown mutating routes still get a sensible key.
         assert_eq!(

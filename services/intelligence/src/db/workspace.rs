@@ -9,13 +9,16 @@ use uuid::Uuid;
 
 /// `(entity name, table, order)`: the order makes an export deterministic
 /// and lets a consumer stream it into a file without buffering.
-pub const TABLES: [(&str, &str, &str); 6] = [
+pub const TABLES: [(&str, &str, &str); 9] = [
     ("settings", "settings", "workspace_id"),
     ("proposal", "proposals", "id"),
     ("message", "messages", "proposal_id, created_at, id"),
     ("decision", "decisions", "id"),
     ("document", "documents", "id"),
     ("diagram", "diagrams", "id"),
+    ("review", "reviews", "id"),
+    ("finding", "findings", "review_id, position, id"),
+    ("review_activity", "review_activity", "at, id"),
 ];
 
 const EXPORT_BUFFER: usize = 64;

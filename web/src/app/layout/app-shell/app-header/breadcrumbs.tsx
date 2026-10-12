@@ -39,7 +39,7 @@ export function Breadcrumbs() {
 
   return (
     <Breadcrumb>
-      <BreadcrumbList className="text-xs sm:gap-1.5">
+      <BreadcrumbList className="text-xs sm:gap-1">
         {matches.map((match, index) => {
           const { crumb } = match.handle as RouteHandle
           const label =

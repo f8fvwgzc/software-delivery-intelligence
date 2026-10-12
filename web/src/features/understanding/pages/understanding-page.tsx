@@ -3,7 +3,9 @@ import { RadarIcon } from 'lucide-react'
 import { useParams } from 'react-router'
 
 import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
+import { Panel } from '@/components/system/panel'
 import { Skeleton } from '@/components/ui/skeleton'
 import { patternsQuery } from '@/features/patterns/api/queries'
 import { projectQueries, type Project } from '@/features/projects/api/queries'
@@ -86,12 +88,12 @@ function DeepDivePanel({ projectId }: { projectId: string }) {
   const { data } = useSuspenseQuery(understandingQueries.understanding(projectId))
   return (
     <>
-      <Section title="Deep dive" description="Generated sections, one area of the system each.">
+      <Frame title="Deep dive" description="Generated sections, one area of the system each.">
         <DeepDive understanding={data} />
-      </Section>
-      <Section title="Request flow" description="The hops a request takes through the system.">
+      </Frame>
+      <Frame title="Request flow" description="The hops a request takes through the system.">
         <RequestFlow hops={data.requestFlow} />
-      </Section>
+      </Frame>
     </>
   )
 }
@@ -105,67 +107,65 @@ function ReadyContent({ project }: { project: Project }) {
         <TldrPanel projectId={project.id} />
       </QueryBoundary>
 
-      <div className="grid gap-6 lg:grid-cols-12">
-        <Section
+      <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+        <Panel
           title="Delivery maturity"
           description="Eight axes scored from facts only. Each finding names what would raise it."
           className="lg:col-span-7"
+          skeleton={<DeliveryMaturitySkeleton />}
         >
-          <QueryBoundary fallback={<DeliveryMaturitySkeleton />}>
-            <MaturityPanel projectId={project.id} />
-          </QueryBoundary>
-        </Section>
-        <Section
+          <MaturityPanel projectId={project.id} />
+        </Panel>
+        <Panel
           title=".sdi.yml"
           description="What the repository declares about how it is delivered."
           className="lg:col-span-5"
+          skeleton={<ConfigPanelSkeleton />}
         >
-          <QueryBoundary fallback={<ConfigPanelSkeleton />}>
-            <ConfigPanelLoader project={project} />
-          </QueryBoundary>
-        </Section>
+          <ConfigPanelLoader project={project} />
+        </Panel>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-12">
-        <Section
+      <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+        <Panel
           title="What was detected"
           description="Read from the repository. Each fact links to the file that proves it."
           className="lg:col-span-7"
+          skeleton={<DetectedFactsSkeleton />}
         >
-          <QueryBoundary fallback={<DetectedFactsSkeleton />}>
-            <DetectedPanel project={project} />
-          </QueryBoundary>
-        </Section>
-        <Section
+          <DetectedPanel project={project} />
+        </Panel>
+        <Panel
           title="What was inferred"
           description="Conclusions drawn from the facts, least certain first."
           className="lg:col-span-5"
+          skeleton={<InferredFactsSkeleton />}
         >
-          <QueryBoundary fallback={<InferredFactsSkeleton />}>
-            <InferredPanel projectId={project.id} />
-          </QueryBoundary>
-        </Section>
+          <InferredPanel projectId={project.id} />
+        </Panel>
       </div>
 
-      <Section title="Open questions" description="What the scan could not know. Asked once, remembered afterwards.">
-        <QueryBoundary fallback={<OpenQuestionsSkeleton />}>
-          <QuestionsPanel projectId={project.id} />
-        </QueryBoundary>
-      </Section>
+      <Panel
+        title="Open questions"
+        description="What the scan could not know. Asked once, remembered afterwards."
+        skeleton={<OpenQuestionsSkeleton />}
+      >
+        <QuestionsPanel projectId={project.id} />
+      </Panel>
 
       <QueryBoundary
         fallback={
           <>
-            <Section title="Deep dive" description="Generated sections, one area of the system each.">
+            <Frame title="Deep dive" description="Generated sections, one area of the system each.">
               <DeepDiveSkeleton />
-            </Section>
-            <Section title="Request flow" description="The hops a request takes through the system.">
+            </Frame>
+            <Frame title="Request flow" description="The hops a request takes through the system.">
               <div className="flex items-center gap-2">
                 {Array.from({ length: 4 }, (_, index) => (
                   <Skeleton key={index} className="h-5 w-20" />
                 ))}
               </div>
-            </Section>
+            </Frame>
           </>
         }
       >

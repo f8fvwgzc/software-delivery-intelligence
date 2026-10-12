@@ -95,7 +95,7 @@ export default function OverviewPage() {
         }
       />
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
         <QueryBoundary fallback={<MetricStripSkeleton />}>
           <MetricsPanel projects={projects} />
         </QueryBoundary>
@@ -108,7 +108,7 @@ export default function OverviewPage() {
         <WorkQueuePanel projects={projects} />
       </QueryBoundary>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <QueryBoundary fallback={<CompactListSkeleton title="Recent proposals" />}>
           <RecentProposalsPanel projects={projects} />
         </QueryBoundary>

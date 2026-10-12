@@ -1,8 +1,8 @@
 import { useSuspenseInfiniteQuery } from '@tanstack/react-query'
 import { useDeferredValue, useState } from 'react'
 
-import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 import { useAuth } from '@/features/auth/lib/auth-context'
 
 import { workspaceQueries } from '../api/queries'
@@ -41,12 +41,10 @@ export default function AuditPage() {
         title="Audit"
         description="Every action that changed this workspace, newest first: who, what, on which entity, and the request it came in on."
       />
-      <Section title="Entries" description="Filter by the action's family, or type any prefix.">
-        <AuditFilter value={filter} onChange={setFilter} />
-        <QueryBoundary fallback={<AuditTableSkeleton />}>
-          <AuditPanel actionPrefix={actionPrefix} onClearFilter={() => setFilter('')} />
-        </QueryBoundary>
-      </Section>
+      <AuditFilter value={filter} onChange={setFilter} />
+      <Panel title="Entries" description="Newest first." padding="none" skeleton={<AuditTableSkeleton />}>
+        <AuditPanel actionPrefix={actionPrefix} onClearFilter={() => setFilter('')} />
+      </Panel>
     </Page>
   )
 }

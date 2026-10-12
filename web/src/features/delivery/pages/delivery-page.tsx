@@ -3,8 +3,9 @@ import { CirclePlayIcon, RocketIcon, WorkflowIcon } from 'lucide-react'
 import { useParams } from 'react-router'
 
 import { RelativeTime } from '@/components/shared/data'
-import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { FrameFooter } from '@/components/system/frame'
+import { Panel, PanelEmpty } from '@/components/system/panel'
 
 import { DEPLOYMENTS_LIMIT, RUNS_LIMIT, deliveryQueries } from '../api/queries'
 import { DeploymentStatsStrip, DeploymentsSkeleton, DeploymentsTable } from '../components/deployments-table'
@@ -23,7 +24,7 @@ function PipelinesRegion({ projectId }: RegionProps) {
 
   if (pipelines.length === 0) {
     return (
-      <EmptyState
+      <PanelEmpty
         icon={WorkflowIcon}
         title="No pipelines found"
         description="The scan looks for workflow definitions such as .github/workflows in the default branch. None were found."
@@ -39,7 +40,7 @@ function RunsRegion({ projectId }: RegionProps) {
 
   if (data.runs.length === 0) {
     return (
-      <EmptyState
+      <PanelEmpty
         icon={CirclePlayIcon}
         title="No runs yet"
         description="Nothing has run at the provider for this repository, or the runs have not been synced yet."
@@ -49,15 +50,17 @@ function RunsRegion({ projectId }: RegionProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <RunStats stats={data.stats} />
-      {data.syncedAt ? (
-        <p className="text-2xs text-muted-foreground">
-          Synced <RelativeTime value={data.syncedAt} className="font-mono" />
-        </p>
-      ) : null}
+    <>
+      <div className="border-b p-3">
+        <RunStats stats={data.stats} />
+      </div>
       <RunsTable runs={data.runs} />
-    </div>
+      {data.syncedAt ? (
+        <FrameFooter>
+          Synced <RelativeTime value={data.syncedAt} className="font-mono" />
+        </FrameFooter>
+      ) : null}
+    </>
   )
 }
 
@@ -66,7 +69,7 @@ function DeploymentsRegion({ projectId }: RegionProps) {
 
   if (data.deployments.length === 0) {
     return (
-      <EmptyState
+      <PanelEmpty
         icon={RocketIcon}
         title="No deployments observed"
         description="GitHub deployments and deploy workflow runs show up here once the provider reports them."
@@ -76,17 +79,19 @@ function DeploymentsRegion({ projectId }: RegionProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <DeploymentStatsStrip stats={data.stats} />
+    <>
+      <div className="border-b p-3">
+        <DeploymentStatsStrip stats={data.stats} />
+      </div>
       <DeploymentsTable deployments={data.deployments} />
-    </div>
+    </>
   )
 }
 
 export default function DeliveryPage() {
   const { projectId = '' } = useParams()
 
-  // Start all three fetches at once. Each region below subscribes with
+  // Start all three fetches at once. Each panel below subscribes with
   // Suspense inside its own boundary and dedupes onto these requests, so a
   // slow one never blocks the others.
   useQueries({
@@ -97,31 +102,29 @@ export default function DeliveryPage() {
     <Page>
       <PageHeader title="Delivery" description="Pipelines defined in the repository, what they ran, and what was deployed." />
 
-      <Section title="Pipelines" description="Workflow definitions found in the default branch.">
-        <QueryBoundary fallback={<PipelinesSkeleton />}>
-          <PipelinesRegion projectId={projectId} />
-        </QueryBoundary>
-      </Section>
+      <Panel title="Pipelines" description="Workflow definitions found in the default branch." skeleton={<PipelinesSkeleton />}>
+        <PipelinesRegion projectId={projectId} />
+      </Panel>
 
-      <Section
+      <Panel
         title="Pipeline runs"
         description={`The last ${RUNS_LIMIT} runs at the provider, newest first.`}
+        padding="none"
         actions={<RefreshRunsButton projectId={projectId} />}
+        skeleton={<RunsSkeleton />}
       >
-        <QueryBoundary fallback={<RunsSkeleton />}>
-          <RunsRegion projectId={projectId} />
-        </QueryBoundary>
-      </Section>
+        <RunsRegion projectId={projectId} />
+      </Panel>
 
-      <Section
+      <Panel
         title="Deployments"
         description={`The last ${DEPLOYMENTS_LIMIT} deployments observed, newest first.`}
+        padding="none"
         actions={<RefreshDeploymentsButton projectId={projectId} />}
+        skeleton={<DeploymentsSkeleton />}
       >
-        <QueryBoundary fallback={<DeploymentsSkeleton />}>
-          <DeploymentsRegion projectId={projectId} />
-        </QueryBoundary>
-      </Section>
+        <DeploymentsRegion projectId={projectId} />
+      </Panel>
     </Page>
   )
 }

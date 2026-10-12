@@ -6,8 +6,9 @@ import { Link, useParams } from 'react-router'
 import { routes } from '@/app/router/routes'
 import { PlanRail, RelativeTime, StatusBadge } from '@/components/shared/data'
 import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
-import { Badge } from '@/components/ui/badge'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
+import { Tag } from '@/components/system/tag'
 import { ButtonGroup } from '@/components/ui/button-group'
 
 import { proposalQuery } from '../api/queries'
@@ -56,10 +57,10 @@ export default function ProposalPage() {
               Project
             </Link>
             {budget !== null ? (
-              <Badge variant="outline" className="h-5 gap-1 font-normal tabular-nums text-muted-foreground">
-                <WalletIcon aria-hidden="true" />
+              <Tag variant="outline" className="tabular-nums">
+                <WalletIcon aria-hidden="true" className="size-3" />
                 Budget {formatMonthlyCost(budget)}
-              </Badge>
+              </Tag>
             ) : null}
           </>
         }
@@ -86,8 +87,8 @@ export default function ProposalPage() {
 
       <ProposalStatusBanner proposal={proposal} />
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
-        <div className="flex min-w-0 flex-col gap-6">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="flex min-w-0 flex-col gap-4">
           {focus ? (
             <RecommendedOption
               option={focus}
@@ -99,9 +100,10 @@ export default function ProposalPage() {
           )}
 
           {others > 0 ? (
-            <Section
+            <Frame
               title="All options"
               description={`${proposal.options.length} ranked against the project. Choose one to inspect its plan and files.`}
+              padding="none"
             >
               <OptionsTable
                 options={proposal.options}
@@ -111,21 +113,22 @@ export default function ProposalPage() {
                 readOnly={closed}
                 budgetMonthlyUsd={budget}
               />
-            </Section>
+            </Frame>
           ) : null}
 
           {focus ? (
-            <Section
+            <Frame
               title="Plan"
               description={`${focus.plan.length} steps, run one at a time with a checkpoint after each.`}
             >
               <PlanRail steps={focus.plan} />
-            </Section>
+            </Frame>
           ) : null}
 
           {focus ? (
-            <Section
+            <Frame
               title="Files"
+              padding="none"
               description={
                 focus.artifactCount === 0
                   ? 'This option adds no files to the repository.'
@@ -142,14 +145,14 @@ export default function ProposalPage() {
                   <ArtifactsPanel key={focus.id} proposalId={proposal.id} optionId={focus.id} />
                 </QueryBoundary>
               ) : (
-                <p className="text-xs text-muted-foreground">Nothing to review here; the plan only runs actions.</p>
+                <p className="p-3 text-xs text-muted-foreground">Nothing to review here; the plan only runs actions.</p>
               )}
-            </Section>
+            </Frame>
           ) : null}
         </div>
 
         {/* Sticky, but never taller than the viewport: the panel scrolls on its own past that. */}
-        <div className="lg:sticky lg:top-16 lg:max-h-[calc(100svh-5rem)] lg:overflow-y-auto">
+        <div className="lg:sticky lg:top-[calc(var(--header-h)+1rem)] lg:max-h-[calc(100svh-var(--header-h)-2rem)] lg:overflow-y-auto">
           <NegotiationPanel proposal={proposal} readOnly={closed} />
         </div>
       </div>

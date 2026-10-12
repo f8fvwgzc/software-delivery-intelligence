@@ -15,12 +15,14 @@ interface EmptyStateProps {
   title: ReactNode
   description?: ReactNode
   action?: ReactNode
+  /** Inside a frame body: no dashed box, less padding. */
+  compact?: boolean
   className?: string
 }
 
-export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, description, action, compact = false, className }: EmptyStateProps) {
   return (
-    <Empty className={cn('rounded-lg border border-dashed py-10', className)}>
+    <Empty className={cn(compact ? 'gap-3 py-6' : 'rounded-lg border border-dashed py-10', className)}>
       <EmptyHeader>
         {Icon && (
           <EmptyMedia variant="icon">

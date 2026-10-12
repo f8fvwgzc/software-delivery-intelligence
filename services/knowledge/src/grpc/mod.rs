@@ -15,6 +15,7 @@ mod github;
 mod knowledge;
 mod patterns;
 mod projects;
+mod pull_requests;
 mod retrieval;
 mod scans;
 mod settings;
@@ -393,6 +394,25 @@ impl KnowledgeService for KnowledgeState {
     ) -> Result<Response<RepoFile>, Status> {
         let caller = caller(&request)?;
         code::get_repo_file(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_pull_requests(
+        &self,
+        request: Request<ListPullRequestsRequest>,
+    ) -> Result<Response<ListPullRequestsResponse>, Status> {
+        let caller = caller(&request)?;
+        pull_requests::list_pull_requests(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn get_pull_request(
+        &self,
+        request: Request<GetPullRequestRequest>,
+    ) -> Result<Response<PullRequest>, Status> {
+        let caller = caller(&request)?;
+        pull_requests::get_pull_request(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

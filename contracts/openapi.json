@@ -15,6 +15,141 @@
     }
   ],
   "paths": {
+    "/api/v1/activity": {
+      "get": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "The review activity log, newest first. Page with `before`.",
+        "operationId": "list_activity",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "description": "Only activity of this project. Empty lists every project.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: entries strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewActivity"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/approvals": {
       "get": {
         "tags": [
@@ -1623,7 +1758,7 @@
         "tags": [
           "executions"
         ],
-        "summary": "Executions, newest first, optionally of one project.",
+        "summary": "Executions, newest first, optionally of one project. `before` pages\nbackwards through time.",
         "operationId": "list_executions",
         "parameters": [
           {
@@ -1638,12 +1773,22 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number, newest first. 0 uses the service default.",
+            "description": "Page size, newest first (default 50).",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: executions updated strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -2497,6 +2642,127 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Execution"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/findings/{id}/decide": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Accepts or dismisses a finding. Only accepted findings are published.",
+        "operationId": "decide_finding",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Finding id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideFindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
                 }
               }
             }
@@ -4841,7 +5107,7 @@
         "tags": [
           "diagrams"
         ],
-        "summary": "Diagrams of a project, without their spec and Mermaid.",
+        "summary": "Diagrams of a project, newest first, without their spec and Mermaid.",
         "operationId": "list_diagrams",
         "parameters": [
           {
@@ -4851,6 +5117,27 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: items created strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -5074,7 +5361,7 @@
         "tags": [
           "documents"
         ],
-        "summary": "Documents of a project, without their markdown bodies.",
+        "summary": "Documents of a project, newest first, without their markdown bodies.",
         "operationId": "list_documents",
         "parameters": [
           {
@@ -5084,6 +5371,27 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: items created strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -6273,6 +6581,390 @@
         }
       }
     },
+    "/api/v1/projects/{id}/pull-requests": {
+      "get": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Pull requests of a project from the knowledge cache (synced from GitHub\non `refresh` or when empty), each with the id of its latest SDI review.",
+        "operationId": "list_pull_requests",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "`open` (default), `closed` or `all`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Re-sync from GitHub before answering.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, most recently updated first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/pull-requests/{number}": {
+      "get": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "One pull request with its changed files, bounded diff (≤ 300 KB, ≤ 200\nfiles), touched facts and impacted graph nodes.",
+        "operationId": "get_pull_request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "Pull request number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/pull-requests/{number}/reviews": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Starts a review of the pull request at its current head commit and\nreturns at once; progress arrives as `review` events. Starting a review\nthat already exists for the head returns it (a failed one is retried).",
+        "operationId": "start_review",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "Pull request number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Review"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/questions": {
       "get": {
         "tags": [
@@ -6993,6 +7685,27 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: proposals created strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -8064,6 +8777,363 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Question"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reviews": {
+      "get": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Reviews, newest first, without their summary and findings.",
+        "operationId": "list_reviews",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "description": "Only reviews of this project. Empty lists every project.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Review"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reviews/{id}": {
+      "get": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "One review with its rail, summary and findings.",
+        "operationId": "get_review",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Review"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reviews/{id}/publish": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Posts the review to GitHub: the summary as the body and one comment per\naccepted finding (suggestions become GitHub suggestions). Never automatic.",
+        "operationId": "publish_review",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Review"
                 }
               }
             }
@@ -10416,6 +11486,63 @@
           }
         }
       },
+      "ChangedFile": {
+        "type": "object",
+        "description": "A file the pull request changes, with its bounded diff.",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "language",
+          "hunks",
+          "truncated"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines added.",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines removed.",
+            "minimum": 0
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffHunk"
+            },
+            "description": "Diff hunks; empty when `truncated`."
+          },
+          "language": {
+            "type": "string",
+            "description": "Language inferred from the path."
+          },
+          "path": {
+            "type": "string",
+            "description": "Path in the head commit."
+          },
+          "previousPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path before a rename; null otherwise."
+          },
+          "status": {
+            "type": "string",
+            "description": "`added` | `modified` | `removed` | `renamed`."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The patch was larger than the limit (300 KB across the pull request) and was not read."
+          }
+        }
+      },
       "ConnectProjectRequest": {
         "type": "object",
         "description": "Body of `POST /projects`.",
@@ -10763,6 +11890,26 @@
               "null"
             ],
             "description": "Optional note."
+          }
+        }
+      },
+      "DecideFindingRequest": {
+        "type": "object",
+        "description": "Body of `POST /findings/{id}/decide`.",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/FindingDecision",
+            "description": "`accepted` or `dismissed`."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, in a sentence."
           }
         }
       },
@@ -11449,6 +12596,50 @@
           }
         }
       },
+      "DiffHunk": {
+        "type": "object",
+        "description": "One `@@` section of a unified diff.",
+        "required": [
+          "oldStart",
+          "oldLines",
+          "newStart",
+          "newLines",
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Diff lines including their leading ` `, `+` or `-`."
+          },
+          "newLines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines of the hunk in the new file.",
+            "minimum": 0
+          },
+          "newStart": {
+            "type": "integer",
+            "format": "int32",
+            "description": "First line of the hunk in the new file.",
+            "minimum": 0
+          },
+          "oldLines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines of the hunk in the old file.",
+            "minimum": 0
+          },
+          "oldStart": {
+            "type": "integer",
+            "format": "int32",
+            "description": "First line of the hunk in the old file.",
+            "minimum": 0
+          }
+        }
+      },
       "Document": {
         "type": "object",
         "description": "A document generated from the knowledge model.",
@@ -12008,6 +13199,124 @@
           }
         }
       },
+      "Finding": {
+        "type": "object",
+        "description": "One analyzer finding.",
+        "required": [
+          "id",
+          "reviewId",
+          "category",
+          "severity",
+          "title",
+          "detail",
+          "path",
+          "line",
+          "endLine",
+          "rule",
+          "decision"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "`secrets` | `security` | `dependencies` | `docker` | `ci` | `iac` | `tests` | `docs` | `correctness` | `maturity`."
+          },
+          "decidedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When."
+          },
+          "decidedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who decided."
+          },
+          "decision": {
+            "$ref": "#/components/schemas/FindingDecision",
+            "description": "The human's verdict."
+          },
+          "decisionNote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Note left with the decision."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Markdown: the evidence and the fix."
+          },
+          "endLine": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Last line of the range; equals `line` for a single line.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "Finding id."
+          },
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Line in the new file; 0 for a file-level finding.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "File the finding points at."
+          },
+          "reviewId": {
+            "type": "string",
+            "description": "Review it belongs to."
+          },
+          "rule": {
+            "type": "string",
+            "description": "Rule id, e.g. `secrets.aws_key`."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FindingSeverity",
+            "description": "Severity."
+          },
+          "suggestion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement for the referenced lines, when the fix is mechanical; becomes a GitHub suggestion."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short title."
+          }
+        }
+      },
+      "FindingDecision": {
+        "type": "string",
+        "description": "The human's verdict on a finding.",
+        "enum": [
+          "unspecified",
+          "pending",
+          "accepted",
+          "dismissed"
+        ]
+      },
+      "FindingSeverity": {
+        "type": "string",
+        "description": "How much a finding matters.",
+        "enum": [
+          "unspecified",
+          "info",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
       "GenerateDiagramRequest": {
         "type": "object",
         "description": "Body of `POST /projects/{id}/diagrams`.",
@@ -12525,12 +13834,17 @@
           "reasoner",
           "model",
           "apiKeyConfigured",
-          "costCeilingUsd"
+          "costCeilingUsd",
+          "autoReview"
         ],
         "properties": {
           "apiKeyConfigured": {
             "type": "boolean",
             "description": "True when `ANTHROPIC_API_KEY` is configured. Read-only."
+          },
+          "autoReview": {
+            "type": "boolean",
+            "description": "`pull_request` webhooks (opened, synchronize) start a review that stops at `proposed` (CONTRACT.md §20). Default off."
           },
           "costCeilingUsd": {
             "type": "number",
@@ -12562,6 +13876,13 @@
         "type": "object",
         "description": "The `intelligence` part of `PATCH /settings`: every field is optional and\nunset fields keep their current value. `apiKeyConfigured` is read-only.",
         "properties": {
+          "autoReview": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether `pull_request` webhooks start a review."
+          },
           "costCeilingUsd": {
             "type": [
               "number",
@@ -14341,6 +15662,189 @@
           "superseded"
         ]
       },
+      "PublishReviewRequest": {
+        "type": "object",
+        "description": "Body of `POST /reviews/{id}/publish`.",
+        "properties": {
+          "event": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`comment` (default), `request_changes` or `approve`."
+          }
+        }
+      },
+      "PullRequest": {
+        "type": "object",
+        "description": "One pull request with its files, diff and knowledge links.",
+        "required": [
+          "summary",
+          "body",
+          "files",
+          "touchedFactIds",
+          "impactedNodeIds"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Description (Markdown) as written on GitHub."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangedFile"
+            },
+            "description": "Changed files, at most 200."
+          },
+          "impactedNodeIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Graph node ids the change reaches (impact walk from every changed path, at most 60)."
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PullRequestSummary",
+            "description": "The summary."
+          },
+          "touchedFactIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Facts whose evidence lives in a changed file."
+          }
+        }
+      },
+      "PullRequestSummary": {
+        "type": "object",
+        "description": "A pull request as GitHub lists it, with the id of its latest SDI review.",
+        "required": [
+          "projectId",
+          "number",
+          "title",
+          "author",
+          "authorAvatarUrl",
+          "state",
+          "baseRef",
+          "headRef",
+          "headSha",
+          "changedFiles",
+          "additions",
+          "deletions",
+          "htmlUrl"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines added.",
+            "minimum": 0
+          },
+          "author": {
+            "type": "string",
+            "description": "Author login."
+          },
+          "authorAvatarUrl": {
+            "type": "string",
+            "description": "Author avatar."
+          },
+          "baseRef": {
+            "type": "string",
+            "description": "Target branch."
+          },
+          "changedFiles": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Files changed, as GitHub counts them.",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was opened."
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines removed.",
+            "minimum": 0
+          },
+          "headRef": {
+            "type": "string",
+            "description": "Source branch."
+          },
+          "headSha": {
+            "type": "string",
+            "description": "Head commit; a review is identified by it."
+          },
+          "htmlUrl": {
+            "type": "string",
+            "description": "Link to the pull request on GitHub."
+          },
+          "latestReviewId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The latest SDI review of this pull request, if any."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub number.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project the pull request belongs to."
+          },
+          "state": {
+            "type": "string",
+            "description": "`open` | `closed` | `merged` | `draft`."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "PullRequestsResponse": {
+        "type": "object",
+        "description": "Response of `GET /projects/{id}/pull-requests`.",
+        "required": [
+          "pullRequests"
+        ],
+        "properties": {
+          "pullRequests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestSummary"
+            },
+            "description": "The pull requests."
+          },
+          "syncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the list was last synced from GitHub; null before the first sync."
+          }
+        }
+      },
       "PurgeResult": {
         "type": "object",
         "description": "Response of `POST /workspaces/{id}/data/purge-code-cache`.",
@@ -14633,6 +16137,239 @@
               "null"
             ],
             "description": "One of the failure's remediation option ids."
+          }
+        }
+      },
+      "Review": {
+        "type": "object",
+        "description": "A review of one pull request at one head commit.",
+        "required": [
+          "id",
+          "projectId",
+          "projectName",
+          "prNumber",
+          "prTitle",
+          "prAuthor",
+          "headSha",
+          "status",
+          "steps",
+          "findings",
+          "filesReviewed",
+          "findingsTotal",
+          "findingsAccepted",
+          "reasoner",
+          "requestedBy",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was started."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, when it did."
+          },
+          "filesReviewed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Files the review read.",
+            "minimum": 0
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "description": "Findings. Empty in list responses."
+          },
+          "findingsAccepted": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Findings accepted so far.",
+            "minimum": 0
+          },
+          "findingsTotal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Findings proposed.",
+            "minimum": 0
+          },
+          "headSha": {
+            "type": "string",
+            "description": "Head commit reviewed."
+          },
+          "id": {
+            "type": "string",
+            "description": "Review id."
+          },
+          "prAuthor": {
+            "type": "string",
+            "description": "Pull request author."
+          },
+          "prNumber": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pull request number.",
+            "minimum": 0
+          },
+          "prTitle": {
+            "type": "string",
+            "description": "Pull request title."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project."
+          },
+          "projectName": {
+            "type": "string",
+            "description": "Project display name."
+          },
+          "publishedUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GitHub review URL once published."
+          },
+          "reasoner": {
+            "type": "string",
+            "description": "`heuristic` | `claude`."
+          },
+          "requestedBy": {
+            "type": "string",
+            "description": "Who started it (`system` for webhooks)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReviewStatus",
+            "description": "Where the review is."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewStep"
+            },
+            "description": "The rail."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown walkthrough. `null` in list responses."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "ReviewActivity": {
+        "type": "object",
+        "description": "One entry of the review activity log.",
+        "required": [
+          "id",
+          "reviewId",
+          "projectId",
+          "projectName",
+          "prNumber",
+          "action",
+          "actor",
+          "detail",
+          "at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed`."
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who did it (`system` for the pipeline)."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What happened, in a line."
+          },
+          "id": {
+            "type": "string",
+            "description": "Entry id."
+          },
+          "prNumber": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pull request number.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project."
+          },
+          "projectName": {
+            "type": "string",
+            "description": "Project display name."
+          },
+          "reviewId": {
+            "type": "string",
+            "description": "Review."
+          }
+        }
+      },
+      "ReviewStatus": {
+        "type": "string",
+        "description": "Where a review is in its pipeline.",
+        "enum": [
+          "unspecified",
+          "context",
+          "analyzing",
+          "proposed",
+          "published",
+          "failed"
+        ]
+      },
+      "ReviewStep": {
+        "type": "object",
+        "description": "One step of the review rail.",
+        "required": [
+          "key",
+          "label",
+          "status",
+          "detail",
+          "durationMs"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What the step found or why it failed."
+          },
+          "durationMs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Wall time of the step.",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string",
+            "description": "`context` | `analyze` | `findings` | `summary` | `publish`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Label."
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending` | `running` | `done` | `failed`."
           }
         }
       },
@@ -15831,6 +17568,10 @@
     {
       "name": "diagrams",
       "description": "Evidence-based diagrams generated from the knowledge graph"
+    },
+    {
+      "name": "reviews",
+      "description": "Pull request reviews: evidence first, a human decides, then SDI posts (§20)"
     },
     {
       "name": "executions",

@@ -20,6 +20,7 @@ pub mod patterns;
 pub mod pipelines;
 pub mod profiles;
 pub mod projects;
+pub mod pull_requests;
 pub mod questions;
 pub mod scans;
 pub mod settings;

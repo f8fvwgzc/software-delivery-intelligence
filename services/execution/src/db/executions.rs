@@ -104,19 +104,24 @@ pub async fn lock(tx: &mut Tx, workspace_id: Uuid, id: Uuid) -> sqlx::Result<Exe
     .await
 }
 
+/// Newest first; `before` is the cursor (rows updated strictly before it),
+/// so a page is `ORDER BY updated_at DESC` with ties broken by number.
 pub async fn list<'e>(
     exec: impl PgExecutor<'e>,
     workspace_id: Uuid,
     project_id: &str,
     limit: i64,
+    before: Option<DateTime<Utc>>,
 ) -> sqlx::Result<Vec<ExecutionRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM executions WHERE workspace_id = $1 AND ($2 = '' OR project_id = $2) \
-         ORDER BY number DESC LIMIT $3"
+           AND ($4::timestamptz IS NULL OR updated_at < $4) \
+         ORDER BY updated_at DESC, number DESC LIMIT $3"
     )))
     .bind(workspace_id)
     .bind(project_id)
     .bind(limit)
+    .bind(before)
     .fetch_all(exec)
     .await
 }

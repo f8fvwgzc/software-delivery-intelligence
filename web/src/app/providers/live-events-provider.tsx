@@ -27,6 +27,8 @@ const FAMILIES_BY_ENTITY: Record<string, readonly (readonly string[])[]> = {
   approval: [['executions'], ['approvals']],
   pattern: [['patterns']],
   diagram: [['diagrams']],
+  review: [['reviews'], ['pull-requests'], ['activity']],
+  finding: [['reviews'], ['activity']],
 }
 
 /** Every family the stream can touch; refetched when the stream comes up or drops. */
@@ -40,6 +42,9 @@ const ALL_FAMILIES: readonly (readonly string[])[] = [
   ['approvals'],
   ['patterns'],
   ['diagrams'],
+  ['reviews'],
+  ['pull-requests'],
+  ['activity'],
 ]
 
 /**

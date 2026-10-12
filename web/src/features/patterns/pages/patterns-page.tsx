@@ -1,8 +1,8 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { useState, useTransition } from 'react'
 
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 
 import { patternsQuery } from '../api/queries'
 import { PatternFilters } from '../components/pattern-filters'
@@ -28,9 +28,9 @@ export default function PatternsPage() {
         onIncludeDeprecatedChange={(next) => startTransition(() => setIncludeDeprecated(next))}
         busy={isPending}
       />
-      <QueryBoundary fallback={<PatternTableSkeleton />}>
+      <Panel title="Catalog" padding="none" skeleton={<PatternTableSkeleton />}>
         <PatternsBody category={category} includeDeprecated={includeDeprecated} />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

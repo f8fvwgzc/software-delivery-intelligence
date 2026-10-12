@@ -32,17 +32,16 @@ export function WorkspaceSwitcher() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              size="lg"
               aria-label={`Workspace: ${currentWorkspace.name}. Switch workspace`}
-              className="data-open:bg-sidebar-accent"
+              className="h-8 rounded-md px-1.5 data-open:bg-sidebar-accent"
             >
-              <Avatar size="sm" className="size-7 rounded-md">
-                <AvatarImage src={currentWorkspace.avatarUrl} alt="" className="rounded-md" />
-                <AvatarFallback className="rounded-md text-2xs">{initials(currentWorkspace.name)}</AvatarFallback>
+              <Avatar size="sm" className="size-5 rounded-[4px]">
+                <AvatarImage src={currentWorkspace.avatarUrl} alt="" className="rounded-[4px]" />
+                <AvatarFallback className="rounded-[4px] text-2xs">{initials(currentWorkspace.name)}</AvatarFallback>
               </Avatar>
-              <span className="flex min-w-0 flex-1 flex-col leading-tight">
+              <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
                 <span className="truncate text-sm font-medium text-sidebar-foreground">{currentWorkspace.name}</span>
-                <span className="truncate text-2xs text-muted-foreground">{KIND_LABEL[currentWorkspace.kind]}</span>
+                <span className="hidden truncate text-2xs text-muted-foreground xl:inline">{KIND_LABEL[currentWorkspace.kind]}</span>
               </span>
               <ChevronsUpDownIcon className="ml-auto size-3.5 text-muted-foreground" />
             </SidebarMenuButton>

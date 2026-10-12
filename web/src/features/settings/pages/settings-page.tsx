@@ -1,7 +1,7 @@
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
 
-import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 import { githubQueries } from '@/features/github/api/queries'
 
 import { settingsQueries } from '../api/queries'
@@ -36,24 +36,23 @@ export default function SettingsPage() {
         title="Settings"
         description="Scanner limits and ranking defaults. Each section saves on its own; environment values are shown, not edited."
       />
-      <div className="grid gap-6 lg:grid-cols-12">
-        <div className="flex flex-col gap-6 lg:col-span-8">
-          <Section title="Scanner" description="How much of a repository one scan reads, and how fast.">
-            <QueryBoundary fallback={<FormSkeleton fields={4} toggle />}>
-              <ScannerPanel />
-            </QueryBoundary>
-          </Section>
-          <Section title="Ranking" description="How proposal options are scored and who reasons about them.">
-            <QueryBoundary fallback={<FormSkeleton fields={7} columns={4} toggle />}>
-              <RankingPanel />
-            </QueryBoundary>
-          </Section>
+      <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+        <div className="flex flex-col gap-4 lg:col-span-8">
+          <Panel title="Scanner" description="How much of a repository one scan reads, and how fast." padding="none" skeleton={<FormSkeleton fields={4} toggle />}>
+            <ScannerPanel />
+          </Panel>
+          <Panel
+            title="Ranking"
+            description="How proposal options are scored and who reasons about them."
+            padding="none"
+            skeleton={<FormSkeleton fields={7} columns={4} toggle />}
+          >
+            <RankingPanel />
+          </Panel>
         </div>
-        <Section title="Environment" description="Read from the running services." className="lg:col-span-4">
-          <QueryBoundary fallback={<EnvironmentSkeleton />}>
-            <EnvironmentPanel />
-          </QueryBoundary>
-        </Section>
+        <Panel title="Environment" description="Read from the running services." padding="none" skeleton={<EnvironmentSkeleton />} className="lg:col-span-4">
+          <EnvironmentPanel />
+        </Panel>
       </div>
     </Page>
   )

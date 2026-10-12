@@ -24,6 +24,13 @@ pub fn spawn(pool: PgPool) -> tokio::task::JoinHandle<()> {
                 Ok(rows) => tracing::info!(rows, "code cache sweep: expired files deleted"),
                 Err(error) => tracing::warn!(%error, "code cache sweep failed"),
             }
+            match crate::db::pull_requests::sweep_expired(&pool).await {
+                Ok(0) => {}
+                Ok(rows) => {
+                    tracing::info!(rows, "code cache sweep: expired pull request diffs deleted")
+                }
+                Err(error) => tracing::warn!(%error, "pull request diff sweep failed"),
+            }
         }
     })
 }

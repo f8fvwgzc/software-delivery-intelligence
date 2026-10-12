@@ -20,7 +20,7 @@ export function DiagramRow({ diagram }: { diagram: Diagram }) {
   const href = routes.diagram(diagram.id)
 
   const prefetch = () => {
-    queryClient.prefetchQuery({ ...diagramQuery(diagram.id), staleTime: 10_000 })
+    queryClient.prefetchQuery({ ...diagramQuery(diagram.id), staleTime: 30_000 })
   }
 
   return (

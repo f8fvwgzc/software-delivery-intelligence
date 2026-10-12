@@ -2,8 +2,9 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { FrameFooter } from '@/components/system/frame'
+import { Panel } from '@/components/system/panel'
 
 import { diagramsQuery } from '../api/queries'
 import { DiagramsTable, DiagramsTableSkeleton } from '../components/diagrams-table'
@@ -21,9 +22,9 @@ export default function DiagramsPage() {
         description="Built from the knowledge graph, the repository tree and a few key files. Nodes open the code that implements them; edges name their evidence."
       />
       <GenerateForm projectId={projectId} onGenerated={(diagram) => navigate(routes.diagram(diagram.id))} />
-      <QueryBoundary fallback={<DiagramsTableSkeleton />}>
+      <Panel title="Diagrams" padding="none" skeleton={<DiagramsTableSkeleton />}>
         <DiagramsBody projectId={projectId} />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }
@@ -32,11 +33,13 @@ function DiagramsBody({ projectId }: { projectId: string }) {
   const { data: diagrams } = useSuspenseQuery(diagramsQuery(projectId))
 
   return (
-    <div className="flex flex-col gap-3">
-      <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
-        {diagrams.length} {diagrams.length === 1 ? 'diagram' : 'diagrams'}
-      </span>
+    <>
       <DiagramsTable diagrams={diagrams} />
-    </div>
+      <FrameFooter>
+        <span className="tabular-nums" aria-live="polite">
+          {diagrams.length} {diagrams.length === 1 ? 'diagram' : 'diagrams'}
+        </span>
+      </FrameFooter>
+    </>
   )
 }

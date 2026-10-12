@@ -9,7 +9,7 @@ export default function LoginPage() {
   const returnTo = readReturnTo(location.search)
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-sidebar px-4 py-10">
+    <main className="flex min-h-svh items-center justify-center bg-muted/60 px-4 py-10">
       <LoginCard returnTo={returnTo} />
     </main>
   )

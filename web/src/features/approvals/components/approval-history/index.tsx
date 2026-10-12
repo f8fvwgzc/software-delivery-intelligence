@@ -14,7 +14,7 @@ export function ApprovalHistory() {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-3">
-      <CollapsibleTrigger className="group/trigger inline-flex w-fit items-center gap-1.5 rounded-md text-sm font-medium outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
+      <CollapsibleTrigger className="group/trigger inline-flex w-fit items-center gap-1.5 rounded-md text-xs font-medium outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
         <ChevronRightIcon className="size-4 text-muted-foreground transition-transform duration-150 group-data-[state=open]/trigger:rotate-90" />
         <HistoryIcon className="size-4 text-muted-foreground" />
         History

@@ -45,9 +45,15 @@ pub(super) async fn generate(
             .collect();
 
     // The accepted deployment wins; otherwise the newest open deployment proposal's recommendation.
-    let proposals = proposals_repo::list(&svc.pool, caller.workspace, &project_id)
-        .await
-        .map_err(db_status)?;
+    let proposals = proposals_repo::list(
+        &svc.pool,
+        caller.workspace,
+        &project_id,
+        super::MAX_PAGE,
+        None,
+    )
+    .await
+    .map_err(db_status)?;
     let deployment = proposals.iter().filter(|p| p.kind == "deployment");
     let accepted = deployment.clone().find(|p| p.status == "accepted");
     let plan_option: Option<RankedOption> = accepted
@@ -146,9 +152,15 @@ pub(super) async fn list(
     request: ListDocumentsRequest,
 ) -> Result<ListDocumentsResponse, Status> {
     let project_id = require("project_id", &request.project_id)?;
-    let rows = repo::list(&svc.pool, caller.workspace, &project_id)
-        .await
-        .map_err(db_status)?;
+    let rows = repo::list(
+        &svc.pool,
+        caller.workspace,
+        &project_id,
+        super::page_limit(request.limit),
+        super::before(request.before.as_ref()),
+    )
+    .await
+    .map_err(db_status)?;
     Ok(ListDocumentsResponse {
         documents: rows.iter().map(convert::document).collect(),
     })

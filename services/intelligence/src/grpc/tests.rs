@@ -9,15 +9,16 @@ use sdi_proto::{
     common::v1::WatchEventsRequest,
     identity::v1::ReasonerKey,
     intelligence::v1::{
-        AcceptProposalRequest, CreateDecisionRequest, DecisionScope, DecisionSource,
-        DeleteDiagramRequest, DeleteWorkspaceDataRequest, DiagramKind, DiagramSpec, DocumentKind,
-        ExportWorkspaceDataRequest, GenerateDiagramRequest, GenerateDocumentRequest,
-        GenerateProposalRequest, GetDiagramRequest, GetIntelligenceStatsRequest,
-        GetProposalRequest, GetSettingsRequest, IntelligenceSettings, ListDecisionsRequest,
-        ListDiagramsRequest, ListMessagesRequest, ListProposalsRequest, MessageRole,
-        NegotiateRequest, ProposalKind, ProposalStatus, ScoreWeights, SupersedeDecisionRequest,
-        UpdateDiagramRequest, UpdateSettingsRequest,
-        intelligence_service_server::IntelligenceService,
+        AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, DecisionScope,
+        DecisionSource, DeleteDiagramRequest, DeleteWorkspaceDataRequest, DiagramKind, DiagramSpec,
+        DocumentKind, ExportWorkspaceDataRequest, FindingDecision, GenerateDiagramRequest,
+        GenerateDocumentRequest, GenerateProposalRequest, GetDiagramRequest,
+        GetIntelligenceStatsRequest, GetProposalRequest, GetReviewRequest, GetSettingsRequest,
+        IntelligenceSettings, ListDecisionsRequest, ListDiagramsRequest, ListMessagesRequest,
+        ListProposalsRequest, ListReviewActivityRequest, ListReviewsRequest, MessageRole,
+        NegotiateRequest, ProposalKind, ProposalStatus, PublishReviewRequest, ReviewStatus,
+        ScoreWeights, StartReviewRequest, SupersedeDecisionRequest, UpdateDiagramRequest,
+        UpdateSettingsRequest, intelligence_service_server::IntelligenceService,
     },
 };
 use tokio_stream::StreamExt;
@@ -76,6 +77,9 @@ async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
         .await
         .expect("migrations");
     for table in [
+        "review_activity",
+        "findings",
+        "reviews",
         "messages",
         "proposals",
         "decisions",
@@ -530,6 +534,7 @@ async fn settings_drive_ranking_and_validate_input() {
     let updated = svc
         .update_settings(req(UpdateSettingsRequest {
             settings: Some(IntelligenceSettings {
+                auto_review: false,
                 default_weights: Some(ScoreWeights {
                     semantic_similarity: 10.0,
                     policy: 10.0,
@@ -689,6 +694,7 @@ async fn budget_artifacts_list_and_events() {
     let listed = svc
         .list_proposals(req(ListProposalsRequest {
             project_id: "proj-1".into(),
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -843,6 +849,7 @@ async fn diagram_round_trip() {
     let listed = svc
         .list_diagrams(req(ListDiagramsRequest {
             project_id: dia::PROJECT_ID.into(),
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -1396,4 +1403,401 @@ async fn reasoner_follows_the_workspace_data_controls() {
     let access = svc.reasoner_access(&caller).await;
     assert!(access.configured());
     assert_eq!(svc.reasoner_for(&settings, &access).name(), "heuristic");
+}
+
+/// A pull request against the fixture project: a new Dockerfile with a
+/// floating tag and a source change without tests.
+fn pull_request_fixture(number: u64, head_sha: &str) -> sdi_proto::knowledge::v1::PullRequest {
+    use sdi_proto::knowledge::v1::{ChangedFile, DiffHunk, PullRequestSummary};
+    sdi_proto::knowledge::v1::PullRequest {
+        summary: Some(PullRequestSummary {
+            project_id: "proj-1".into(),
+            number,
+            title: "Containerise the API".into(),
+            author: "ana".into(),
+            state: "open".into(),
+            base_ref: "main".into(),
+            head_ref: "feat/docker".into(),
+            head_sha: head_sha.into(),
+            changed_files: 2,
+            additions: 8,
+            deletions: 0,
+            html_url: format!("https://github.com/f8fvwgzc/view-engine/pull/{number}"),
+            ..Default::default()
+        }),
+        body: "Adds a Dockerfile so the API can run in the cluster.".into(),
+        files: vec![
+            ChangedFile {
+                path: "Dockerfile".into(),
+                status: "added".into(),
+                additions: 2,
+                hunks: vec![DiffHunk {
+                    new_start: 1,
+                    new_lines: 2,
+                    lines: vec![
+                        "+FROM node:latest".into(),
+                        "+CMD [\"node\", \"server.js\"]".into(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ChangedFile {
+                path: "src/server.ts".into(),
+                status: "modified".into(),
+                additions: 6,
+                hunks: vec![DiffHunk {
+                    new_start: 1,
+                    new_lines: 6,
+                    lines: (1..=6).map(|i| format!("+const v{i} = {i};")).collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        touched_fact_ids: vec!["f-docker".into()],
+        impacted_node_ids: vec![],
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn review_pipeline_proposes_decides_and_refuses_to_publish_without_github() {
+    let (svc, peers) = service_with_peers("intelligence_test_review").await;
+    // The fake knowledge needs the pull request; rebuild it with one.
+    let mut context = fixtures::context();
+    context.capabilities.push("tests:unit".into());
+    let knowledge = Arc::new(FakeKnowledge {
+        context: Some(context),
+        patterns: fixtures::catalog(),
+        pull_requests: [(7, pull_request_fixture(7, "abc123"))].into(),
+        ..Default::default()
+    });
+    let svc = IntelligenceGrpc::new(
+        svc.pool.clone(),
+        knowledge.clone(),
+        peers.execution.clone(),
+        peers.identity.clone(),
+        ReasonerConfig::default(),
+    );
+
+    // A viewer may not start one; a member may.
+    let denied = svc
+        .start_review(as_role(
+            Role::Viewer,
+            WS_A,
+            StartReviewRequest {
+                project_id: "proj-1".into(),
+                pr_number: 7,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    let started = svc
+        .start_review(as_role(
+            Role::Member,
+            WS_A,
+            StartReviewRequest {
+                project_id: "proj-1".into(),
+                pr_number: 7,
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(started.status(), ReviewStatus::Context);
+    assert_eq!(started.pr_number, 7);
+    assert_eq!(started.head_sha, "abc123");
+    assert_eq!(started.requested_by, "user-member");
+    assert_eq!(started.steps.len(), 5);
+
+    // The pipeline runs in the background; wait for it to propose.
+    let mut review = started.clone();
+    for _ in 0..100 {
+        review = svc
+            .get_review(req(GetReviewRequest {
+                id: started.id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        if matches!(
+            review.status(),
+            ReviewStatus::Proposed | ReviewStatus::Failed
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(review.status(), ReviewStatus::Proposed, "{}", review.error);
+    assert_eq!(review.project_name, "view-engine");
+    assert_eq!(review.reasoner, "heuristic");
+    assert_eq!(review.files_reviewed, 2);
+    assert!(review.summary.contains("## Intent"));
+    assert!(review.summary.contains("docker.latest_tag"));
+    let steps: Vec<(&str, &str)> = review
+        .steps
+        .iter()
+        .map(|s| (s.key.as_str(), s.status.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        vec![
+            ("context", "done"),
+            ("analyze", "done"),
+            ("findings", "done"),
+            ("summary", "done"),
+            ("publish", "pending")
+        ]
+    );
+    let rules: Vec<&str> = review.findings.iter().map(|f| f.rule.as_str()).collect();
+    assert!(rules.contains(&"docker.latest_tag"), "{rules:?}");
+    assert!(rules.contains(&"tests.missing"), "{rules:?}");
+    assert!(rules.contains(&"docker.no_healthcheck"), "{rules:?}");
+    assert_eq!(review.findings_total as usize, review.findings.len());
+
+    // Starting again for the same head returns the same review.
+    let again = svc
+        .start_review(as_role(
+            Role::Member,
+            WS_A,
+            StartReviewRequest {
+                project_id: "proj-1".into(),
+                pr_number: 7,
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(again.id, started.id);
+    assert_eq!(again.status(), ReviewStatus::Proposed);
+
+    // Lists omit the summary and findings; another workspace sees nothing.
+    let listed = svc
+        .list_reviews(req(ListReviewsRequest {
+            project_id: String::new(),
+            limit: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .reviews;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].summary.is_empty());
+    assert!(listed[0].findings.is_empty());
+    assert!(
+        svc.list_reviews(as_role(Role::Admin, WS_B, ListReviewsRequest::default()))
+            .await
+            .unwrap()
+            .into_inner()
+            .reviews
+            .is_empty()
+    );
+    assert_eq!(
+        svc.get_review(as_role(
+            Role::Admin,
+            WS_B,
+            GetReviewRequest {
+                id: started.id.clone()
+            }
+        ))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::NotFound
+    );
+
+    // Decide: accept the docker finding, dismiss the tests one.
+    let docker = review
+        .findings
+        .iter()
+        .find(|f| f.rule == "docker.latest_tag")
+        .unwrap();
+    let decided = svc
+        .decide_finding(as_role(
+            Role::Member,
+            WS_A,
+            DecideFindingRequest {
+                finding_id: docker.id.clone(),
+                decision: FindingDecision::Accepted as i32,
+                note: "pin it".into(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(decided.decision(), FindingDecision::Accepted);
+    assert_eq!(decided.decided_by, "user-member");
+    assert_eq!(decided.decision_note, "pin it");
+    let tests_finding = review
+        .findings
+        .iter()
+        .find(|f| f.rule == "tests.missing")
+        .unwrap();
+    svc.decide_finding(req(DecideFindingRequest {
+        finding_id: tests_finding.id.clone(),
+        decision: FindingDecision::Dismissed as i32,
+        note: String::new(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(
+        svc.decide_finding(req(DecideFindingRequest {
+            finding_id: docker.id.clone(),
+            decision: FindingDecision::Pending as i32,
+            note: String::new(),
+        }))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::InvalidArgument
+    );
+    let review = svc
+        .get_review(req(GetReviewRequest {
+            id: started.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(review.findings_accepted, 1);
+
+    // Publishing needs an approver and GitHub access; the fake identity has
+    // none, so it fails before anything is posted and the review stays proposed.
+    assert_eq!(
+        svc.publish_review(as_role(
+            Role::Member,
+            WS_A,
+            PublishReviewRequest {
+                review_id: started.id.clone(),
+                event: String::new(),
+            }
+        ))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::PermissionDenied
+    );
+    let refused = svc
+        .publish_review(as_role(
+            Role::Approver,
+            WS_A,
+            PublishReviewRequest {
+                review_id: started.id.clone(),
+                event: "approve".into(),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::FailedPrecondition, "{refused}");
+    assert_eq!(
+        svc.publish_review(req(PublishReviewRequest {
+            review_id: started.id.clone(),
+            event: "merge".into(),
+        }))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::InvalidArgument
+    );
+    let review = svc
+        .get_review(req(GetReviewRequest {
+            id: started.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(review.status(), ReviewStatus::Proposed);
+
+    // The activity log tells the story, newest first, and pages by `before`.
+    let activity = svc
+        .list_review_activity(req(ListReviewActivityRequest {
+            project_id: "proj-1".into(),
+            limit: 0,
+            before: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .activity;
+    let actions: Vec<&str> = activity.iter().map(|a| a.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        vec![
+            "finding.dismissed",
+            "finding.accepted",
+            "review.proposed",
+            "review.started"
+        ]
+    );
+    assert_eq!(activity[1].actor, "user-member");
+    assert!(activity[1].detail.contains("pin it"));
+    let older = svc
+        .list_review_activity(req(ListReviewActivityRequest {
+            project_id: String::new(),
+            limit: 10,
+            before: activity[2].at,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .activity;
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].action, "review.started");
+
+    // A new head commit is a new review that links the previous one.
+    let knowledge2 = Arc::new(FakeKnowledge {
+        context: knowledge.context.clone(),
+        patterns: fixtures::catalog(),
+        pull_requests: [(7, pull_request_fixture(7, "def456"))].into(),
+        ..Default::default()
+    });
+    let svc2 = IntelligenceGrpc::new(
+        svc.pool.clone(),
+        knowledge2,
+        peers.execution.clone(),
+        peers.identity.clone(),
+        ReasonerConfig::default(),
+    );
+    let next = svc2
+        .start_review(req(StartReviewRequest {
+            project_id: "proj-1".into(),
+            pr_number: 7,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(next.id, started.id);
+    assert_eq!(next.head_sha, "def456");
+    let listed = svc2
+        .list_reviews(req(ListReviewsRequest {
+            project_id: "proj-1".into(),
+            limit: 1,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .reviews;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, next.id);
+
+    // Settings carry the auto_review switch.
+    let settings = svc
+        .update_settings(req(UpdateSettingsRequest {
+            settings: Some(IntelligenceSettings {
+                auto_review: true,
+                ..Default::default()
+            }),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(settings.auto_review);
+    assert!(
+        !svc.get_settings(as_role(Role::Viewer, WS_B, GetSettingsRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .auto_review
+    );
 }

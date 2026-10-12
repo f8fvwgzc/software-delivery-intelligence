@@ -12,6 +12,8 @@ use super::{Reasoner, diagrams::RefineRequest};
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u32 = 800;
+/// A walkthrough is longer than a negotiation reply.
+const REVIEW_MAX_TOKENS: u32 = 1400;
 
 const SYSTEM_PROMPT: &str = "You rewrite a delivery assistant's templated reply into clear, natural prose for an \
 engineer. You are given a JSON context (ranked options with scores, evidence, the effects of the user's message, \
@@ -143,6 +145,29 @@ impl Reasoner for ClaudeReasoner {
             Ok(text) => text,
             Err(error) => {
                 tracing::warn!(%error, "claude reasoner failed; using heuristic reply");
+                draft.to_owned()
+            }
+        }
+    }
+
+    async fn write_review_summary(&self, draft: &str, context: &serde_json::Value) -> String {
+        let content = format!(
+            "Structured context (JSON):\n{}\n\nTemplated walkthrough:\n{}\n\nRewrite the walkthrough.",
+            context, draft
+        );
+        match self
+            .complete(super::REVIEW_SYSTEM_PROMPT, content, REVIEW_MAX_TOKENS)
+            .await
+        {
+            Ok(text) if text.contains("## Intent") => text,
+            Ok(_) => {
+                tracing::warn!(
+                    "claude reasoner dropped the walkthrough sections; keeping the templated summary"
+                );
+                draft.to_owned()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "claude reasoner failed; keeping the templated summary");
                 draft.to_owned()
             }
         }

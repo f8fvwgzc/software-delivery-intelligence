@@ -624,6 +624,74 @@ impl GithubClient {
         )
         .await
     }
+
+    /// Up to `limit` pull requests in `state` (`open` | `closed` | `all`),
+    /// most recently updated first. Pages are ETag-cached like every list.
+    pub async fn pulls(
+        &self,
+        owner: &str,
+        name: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<Pull>> {
+        let path = format!("/repos/{owner}/{name}/pulls");
+        let mut pulls = Vec::new();
+        for page in 1..=20_u32 {
+            let per_page = limit.saturating_sub(pulls.len()).clamp(1, 100);
+            let batch: Vec<Pull> = self
+                .get_json_cached(
+                    &path,
+                    &[
+                        ("state", state.to_owned()),
+                        ("sort", "updated".to_owned()),
+                        ("direction", "desc".to_owned()),
+                        ("per_page", per_page.to_string()),
+                        ("page", page.to_string()),
+                    ],
+                )
+                .await?;
+            let last = batch.len() < per_page;
+            pulls.extend(batch);
+            if last || pulls.len() >= limit {
+                break;
+            }
+        }
+        pulls.truncate(limit);
+        Ok(pulls)
+    }
+
+    /// One pull request with its counters.
+    pub async fn pull(&self, owner: &str, name: &str, number: u64) -> Result<Pull> {
+        self.get_json(&format!("/repos/{owner}/{name}/pulls/{number}"), &[])
+            .await
+    }
+
+    /// The changed files of a pull request, at most `max_files` of them
+    /// (GitHub lists up to 3000; the review reads a bounded diff).
+    pub async fn pull_files(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u64,
+        max_files: usize,
+    ) -> Result<Vec<PullFile>> {
+        let path = format!("/repos/{owner}/{name}/pulls/{number}/files");
+        let mut files = Vec::new();
+        for page in 1..=30_u32 {
+            let batch: Vec<PullFile> = self
+                .get_json(
+                    &path,
+                    &[("per_page", "100".to_owned()), ("page", page.to_string())],
+                )
+                .await?;
+            let last = batch.len() < 100;
+            files.extend(batch);
+            if last || files.len() > max_files {
+                break;
+            }
+        }
+        Ok(files)
+    }
 }
 
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {

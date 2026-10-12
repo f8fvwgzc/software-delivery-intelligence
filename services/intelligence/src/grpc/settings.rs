@@ -81,6 +81,8 @@ pub(super) async fn update(
     } else if row.cost_ceiling_usd <= 0.0 {
         row.cost_ceiling_usd = DEFAULT_COST_CEILING_USD;
     }
+    // A bool cannot say "unset"; the gateway sends the whole object back.
+    row.auto_review = incoming.auto_review;
 
     repo::upsert(&svc.pool, caller.workspace, &row)
         .await

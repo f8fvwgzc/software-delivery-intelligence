@@ -1,8 +1,8 @@
 import { useSuspenseQueries } from '@tanstack/react-query'
 import { useState, useTransition } from 'react'
 
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { projectPickerQuery } from '@/features/proposals/api/queries'
@@ -22,27 +22,29 @@ export default function DecisionsPage() {
       <PageHeader
         title="Decisions"
         description="Standing rules the platform honours when it ranks options. Superseded ones stay in the record."
-        actions={
-          <>
-            <Field orientation="horizontal" className="gap-2">
-              <Switch
-                id="include-superseded"
-                size="sm"
-                checked={includeSuperseded}
-                aria-busy={isPending || undefined}
-                onCheckedChange={(checked) => startTransition(() => setIncludeSuperseded(checked))}
-              />
-              <FieldLabel htmlFor="include-superseded" className="text-xs font-normal text-muted-foreground">
-                Include superseded
-              </FieldLabel>
-            </Field>
-            <RecordDecisionDialog />
-          </>
-        }
+        actions={<RecordDecisionDialog />}
       />
-      <QueryBoundary fallback={<DecisionListSkeleton />}>
+      <Panel
+        title="Decisions"
+        padding="none"
+        skeleton={<DecisionListSkeleton />}
+        actions={
+          <Field orientation="horizontal" className="gap-2">
+            <Switch
+              id="include-superseded"
+              size="sm"
+              checked={includeSuperseded}
+              aria-busy={isPending || undefined}
+              onCheckedChange={(checked) => startTransition(() => setIncludeSuperseded(checked))}
+            />
+            <FieldLabel htmlFor="include-superseded" className="text-xs font-normal text-muted-foreground">
+              Include superseded
+            </FieldLabel>
+          </Field>
+        }
+      >
         <DecisionsBody includeSuperseded={includeSuperseded} />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

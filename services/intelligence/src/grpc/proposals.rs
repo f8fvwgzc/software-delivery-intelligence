@@ -324,9 +324,15 @@ pub(super) async fn list(
     caller: &Caller,
     request: ListProposalsRequest,
 ) -> Result<ListProposalsResponse, Status> {
-    let rows = repo::list(&svc.pool, caller.workspace, request.project_id.trim())
-        .await
-        .map_err(db_status)?;
+    let rows = repo::list(
+        &svc.pool,
+        caller.workspace,
+        request.project_id.trim(),
+        super::page_limit(request.limit),
+        super::before(request.before.as_ref()),
+    )
+    .await
+    .map_err(db_status)?;
     Ok(ListProposalsResponse {
         proposals: rows.iter().map(convert::proposal).collect(),
     })

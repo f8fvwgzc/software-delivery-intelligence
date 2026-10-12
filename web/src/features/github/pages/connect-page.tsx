@@ -4,8 +4,9 @@ import { useDeferredValue, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { QueryBoundary } from '@/components/shared/feedback'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Panel, PanelEmpty } from '@/components/system/panel'
 import { useAuth } from '@/features/auth/lib/auth-context'
 
 import { useConnectRepository } from '../api/mutations'
@@ -64,7 +65,7 @@ function RepoListPanel(props: RepoRowsPanelProps) {
   // An installation always has a token: it is minted per request (CONTRACT.md §18).
   if (!account.tokenConfigured && currentWorkspace.kind !== 'organization') {
     return (
-      <EmptyState
+      <PanelEmpty
         icon={KeyRoundIcon}
         title="Nothing to list yet"
         description={`Repositories appear here once ${TOKEN_ENV_VAR} is set for the knowledge service.`}
@@ -73,7 +74,7 @@ function RepoListPanel(props: RepoRowsPanelProps) {
   }
 
   return (
-    <QueryBoundary fallback={<RepoTableSkeleton />}>
+    <QueryBoundary compact fallback={<RepoTableSkeleton />}>
       <RepoRowsPanel {...props} />
     </QueryBoundary>
   )
@@ -104,7 +105,7 @@ export default function ConnectPage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
         <div className="lg:col-start-2 lg:row-start-1">
           {organisation ? (
             <InstallationCard workspace={currentWorkspace} />
@@ -115,20 +116,20 @@ export default function ConnectPage() {
           )}
         </div>
 
-        <Section
+        <Panel
           title="Repositories"
           description={
             organisation
-              ? 'The installation’s selection; change it on GitHub. Already connected repositories open their project instead.'
+              ? 'The installation’s selection; change it on GitHub. Connected ones open their project.'
               : 'Already connected repositories open their project instead.'
           }
+          actions={<RepoSearch value={query} onChange={setQuery} />}
+          padding="none"
+          skeleton={<RepoTableSkeleton />}
           className="lg:col-start-1 lg:row-start-1"
         >
-          <RepoSearch value={query} onChange={setQuery} />
-          <QueryBoundary fallback={<RepoTableSkeleton />}>
-            <RepoListPanel query={deferredQuery} stale={stale} onClearQuery={clearQuery} />
-          </QueryBoundary>
-        </Section>
+          <RepoListPanel query={deferredQuery} stale={stale} onClearQuery={clearQuery} />
+        </Panel>
       </div>
     </Page>
   )

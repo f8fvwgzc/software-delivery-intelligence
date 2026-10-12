@@ -4,7 +4,9 @@
 
 use axum::{Json, body::Bytes, extract::State, http::HeaderMap};
 use hmac::{Hmac, Mac};
-use sdi_proto::{identity::v1 as identity, knowledge::v1 as knowledge};
+use sdi_proto::{
+    identity::v1 as identity, intelligence::v1 as intelligence, knowledge::v1 as knowledge,
+};
 use serde_json::Value;
 use sha2::Sha256;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -150,6 +152,25 @@ async fn github(
             state.forget_auth(None, Some(&workspace.id));
             "synced"
         }
+        ("pull_request", "opened" | "synchronize" | "reopened" | "ready_for_review")
+            if installation_id > 0 =>
+        {
+            let full_name = str_of(&payload, &["repository", "full_name"]);
+            let number = payload["pull_request"]["number"].as_u64().unwrap_or(0);
+            let draft = payload["pull_request"]["draft"].as_bool().unwrap_or(false);
+            if number == 0 || draft {
+                "ignored"
+            } else {
+                match auto_review(&state, &payload, full_name, number).await {
+                    Ok(true) => "review_started",
+                    Ok(false) => "ignored",
+                    Err(error) => {
+                        tracing::warn!(%error, full_name, number, "auto review not started");
+                        "ignored"
+                    }
+                }
+            }
+        }
         ("push", _) if installation_id > 0 => {
             let git_ref = str_of(&payload, &["ref"]);
             let default_branch = str_of(&payload, &["repository", "default_branch"]);
@@ -200,6 +221,51 @@ async fn rescan(state: &AppState, payload: &Value, full_name: &str) -> Result<bo
         .knowledge()
         .start_scan(knowledge::StartScanRequest {
             project_id: project.id,
+        })
+        .await?;
+    Ok(true)
+}
+
+/// A pull request opened or pushed to starts a review as `system` when the
+/// workspace's intelligence settings say `auto_review` (CONTRACT.md §20).
+/// The review stops at `proposed`; nothing is ever published from here.
+async fn auto_review(
+    state: &AppState,
+    payload: &Value,
+    full_name: &str,
+    number: u64,
+) -> Result<bool, tonic::Status> {
+    let workspace = state
+        .identity()
+        .record_installation(installation_of(payload))
+        .await?
+        .into_inner();
+    let scoped = state.system(&workspace.id);
+    let settings = scoped
+        .intelligence()
+        .get_settings(intelligence::GetSettingsRequest {})
+        .await?
+        .into_inner();
+    if !settings.auto_review {
+        return Ok(false);
+    }
+    let projects = scoped
+        .knowledge()
+        .list_projects(knowledge::ListProjectsRequest {})
+        .await?
+        .into_inner()
+        .projects;
+    let Some(project) = projects
+        .into_iter()
+        .find(|p| p.repo_full_name.eq_ignore_ascii_case(full_name))
+    else {
+        return Ok(false);
+    };
+    scoped
+        .intelligence()
+        .start_review(intelligence::StartReviewRequest {
+            project_id: project.id,
+            pr_number: number,
         })
         .await?;
     Ok(true)

@@ -232,6 +232,29 @@ pub mod knowledge {
 
     pub struct Fake;
 
+    pub fn pull_request_summary(
+        project_id: &str,
+        number: u64,
+        state: &str,
+    ) -> proto::PullRequestSummary {
+        proto::PullRequestSummary {
+            project_id: project_id.to_owned(),
+            number,
+            title: format!("PR {number}"),
+            author: "ana".into(),
+            state: state.to_owned(),
+            base_ref: "main".into(),
+            head_ref: format!("feat/{number}"),
+            head_sha: format!("sha{number}"),
+            changed_files: 1,
+            additions: 2,
+            html_url: format!("https://github.com/acme/repo/pull/{number}"),
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
     pub fn settings() -> proto::KnowledgeSettings {
         proto::KnowledgeSettings {
             scan_max_files: 2000,
@@ -443,6 +466,58 @@ pub mod knowledge {
                     .ok_or_else(|| Status::invalid_argument("settings missing"))
             }
 
+            /// Two pull requests of `p1`; `refresh` is echoed in `synced_at`.
+            async fn list_pull_requests(
+                &self,
+                request: Request<proto::ListPullRequestsRequest>,
+            ) -> Result<Response<proto::ListPullRequestsResponse>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                if request.project_id == "missing" {
+                    return Err(Status::not_found("no such project"));
+                }
+                let state = if request.state.is_empty() { "open".to_owned() } else { request.state };
+                Ok(Response::new(proto::ListPullRequestsResponse {
+                    pull_requests: vec![
+                        pull_request_summary(&request.project_id, 1, &state),
+                        pull_request_summary(&request.project_id, 2, &state),
+                    ],
+                    synced_at: at(if request.refresh { 1_700_000_100 } else { 1_700_000_000 }),
+                }))
+            }
+
+            async fn get_pull_request(
+                &self,
+                request: Request<proto::GetPullRequestRequest>,
+            ) -> Result<Response<proto::PullRequest>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                if request.number == 0 {
+                    return Err(Status::invalid_argument("number is required"));
+                }
+                if request.number > 2 {
+                    return Err(Status::not_found("no such pull request"));
+                }
+                Ok(Response::new(proto::PullRequest {
+                    summary: Some(pull_request_summary(&request.project_id, request.number, "open")),
+                    body: "Adds a Dockerfile.".into(),
+                    files: vec![proto::ChangedFile {
+                        path: "Dockerfile".into(),
+                        status: "added".into(),
+                        additions: 2,
+                        hunks: vec![proto::DiffHunk {
+                            new_start: 1,
+                            new_lines: 2,
+                            lines: vec!["+FROM node:latest".into(), "+CMD [\"x\"]".into()],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    touched_fact_ids: vec!["f1".into()],
+                    impacted_node_ids: vec!["n1".into()],
+                }))
+            }
+
             async fn purge_code_cache(
                 &self,
                 request: Request<proto::PurgeCodeCacheRequest>,
@@ -513,11 +588,16 @@ pub mod knowledge {
 }
 
 pub mod intelligence {
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
     use sdi_proto::intelligence::v1::{
         self as proto,
         intelligence_service_server::{IntelligenceService, IntelligenceServiceServer},
     };
+
+    /// What `get_settings` reports as `auto_review` (webhook tests flip it).
+    pub static AUTO_REVIEW: AtomicBool = AtomicBool::new(false);
 
     pub struct Fake;
 
@@ -536,6 +616,7 @@ pub mod intelligence {
             model: "claude-sonnet-5-5".into(),
             api_key_configured: false,
             cost_ceiling_usd: 500.0,
+            auto_review: false,
         }
     }
 
@@ -637,7 +718,9 @@ pub mod intelligence {
                 request: Request<proto::GetSettingsRequest>,
             ) -> Result<Response<proto::IntelligenceSettings>, Status> {
                 principal(&request)?;
-                Ok(Response::new(settings()))
+                let mut settings = settings();
+                settings.auto_review = AUTO_REVIEW.load(Ordering::SeqCst);
+                Ok(Response::new(settings))
             }
 
             async fn update_settings(
@@ -660,6 +743,123 @@ pub mod intelligence {
                 Ok(Response::new(proto::DeleteWorkspaceDataResponse {
                     deleted: [("proposals".to_owned(), 2u64)].into(),
                 }))
+            }
+
+            /// A review that is already proposed; `pr_number` 9 has none.
+            async fn start_review(
+                &self,
+                request: Request<proto::StartReviewRequest>,
+            ) -> Result<Response<proto::Review>, Status> {
+                let caller = principal(&request)?;
+                let request = request.into_inner();
+                if request.pr_number == 0 {
+                    return Err(Status::invalid_argument("pr_number is required"));
+                }
+                let mut review = review("r1", &request.project_id, request.pr_number);
+                review.requested_by = caller.user_id;
+                review.status = proto::ReviewStatus::Context as i32;
+                review.summary.clear();
+                review.findings.clear();
+                Ok(Response::new(review))
+            }
+
+            /// Two reviews of PR 1 (newest first) and one of PR 2.
+            async fn list_reviews(
+                &self,
+                request: Request<proto::ListReviewsRequest>,
+            ) -> Result<Response<proto::ListReviewsResponse>, Status> {
+                principal(&request)?;
+                let project_id = request.into_inner().project_id;
+                let strip = |mut r: proto::Review| {
+                    r.summary.clear();
+                    r.findings.clear();
+                    r
+                };
+                Ok(Response::new(proto::ListReviewsResponse {
+                    reviews: vec![
+                        strip(review("r-new", &project_id, 1)),
+                        strip(review("r-old", &project_id, 1)),
+                        strip(review("r-2", &project_id, 2)),
+                    ],
+                }))
+            }
+
+            async fn get_review(
+                &self,
+                request: Request<proto::GetReviewRequest>,
+            ) -> Result<Response<proto::Review>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                if id == "missing" {
+                    return Err(Status::not_found("no such review"));
+                }
+                Ok(Response::new(review(&id, "p1", 1)))
+            }
+
+            async fn decide_finding(
+                &self,
+                request: Request<proto::DecideFindingRequest>,
+            ) -> Result<Response<proto::Finding>, Status> {
+                let caller = principal(&request)?;
+                let request = request.into_inner();
+                let mut finding = finding(&request.finding_id);
+                finding.decision = request.decision;
+                finding.decision_note = request.note;
+                finding.decided_by = caller.user_id;
+                finding.decided_at = at(1_700_000_200);
+                Ok(Response::new(finding))
+            }
+
+            async fn publish_review(
+                &self,
+                request: Request<proto::PublishReviewRequest>,
+            ) -> Result<Response<proto::Review>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Approver)?;
+                let request = request.into_inner();
+                let mut review = review(&request.review_id, "p1", 1);
+                review.status = proto::ReviewStatus::Published as i32;
+                review.published_url = format!(
+                    "https://github.com/acme/repo/pull/1#pullrequestreview-{}",
+                    if request.event.is_empty() { "comment".to_owned() } else { request.event }
+                );
+                Ok(Response::new(review))
+            }
+
+            async fn list_review_activity(
+                &self,
+                request: Request<proto::ListReviewActivityRequest>,
+            ) -> Result<Response<proto::ListReviewActivityResponse>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                let mut activity = vec![
+                    proto::ReviewActivity {
+                        id: "a2".into(),
+                        review_id: "r1".into(),
+                        project_id: "p1".into(),
+                        project_name: "repo".into(),
+                        pr_number: 1,
+                        action: "review.proposed".into(),
+                        actor: "system".into(),
+                        detail: "2 findings".into(),
+                        at: at(1_700_000_050),
+                    },
+                    proto::ReviewActivity {
+                        id: "a1".into(),
+                        review_id: "r1".into(),
+                        project_id: "p1".into(),
+                        project_name: "repo".into(),
+                        pr_number: 1,
+                        action: "review.started".into(),
+                        actor: "u-member".into(),
+                        detail: "PR 1".into(),
+                        at: at(1_700_000_000),
+                    },
+                ];
+                if let Some(before) = request.before {
+                    activity.retain(|a| a.at.as_ref().is_some_and(|t| t.seconds < before.seconds));
+                }
+                Ok(Response::new(proto::ListReviewActivityResponse { activity }))
             }
 
             async fn export_workspace_data(
@@ -692,6 +892,57 @@ pub mod intelligence {
             get_diagram: proto::GetDiagramRequest => proto::Diagram,
             update_diagram: proto::UpdateDiagramRequest => proto::Diagram,
             delete_diagram: proto::DeleteDiagramRequest => proto::DeleteDiagramResponse,
+        }
+    }
+
+    pub fn finding(id: &str) -> proto::Finding {
+        proto::Finding {
+            id: id.to_owned(),
+            review_id: "r1".into(),
+            category: "docker".into(),
+            severity: proto::FindingSeverity::Medium as i32,
+            title: "Base image is not pinned".into(),
+            detail: "Line 1 uses `latest`.".into(),
+            path: "Dockerfile".into(),
+            line: 1,
+            end_line: 1,
+            suggestion: "FROM node:22".into(),
+            rule: "docker.latest_tag".into(),
+            decision: proto::FindingDecision::Pending as i32,
+            ..Default::default()
+        }
+    }
+
+    pub fn review(id: &str, project_id: &str, pr_number: u64) -> proto::Review {
+        proto::Review {
+            id: id.to_owned(),
+            project_id: project_id.to_owned(),
+            project_name: "repo".into(),
+            pr_number,
+            pr_title: format!("PR {pr_number}"),
+            pr_author: "ana".into(),
+            head_sha: format!("sha{pr_number}"),
+            status: proto::ReviewStatus::Proposed as i32,
+            steps: ["context", "analyze", "findings", "summary", "publish"]
+                .iter()
+                .map(|key| proto::ReviewStep {
+                    key: (*key).to_owned(),
+                    label: key.to_uppercase(),
+                    status: if *key == "publish" { "pending" } else { "done" }.to_owned(),
+                    detail: String::new(),
+                    duration_ms: 3,
+                })
+                .collect(),
+            summary: "## Intent\n\nAdds a Dockerfile.".into(),
+            findings: vec![finding("f1"), finding("f2")],
+            files_reviewed: 1,
+            findings_total: 2,
+            findings_accepted: 0,
+            reasoner: "heuristic".into(),
+            requested_by: "u-member".into(),
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_050),
+            ..Default::default()
         }
     }
 

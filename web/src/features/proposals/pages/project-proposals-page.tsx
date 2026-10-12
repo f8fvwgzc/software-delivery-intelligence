@@ -1,7 +1,7 @@
 import { useParams, useSearchParams } from 'react-router'
 
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 
 import { NewProposalDialog } from '../components/new-proposal-dialog'
 import { ProposalsList } from '../components/proposals-list'
@@ -22,12 +22,12 @@ export default function ProjectProposalsPage() {
         description="What the platform recommends for this project, and what was decided."
         actions={<NewProposalDialog projectId={projectId} initialKind={initialKind} />}
       />
-      <QueryBoundary fallback={<ProposalsTableSkeleton />}>
+      <Panel title="Proposals" padding="none" skeleton={<ProposalsTableSkeleton />}>
         <ProposalsList
           projectId={projectId}
           emptyAction={<NewProposalDialog projectId={projectId} initialKind={initialKind} />}
         />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

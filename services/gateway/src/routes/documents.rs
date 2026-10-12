@@ -6,8 +6,9 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::map_all;
 use crate::{
+    dto::common::PageQuery,
     dto::intelligence::{Document, GenerateDocumentRequest, IntelligenceStats},
-    error::{ApiJson, ApiPath, ApiResult, ErrorResponses},
+    error::{ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
     state::{AppState, Scoped},
 };
 
@@ -18,21 +19,26 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(intelligence_stats))
 }
 
-/// Documents of a project, without their markdown bodies.
+/// Documents of a project, newest first, without their markdown bodies.
 #[utoipa::path(
     get,
     path = "/projects/{id}/documents",
     tag = "documents",
-    params(("id" = String, Path, description = "Project id")),
+    params(("id" = String, Path, description = "Project id"), PageQuery),
     responses((status = 200, body = Vec<Document>), ErrorResponses),
 )]
 async fn list_documents(
     state: Scoped,
     ApiPath(id): ApiPath<String>,
+    ApiQuery(page): ApiQuery<PageQuery>,
 ) -> ApiResult<Json<Vec<Document>>> {
     let response = state
         .intelligence()
-        .list_documents(proto::ListDocumentsRequest { project_id: id })
+        .list_documents(proto::ListDocumentsRequest {
+            project_id: id,
+            limit: page.limit.unwrap_or(0),
+            before: page.before.map(sdi_common::time::to_proto),
+        })
         .await?
         .into_inner();
     Ok(Json(map_all(response.documents)))

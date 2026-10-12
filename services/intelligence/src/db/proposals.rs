@@ -86,18 +86,25 @@ const LIST_COLUMNS: &str = "id, workspace_id, project_id, kind, status, title, s
     COALESCE((SELECT jsonb_agg(o - 'artifacts' ORDER BY ord) FROM jsonb_array_elements(options) WITH ORDINALITY AS t(o, ord)), '[]'::jsonb) AS options, \
     constraints, weights, revision, reasoner, created_at, updated_at";
 
-/// Empty `project_id` lists every project of the workspace. Artifacts are left out.
+/// Empty `project_id` lists every project of the workspace, newest first,
+/// at most `limit` rows created strictly before `before` (CONTRACT.md §21).
+/// Artifacts are left out.
 pub async fn list(
     pool: &PgPool,
     workspace_id: Uuid,
     project_id: &str,
+    limit: i64,
+    before: Option<DateTime<Utc>>,
 ) -> sqlx::Result<Vec<ProposalRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {LIST_COLUMNS} FROM proposals WHERE workspace_id = $1 AND ($2 = '' OR project_id = $2) \
-         ORDER BY created_at DESC"
+           AND ($3::timestamptz IS NULL OR created_at < $3) \
+         ORDER BY created_at DESC LIMIT $4"
     )))
     .bind(workspace_id)
     .bind(project_id)
+    .bind(before)
+    .bind(limit)
     .fetch_all(pool)
     .await
 }

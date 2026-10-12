@@ -3,8 +3,8 @@ import { FolderGitIcon, PlusIcon } from 'lucide-react'
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel, PanelEmpty } from '@/components/system/panel'
 import { Button } from '@/components/ui/button'
 
 import { projectQueries } from '../api/queries'
@@ -16,12 +16,12 @@ function ProjectsPanel() {
 
   if (projects.length === 0) {
     return (
-      <EmptyState
+      <PanelEmpty
         icon={FolderGitIcon}
         title="No repositories connected"
         description="Connect one of your GitHub repositories and the platform scans it, reads the facts and asks only what it cannot know."
         action={
-          <Button asChild variant="outline">
+          <Button asChild variant="outline" size="sm">
             <Link to={routes.connect()}>
               <PlusIcon data-icon="inline-start" />
               Connect repository
@@ -50,9 +50,9 @@ export default function ProjectsPage() {
           </Button>
         }
       />
-      <QueryBoundary fallback={<ProjectsTableSkeleton />}>
+      <Panel title="Connected repositories" padding="none" skeleton={<ProjectsTableSkeleton />}>
         <ProjectsPanel />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

@@ -10,6 +10,8 @@ mod diagrams;
 mod documents;
 mod negotiation;
 mod proposals;
+mod review_runner;
+mod reviews;
 mod settings;
 mod stats;
 #[cfg(test)]
@@ -27,17 +29,19 @@ use sdi_proto::{
     common::v1::{PlatformEvent, WatchEventsRequest},
     identity::v1::{AuditEntry, ReasonerKey},
     intelligence::v1::{
-        AcceptProposalRequest, CreateDecisionRequest, Decision, DeleteDiagramRequest,
-        DeleteDiagramResponse, DeleteWorkspaceDataRequest, DeleteWorkspaceDataResponse, Diagram,
-        Document, ExportWorkspaceDataRequest, GenerateDiagramRequest, GenerateDocumentRequest,
-        GenerateProposalRequest, GetDiagramRequest, GetDocumentRequest,
-        GetIntelligenceStatsRequest, GetProposalRequest, GetSettingsRequest, IntelligenceSettings,
-        IntelligenceStats, ListDecisionsRequest, ListDecisionsResponse, ListDiagramsRequest,
-        ListDiagramsResponse, ListDocumentsRequest, ListDocumentsResponse, ListMessagesRequest,
-        ListMessagesResponse, ListProposalsRequest, ListProposalsResponse, NegotiateRequest,
-        NegotiateResponse, Proposal, RejectProposalRequest, SupersedeDecisionRequest,
-        UpdateDiagramRequest, UpdateSettingsRequest, WorkspaceDataRecord,
-        intelligence_service_server::IntelligenceService,
+        AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, Decision,
+        DeleteDiagramRequest, DeleteDiagramResponse, DeleteWorkspaceDataRequest,
+        DeleteWorkspaceDataResponse, Diagram, Document, ExportWorkspaceDataRequest, Finding,
+        GenerateDiagramRequest, GenerateDocumentRequest, GenerateProposalRequest,
+        GetDiagramRequest, GetDocumentRequest, GetIntelligenceStatsRequest, GetProposalRequest,
+        GetReviewRequest, GetSettingsRequest, IntelligenceSettings, IntelligenceStats,
+        ListDecisionsRequest, ListDecisionsResponse, ListDiagramsRequest, ListDiagramsResponse,
+        ListDocumentsRequest, ListDocumentsResponse, ListMessagesRequest, ListMessagesResponse,
+        ListProposalsRequest, ListProposalsResponse, ListReviewActivityRequest,
+        ListReviewActivityResponse, ListReviewsRequest, ListReviewsResponse, NegotiateRequest,
+        NegotiateResponse, Proposal, PublishReviewRequest, RejectProposalRequest, Review,
+        StartReviewRequest, SupersedeDecisionRequest, UpdateDiagramRequest, UpdateSettingsRequest,
+        WorkspaceDataRecord, intelligence_service_server::IntelligenceService,
     },
 };
 use sqlx::PgPool;
@@ -49,6 +53,7 @@ use crate::{
     db::settings::SettingsRow,
     events::EventBus,
     gateway::{ExecutionGateway, IdentityGateway, KnowledgeGateway},
+    github::{GithubPublisher, GithubTokens},
     reasoner::{ClaudeReasoner, HeuristicReasoner, Reasoner},
 };
 
@@ -121,6 +126,9 @@ pub struct IntelligenceGrpc {
     identity: Arc<dyn IdentityGateway>,
     reasoner: ReasonerConfig,
     events: EventBus,
+    /// GitHub access per workspace for `PublishReview` (CONTRACT.md §20).
+    github_tokens: Arc<GithubTokens>,
+    publisher: Arc<GithubPublisher>,
 }
 
 impl IntelligenceGrpc {
@@ -138,7 +146,16 @@ impl IntelligenceGrpc {
             identity,
             reasoner,
             events: EventBus::new(),
+            github_tokens: Arc::new(GithubTokens::new(None)),
+            publisher: Arc::new(GithubPublisher::new()),
         }
+    }
+
+    /// `GITHUB_TOKEN`: used to publish reviews only while identity cannot
+    /// be reached (dev mode), like the knowledge service does.
+    pub fn with_github_dev_token(mut self, token: Option<String>) -> Self {
+        self.github_tokens = Arc::new(GithubTokens::new(token));
+        self
     }
 
     /// Stored settings of the workspace, or the defaults when the row is missing.
@@ -245,6 +262,24 @@ impl IntelligenceGrpc {
             },
         );
     }
+}
+
+/// Page size of every list RPC (CONTRACT.md §21): 50 unless asked, never
+/// more than `MAX_PAGE`.
+pub(crate) const DEFAULT_PAGE: i64 = 50;
+pub(crate) const MAX_PAGE: i64 = 200;
+
+pub(crate) fn page_limit(raw: u32) -> i64 {
+    if raw == 0 {
+        DEFAULT_PAGE
+    } else {
+        i64::from(raw).min(MAX_PAGE)
+    }
+}
+
+/// The `before` cursor of a list RPC, when set.
+pub(crate) fn before(raw: Option<&prost_types::Timestamp>) -> Option<chrono::DateTime<Utc>> {
+    sdi_common::time::opt_from_proto(raw)
 }
 
 /// Our own ids are uuids; a malformed one is a bad request, not a miss.
@@ -457,6 +492,66 @@ impl IntelligenceService for IntelligenceGrpc {
     ) -> Result<Response<DeleteDiagramResponse>, Status> {
         let caller = caller(&request, Role::Member)?;
         diagrams::delete(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn start_review(
+        &self,
+        request: Request<StartReviewRequest>,
+    ) -> Result<Response<Review>, Status> {
+        let caller = caller(&request, Role::Member)?;
+        reviews::start(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_reviews(
+        &self,
+        request: Request<ListReviewsRequest>,
+    ) -> Result<Response<ListReviewsResponse>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        reviews::list(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_review(
+        &self,
+        request: Request<GetReviewRequest>,
+    ) -> Result<Response<Review>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        reviews::get(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn decide_finding(
+        &self,
+        request: Request<DecideFindingRequest>,
+    ) -> Result<Response<Finding>, Status> {
+        let caller = caller(&request, Role::Member)?;
+        reviews::decide_finding(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn publish_review(
+        &self,
+        request: Request<PublishReviewRequest>,
+    ) -> Result<Response<Review>, Status> {
+        let caller = caller(&request, Role::Approver)?;
+        reviews::publish(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_review_activity(
+        &self,
+        request: Request<ListReviewActivityRequest>,
+    ) -> Result<Response<ListReviewActivityResponse>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        reviews::list_activity(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

@@ -43,12 +43,12 @@ export function CommandMenu() {
       <Button
         variant="outline"
         size="sm"
-        className="hidden h-7 w-44 justify-start gap-2 text-muted-foreground md:inline-flex"
+        className="hidden h-7 w-48 justify-start gap-2 border-border bg-muted/40 font-normal text-muted-foreground shadow-none hover:bg-muted md:inline-flex"
         onClick={() => setOpen(true)}
       >
         <SearchIcon data-icon="inline-start" />
-        <span className="flex-1 text-left text-xs">Go to…</span>
-        <Kbd>⌘K</Kbd>
+        <span className="flex-1 text-left text-xs">Search pages…</span>
+        <Kbd className="text-2xs">⌘K</Kbd>
       </Button>
       <Button
         variant="ghost"

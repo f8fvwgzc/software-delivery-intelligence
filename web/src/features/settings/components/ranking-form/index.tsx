@@ -3,6 +3,7 @@ import { useId, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 
@@ -24,6 +25,7 @@ interface Draft {
   reasoner: string
   model: string
   costCeilingUsd: string
+  autoReview: boolean
 }
 
 function toDraft(settings: IntelligenceSettings): Draft {
@@ -36,6 +38,7 @@ function toDraft(settings: IntelligenceSettings): Draft {
     reasoner: settings.reasoner,
     model: settings.model,
     costCeilingUsd: String(settings.costCeilingUsd),
+    autoReview: settings.autoReview,
   }
 }
 
@@ -68,12 +71,13 @@ function toPatch(draft: Draft, settings: IntelligenceSettings): IntelligenceSett
   if (draft.reasoner !== settings.reasoner) patch.reasoner = draft.reasoner
   if (model !== settings.model) patch.model = model
   if (cost !== settings.costCeilingUsd) patch.costCeilingUsd = cost
+  if (draft.autoReview !== settings.autoReview) patch.autoReview = draft.autoReview
   return patch
 }
 
 const REASONER_LABEL: Record<Reasoner, string> = { heuristic: 'Heuristic', claude: 'Claude' }
 
-/** Ranking defaults of the intelligence service: the seven weights, the reasoner, its model and the cost ceiling. */
+/** Ranking defaults of the intelligence service: the seven weights, the reasoner, its model, the cost ceiling and auto review. */
 export function RankingForm({ settings }: { settings: IntelligenceSettings }) {
   const id = useId()
   const [draft, setDraft] = useState<Draft>(() => toDraft(settings))
@@ -201,6 +205,20 @@ export function RankingForm({ settings }: { settings: IntelligenceSettings }) {
             <FieldDescription className="text-xs">USD per month. Options above it lose ranking unless a budget says otherwise.</FieldDescription>
           </Field>
         </div>
+
+        <Field orientation="horizontal">
+          <Switch
+            id={`${id}-auto-review`}
+            checked={draft.autoReview}
+            onCheckedChange={(checked) => setDraft((current) => ({ ...current, autoReview: checked }))}
+          />
+          <div className="flex flex-col gap-0.5">
+            <FieldLabel htmlFor={`${id}-auto-review`} className="font-normal">
+              Auto review pull requests
+            </FieldLabel>
+            <FieldDescription className="text-xs">Starts a review when a PR is opened or pushed; never publishes.</FieldDescription>
+          </div>
+        </Field>
       </FieldGroup>
 
       <div className="flex items-center justify-end gap-3">

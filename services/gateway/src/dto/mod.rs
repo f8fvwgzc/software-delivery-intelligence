@@ -13,6 +13,7 @@ pub mod github;
 pub mod identity;
 pub mod intelligence;
 pub mod knowledge;
+pub mod reviews;
 pub mod settings;
 pub mod system;
 

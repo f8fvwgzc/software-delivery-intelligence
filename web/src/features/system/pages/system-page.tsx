@@ -1,7 +1,7 @@
 import { usePrefetchQuery, useSuspenseQuery } from '@tanstack/react-query'
 
-import { QueryBoundary } from '@/components/shared/feedback'
-import { Page, PageHeader, Section } from '@/components/shared/page'
+import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 import { githubQueries } from '@/features/github/api/queries'
 
 import { systemQueries } from '../api/queries'
@@ -65,42 +65,35 @@ export default function SystemPage() {
         actions={<RefreshButton />}
       />
 
-      <Section title="Services" description="gRPC health checks run by the gateway, with the round trip of each.">
-        <QueryBoundary fallback={<ServiceTableSkeleton />}>
-          <ServicesPanel />
-        </QueryBoundary>
-      </Section>
+      <Panel
+        title="Services"
+        description="gRPC health checks run by the gateway, with the round trip of each."
+        padding="none"
+        skeleton={<ServiceTableSkeleton />}
+      >
+        <ServicesPanel />
+      </Panel>
 
-      <div className="grid gap-x-10 gap-y-6 lg:grid-cols-2">
-        <div className="flex flex-col gap-6">
-          <Section title="Gateway">
-            <QueryBoundary fallback={<KeyValueSkeleton rows={4} />}>
-              <GatewayPanel />
-            </QueryBoundary>
-          </Section>
-          <Section title="GitHub account" description="The account behind the configured token.">
-            <QueryBoundary fallback={<KeyValueSkeleton rows={5} />}>
-              <GithubPanel />
-            </QueryBoundary>
-          </Section>
-          <Section title="Delivery" description="Execution counters across every project.">
-            <QueryBoundary fallback={<KeyValueSkeleton rows={10} />}>
-              <DeliveryPanel />
-            </QueryBoundary>
-          </Section>
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="flex flex-col gap-4">
+          <Panel title="Gateway" skeleton={<KeyValueSkeleton rows={4} />}>
+            <GatewayPanel />
+          </Panel>
+          <Panel title="GitHub account" description="The account behind the configured token." skeleton={<KeyValueSkeleton rows={5} />}>
+            <GithubPanel />
+          </Panel>
+          <Panel title="Delivery" description="Execution counters across every project." skeleton={<KeyValueSkeleton rows={10} />}>
+            <DeliveryPanel />
+          </Panel>
         </div>
 
-        <div className="flex flex-col gap-6">
-          <Section title="Knowledge store" description="Facts, graph and semantic index.">
-            <QueryBoundary fallback={<KeyValueSkeleton rows={7} />}>
-              <KnowledgePanel />
-            </QueryBoundary>
-          </Section>
-          <Section title="Intelligence store" description="Proposals, decisions and documents.">
-            <QueryBoundary fallback={<KeyValueSkeleton rows={6} />}>
-              <IntelligencePanel />
-            </QueryBoundary>
-          </Section>
+        <div className="flex flex-col gap-4">
+          <Panel title="Knowledge store" description="Facts, graph and semantic index." skeleton={<KeyValueSkeleton rows={7} />}>
+            <KnowledgePanel />
+          </Panel>
+          <Panel title="Intelligence store" description="Proposals, decisions and documents." skeleton={<KeyValueSkeleton rows={6} />}>
+            <IntelligencePanel />
+          </Panel>
         </div>
       </div>
     </Page>

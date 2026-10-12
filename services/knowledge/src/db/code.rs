@@ -234,7 +234,12 @@ pub async fn purge(
     .execute(&mut *conn)
     .await?
     .rows_affected();
-    Ok(Purged { files, trees })
+    // Pull request diffs are code too (CONTRACT.md §20); they count as files.
+    let diffs = super::pull_requests::purge(conn, workspace_id, project_id).await?;
+    Ok(Purged {
+        files: files + diffs,
+        trees,
+    })
 }
 
 /// Deletes every expired file row of every workspace; the background

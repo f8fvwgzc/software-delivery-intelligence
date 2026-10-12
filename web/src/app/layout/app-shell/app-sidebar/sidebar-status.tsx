@@ -36,7 +36,7 @@ export function SidebarStatus() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <SidebarMenuButton asChild size="sm" tooltip={tooltip}>
+        <SidebarMenuButton asChild size="sm" tooltip={tooltip} className="h-8 rounded-md px-2.5 text-xs text-muted-foreground hover:text-foreground">
           <Link to={routes.system()} aria-label={`${health.label}. ${liveLabel}. Open system page`}>
             <span className="flex size-4 shrink-0 items-center justify-center">
               <span aria-hidden className={cn('size-1.5 rounded-full', DOT_CLASS[health.tone])} />

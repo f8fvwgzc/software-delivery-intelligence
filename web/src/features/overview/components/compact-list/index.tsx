@@ -2,10 +2,9 @@ import { ArrowRightIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
-import { Section } from '@/components/shared/page'
-import { Button } from '@/components/ui/button'
+import { Frame } from '@/components/system/frame'
+import { Row, RowList, type RowProps } from '@/components/system/row'
 import { Skeleton } from '@/components/ui/skeleton'
-import { cn } from '@/lib/utils'
 
 interface CompactListProps {
   title: ReactNode
@@ -15,62 +14,44 @@ interface CompactListProps {
   children?: ReactNode
 }
 
-/** A titled list of 5-ish rows with a "view all" link: a panel, not a card grid. */
+/** A framed list of 5-ish rows with a "view all" link: a panel, not a card grid. */
 export function CompactList({ title, viewAll, empty, children }: CompactListProps) {
   return (
-    <Section
+    <Frame
       title={title}
+      padding="none"
       actions={
-        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-          <Link to={viewAll.to}>
-            {viewAll.label}
-            <ArrowRightIcon data-icon="inline-end" />
-          </Link>
-        </Button>
+        <Link
+          to={viewAll.to}
+          className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          {viewAll.label}
+          <ArrowRightIcon className="size-3" aria-hidden />
+        </Link>
       }
     >
-      {empty ?? <ul className="divide-y divide-border/60 overflow-hidden rounded-lg ring-1 ring-border">{children}</ul>}
-    </Section>
+      {empty ?? <RowList stagger>{children}</RowList>}
+    </Frame>
   )
 }
 
-interface CompactListRowProps {
-  to: string
-  leading?: ReactNode
-  title: ReactNode
-  meta?: ReactNode
-  trailing?: ReactNode
-  className?: string
-}
+type CompactListRowProps = Pick<RowProps, 'to' | 'leading' | 'title' | 'meta' | 'trailing' | 'className'>
 
-export function CompactListRow({ to, leading, title, meta, trailing, className }: CompactListRowProps) {
+export function CompactListRow(props: CompactListRowProps) {
   return (
     <li>
-      <Link
-        to={to}
-        className={cn(
-          'flex min-h-10 items-center gap-3 px-3 py-1.5 text-sm transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset',
-          className,
-        )}
-      >
-        {leading}
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate">{title}</span>
-          {meta ? <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">{meta}</span> : null}
-        </span>
-        {trailing ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{trailing}</span> : null}
-      </Link>
+      <Row size="md" {...props} />
     </li>
   )
 }
 
-/** Same section chrome and five row-shaped lines. */
+/** Same frame chrome and five row-shaped lines. */
 export function CompactListSkeleton({ title, rows = 5 }: { title: ReactNode; rows?: number }) {
   return (
-    <Section title={title} actions={<Skeleton className="h-6 w-16" />}>
-      <div className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-lg ring-1 ring-border">
+    <Frame title={title} padding="none" actions={<Skeleton className="h-5 w-16" />}>
+      <div className="flex flex-col divide-y divide-border">
         {Array.from({ length: rows }, (_, index) => (
-          <div key={index} className="flex h-10 items-center gap-3 px-3">
+          <div key={index} className="flex h-11 items-center gap-3 px-3">
             <Skeleton className="size-1.5 rounded-full" />
             <div className="flex flex-1 flex-col gap-1.5">
               <Skeleton className="h-3.5 w-48 max-w-full" />
@@ -80,6 +61,6 @@ export function CompactListSkeleton({ title, rows = 5 }: { title: ReactNode; row
           </div>
         ))}
       </div>
-    </Section>
+    </Frame>
   )
 }

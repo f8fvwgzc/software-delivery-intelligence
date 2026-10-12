@@ -2,8 +2,10 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { PackageIcon } from 'lucide-react'
 import { useParams } from 'react-router'
 
-import { EmptyState, QueryBoundary } from '@/components/shared/feedback'
+import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
+import { PanelEmpty } from '@/components/system/panel'
 
 import { dependencyQueries } from '../api/queries'
 import { DependabotStatus } from '../components/dependabot-status'
@@ -16,11 +18,13 @@ function DependenciesPanel({ projectId }: { projectId: string }) {
   if (data.dependencies.length === 0) {
     return (
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <EmptyState
-          icon={PackageIcon}
-          title="No dependencies recorded"
-          description="Either the repository declares none in a manifest the scan recognises, or it has not been scanned yet."
-        />
+        <Frame title="Dependencies">
+          <PanelEmpty
+            icon={PackageIcon}
+            title="No dependencies recorded"
+            description="Either the repository declares none in a manifest the scan recognises, or it has not been scanned yet."
+          />
+        </Frame>
         <DependabotStatus status={data.dependabot} />
       </div>
     )

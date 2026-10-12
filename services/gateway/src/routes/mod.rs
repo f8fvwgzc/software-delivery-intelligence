@@ -20,6 +20,7 @@ pub mod knowledge;
 pub mod policies;
 pub mod projects;
 pub mod proposals;
+pub mod reviews;
 pub mod settings;
 pub mod system;
 pub mod webhooks;
@@ -43,6 +44,7 @@ pub fn rest() -> OpenApiRouter<AppState> {
         .merge(decisions::router())
         .merge(documents::router())
         .merge(diagrams::router())
+        .merge(reviews::router())
         .merge(executions::router())
         .merge(approvals::router())
         .merge(policies::router())

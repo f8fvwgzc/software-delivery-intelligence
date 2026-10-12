@@ -1,5 +1,5 @@
-import { QueryBoundary } from '@/components/shared/feedback'
 import { Page, PageHeader } from '@/components/shared/page'
+import { Panel } from '@/components/system/panel'
 
 import { NewProposalDialog } from '../components/new-proposal-dialog'
 import { ProposalsList } from '../components/proposals-list'
@@ -14,9 +14,9 @@ export default function ProposalsPage() {
         description="Ranked, evidence-backed options the platform has proposed. Negotiate, then accept one into an execution."
         actions={<NewProposalDialog />}
       />
-      <QueryBoundary fallback={<ProposalsTableSkeleton />}>
+      <Panel title="All proposals" padding="none" skeleton={<ProposalsTableSkeleton />}>
         <ProposalsList emptyAction={<NewProposalDialog />} />
-      </QueryBoundary>
+      </Panel>
     </Page>
   )
 }

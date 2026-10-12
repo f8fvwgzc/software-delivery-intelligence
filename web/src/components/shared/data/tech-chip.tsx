@@ -1,4 +1,4 @@
-import { Badge } from '@/components/ui/badge'
+import { Tag } from '@/components/system/tag'
 import { cn } from '@/lib/utils'
 
 interface TechChipProps {
@@ -6,16 +6,12 @@ interface TechChipProps {
   className?: string
 }
 
-/** Small neutral chip for a technology name. */
+/** Small neutral tag for a technology name. */
 export function TechChip({ children, className }: TechChipProps) {
-  return (
-    <Badge variant="secondary" className={cn('h-5 px-1.5 text-2xs font-normal', className)}>
-      {children}
-    </Badge>
-  )
+  return <Tag className={className}>{children}</Tag>
 }
 
-/** A wrapping row of chips, with a "+N" overflow. */
+/** A wrapping row of tags, with a "+N" overflow. */
 export function TechChips({ items, max = 6, className }: { items: string[]; max?: number; className?: string }) {
   const visible = items.slice(0, max)
   const hidden = items.length - visible.length

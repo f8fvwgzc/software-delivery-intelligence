@@ -2,11 +2,11 @@ import { LightbulbIcon } from 'lucide-react'
 
 import { routes } from '@/app/router/routes'
 import { RelativeTime } from '@/components/shared/data'
-import { EmptyState } from '@/components/shared/feedback'
-import { cn } from '@/lib/utils'
+import { PanelEmpty } from '@/components/system/panel'
+import { TagDot } from '@/components/system/tag'
 
 import type { Proposal } from '../../api/types'
-import { DOT_CLASS, PROPOSAL_KIND_LABEL, PROPOSAL_STATUS } from '../../lib/labels'
+import { PROPOSAL_KIND_LABEL, PROPOSAL_STATUS } from '../../lib/labels'
 import { CompactList, CompactListRow } from '../compact-list'
 
 interface RecentProposalsProps {
@@ -22,11 +22,10 @@ export function RecentProposals({ proposals, projectNames }: RecentProposalsProp
       viewAll={{ to: routes.proposals(), label: 'All proposals' }}
       empty={
         proposals.length === 0 ? (
-          <EmptyState
+          <PanelEmpty
             icon={LightbulbIcon}
             title="No proposals yet"
             description="Open a project and ask for a proposal once its first scan is done."
-            className="py-6"
           />
         ) : undefined
       }
@@ -37,7 +36,7 @@ export function RecentProposals({ proposals, projectNames }: RecentProposalsProp
           <CompactListRow
             key={proposal.id}
             to={routes.proposal(proposal.id)}
-            leading={<span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', DOT_CLASS[status.tone])} />}
+            leading={<TagDot tone={status.tone} />}
             title={proposal.title}
             meta={
               <span className="truncate">
@@ -45,7 +44,7 @@ export function RecentProposals({ proposals, projectNames }: RecentProposalsProp
                 {status.label}
               </span>
             }
-            trailing={<RelativeTime value={proposal.updatedAt} />}
+            trailing={<RelativeTime value={proposal.updatedAt} className="font-mono tabular-nums" />}
           />
         )
       })}

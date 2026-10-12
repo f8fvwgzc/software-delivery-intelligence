@@ -29,6 +29,8 @@ pub struct User {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Actor {
     pub login: String,
+    #[serde(default)]
+    pub avatar_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -194,8 +196,82 @@ pub struct DeploymentStatus {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A branch end of a pull request.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PullRef {
+    #[serde(default, rename = "ref")]
+    pub reference: String,
+    #[serde(default)]
+    pub sha: String,
+}
+
+/// `/pulls` and `/pulls/{n}`: the list omits `changed_files`, `additions`
+/// and `deletions` (they are zero until the single-PR call fills them).
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Pull {
     #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
     pub user: Option<Actor>,
+    /// "open" | "closed"
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub merged_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub base: Option<PullRef>,
+    #[serde(default)]
+    pub head: Option<PullRef>,
+    #[serde(default)]
+    pub changed_files: u32,
+    #[serde(default)]
+    pub additions: u32,
+    #[serde(default)]
+    pub deletions: u32,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl Pull {
+    /// The four states the platform shows: a draft is "draft", a merged PR
+    /// "merged", a closed unmerged one "closed", anything else "open".
+    pub fn platform_state(&self) -> &'static str {
+        if self.merged_at.is_some() {
+            "merged"
+        } else if self.state == "closed" {
+            "closed"
+        } else if self.draft {
+            "draft"
+        } else {
+            "open"
+        }
+    }
+}
+
+/// `/pulls/{n}/files`: `patch` is absent for binary files and for diffs
+/// GitHub considers too large.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PullFile {
+    pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+    /// "added" | "removed" | "modified" | "renamed" | "copied" | "changed" | "unchanged"
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub additions: u32,
+    #[serde(default)]
+    pub deletions: u32,
+    #[serde(default)]
+    pub patch: Option<String>,
 }

@@ -8,15 +8,22 @@ use sdi_proto::{
         Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Diagram,
         DiagramEdge as ProtoDiagramEdge, DiagramGroup as ProtoDiagramGroup, DiagramKind,
         DiagramNode as ProtoDiagramNode, DiagramSpec as ProtoDiagramSpec, Document, DocumentKind,
-        Evidence, EvidenceKind as ProtoEvidenceKind, IntelligenceSettings, Message, MessageRole,
-        Proposal, ProposalKind, ProposalOption, ProposalStatus, ScoreBreakdown, ScoreWeights,
+        Evidence, EvidenceKind as ProtoEvidenceKind, Finding, FindingDecision, FindingSeverity,
+        IntelligenceSettings, Message, MessageRole, Proposal, ProposalKind, ProposalOption,
+        ProposalStatus, Review, ReviewActivity, ReviewStatus, ReviewStep, ScoreBreakdown,
+        ScoreWeights,
     },
 };
 
 use crate::{
     db::{
-        decisions::DecisionRow, diagrams::DiagramRow, documents::DocumentRow, messages::MessageRow,
-        proposals::ProposalRow, settings::SettingsRow,
+        decisions::DecisionRow,
+        diagrams::DiagramRow,
+        documents::DocumentRow,
+        messages::MessageRow,
+        proposals::ProposalRow,
+        reviews::{ActivityRow, FindingRow, ReviewRow},
+        settings::SettingsRow,
     },
     domain::{
         diagrams::model::{DiagramEdge, DiagramGroup, DiagramNode, DiagramSpec},
@@ -197,6 +204,7 @@ pub fn settings(
         model: effective_model,
         api_key_configured,
         cost_ceiling_usd: row.cost_ceiling_usd,
+        auto_review: row.auto_review,
     }
 }
 
@@ -405,6 +413,110 @@ pub fn diagram(row: &DiagramRow) -> Diagram {
         reasoner: row.reasoner.clone(),
         created_at: Some(time::to_proto(row.created_at)),
         updated_at: Some(time::to_proto(row.updated_at)),
+    }
+}
+
+// --- Code review (CONTRACT.md §20) ----------------------------------------
+
+pub fn review_status_from_str(value: &str) -> ReviewStatus {
+    match value {
+        "context" => ReviewStatus::Context,
+        "analyzing" => ReviewStatus::Analyzing,
+        "proposed" => ReviewStatus::Proposed,
+        "published" => ReviewStatus::Published,
+        "failed" => ReviewStatus::Failed,
+        _ => ReviewStatus::Unspecified,
+    }
+}
+
+pub fn severity_from_str(value: &str) -> FindingSeverity {
+    match value {
+        "info" => FindingSeverity::Info,
+        "low" => FindingSeverity::Low,
+        "medium" => FindingSeverity::Medium,
+        "high" => FindingSeverity::High,
+        "critical" => FindingSeverity::Critical,
+        _ => FindingSeverity::Unspecified,
+    }
+}
+
+pub fn decision_from_str(value: &str) -> FindingDecision {
+    match value {
+        "pending" => FindingDecision::Pending,
+        "accepted" => FindingDecision::Accepted,
+        "dismissed" => FindingDecision::Dismissed,
+        _ => FindingDecision::Unspecified,
+    }
+}
+
+pub fn finding(row: &FindingRow) -> Finding {
+    Finding {
+        id: row.id.to_string(),
+        review_id: row.review_id.to_string(),
+        category: row.category.clone(),
+        severity: severity_from_str(&row.severity) as i32,
+        title: row.title.clone(),
+        detail: row.detail.clone(),
+        path: row.path.clone(),
+        line: row.line.max(0) as u32,
+        end_line: row.end_line.max(0) as u32,
+        suggestion: row.suggestion.clone(),
+        rule: row.rule.clone(),
+        decision: decision_from_str(&row.decision) as i32,
+        decision_note: row.decision_note.clone(),
+        decided_by: row.decided_by.clone(),
+        decided_at: time::opt_to_proto(row.decided_at),
+    }
+}
+
+/// `findings` is empty for list responses (summary omitted there too).
+pub fn review(row: &ReviewRow, findings: &[FindingRow]) -> Review {
+    Review {
+        id: row.id.to_string(),
+        project_id: row.project_id.clone(),
+        project_name: row.project_name.clone(),
+        pr_number: row.pr_number.max(0) as u64,
+        pr_title: row.pr_title.clone(),
+        pr_author: row.pr_author.clone(),
+        head_sha: row.head_sha.clone(),
+        status: review_status_from_str(&row.status) as i32,
+        steps: row
+            .steps
+            .0
+            .iter()
+            .map(|s| ReviewStep {
+                key: s.key.clone(),
+                label: s.label.clone(),
+                status: s.status.clone(),
+                detail: s.detail.clone(),
+                duration_ms: s.duration_ms,
+            })
+            .collect(),
+        summary: row.summary.clone(),
+        findings: findings.iter().map(finding).collect(),
+        files_reviewed: row.files_reviewed.max(0) as u32,
+        findings_total: row.findings_total.max(0) as u32,
+        findings_accepted: row.findings_accepted.max(0) as u32,
+        reasoner: row.reasoner.clone(),
+        published_url: row.published_url.clone(),
+        error: row.error.clone(),
+        requested_by: row.requested_by.clone(),
+        created_at: Some(time::to_proto(row.created_at)),
+        updated_at: Some(time::to_proto(row.updated_at)),
+    }
+}
+
+pub fn review_activity(row: &ActivityRow) -> ReviewActivity {
+    ReviewActivity {
+        id: row.id.to_string(),
+        review_id: row.review_id.to_string(),
+        project_id: row.project_id.clone(),
+        project_name: row.project_name.clone(),
+        pr_number: row.pr_number.max(0) as u64,
+        action: row.action.clone(),
+        actor: row.actor.clone(),
+        detail: row.detail.clone(),
+        at: Some(time::to_proto(row.at)),
     }
 }
 

@@ -4,6 +4,8 @@ import {
   BoxesIcon,
   CheckSquareIcon,
   DatabaseIcon,
+  GitPullRequestIcon,
+  HistoryIcon,
   FolderGitIcon,
   LayoutDashboardIcon,
   LightbulbIcon,
@@ -51,6 +53,8 @@ export const navigation: NavGroup[] = [
       { label: 'Proposals', to: routes.proposals(), icon: LightbulbIcon, prefix: true },
       { label: 'Executions', to: routes.executions(), icon: ActivityIcon, prefix: true },
       { label: 'Approvals', to: routes.approvals(), icon: CheckSquareIcon },
+      { label: 'Reviews', to: routes.reviews(), icon: GitPullRequestIcon, prefix: true },
+      { label: 'Activity', to: routes.activity(), icon: HistoryIcon },
     ],
   },
   {

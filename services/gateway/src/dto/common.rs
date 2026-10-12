@@ -11,6 +11,18 @@ use utoipa::ToSchema;
 
 use super::{opt_string, proto_enum, timestamp};
 
+/// Paging of a time-ordered list (CONTRACT.md §21): `limit` (default 50)
+/// and a `before` cursor.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct PageQuery {
+    /// Page size, newest first (default 50, max 200).
+    pub limit: Option<u32>,
+    /// Cursor: items created strictly before this time.
+    pub before: Option<DateTime<Utc>>,
+}
+
 proto_enum! {
     /// How much damage an action can do. Drives the approval policy.
     RiskLevel => proto::RiskLevel { Safe, Medium, High, Blocked }

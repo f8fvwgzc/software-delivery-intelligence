@@ -10,7 +10,9 @@ use uuid::Uuid;
 /// Every tenant table, children before parents so a delete can count each
 /// one instead of relying on the cascade. `patterns` holds only the
 /// workspace's learned rows (the catalog has no workspace).
-pub const TENANT_TABLES: [&str; 21] = [
+pub const TENANT_TABLES: [&str; 23] = [
+    "pull_request_files",
+    "pull_requests",
     "repo_files",
     "repo_trees",
     "chunks",

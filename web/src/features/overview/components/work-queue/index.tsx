@@ -1,8 +1,8 @@
 import { InboxIcon } from 'lucide-react'
 import { useState } from 'react'
 
-import { EmptyState } from '@/components/shared/feedback'
-import { Section } from '@/components/shared/page'
+import { Frame } from '@/components/system/frame'
+import { PanelEmpty } from '@/components/system/panel'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
@@ -26,19 +26,20 @@ export function WorkQueue({ rows }: { rows: QueueRowData[] }) {
   const visible = filter === 'all' ? rows : rows.filter((row) => row.kind === filter)
 
   return (
-    <Section
+    <Frame
       title="Work queue"
       description="Oldest first. Paused executions, approvals and open questions."
       actions={rows.length > 0 ? <QueueFilterGroup value={filter} counts={counts} onChange={setFilter} /> : null}
+      padding="none"
     >
       {rows.length === 0 ? (
-        <EmptyState
+        <PanelEmpty
           icon={InboxIcon}
           title="Nothing is waiting on you"
           description="Approvals, paused executions and open questions show up here the moment they need a decision."
         />
       ) : visible.length === 0 ? (
-        <EmptyState
+        <PanelEmpty
           title={`No ${QUEUE_KIND[filter as Exclude<QueueFilter, 'all'>].label.toLowerCase()} rows`}
           description="The other kinds still need you."
           action={
@@ -48,7 +49,7 @@ export function WorkQueue({ rows }: { rows: QueueRowData[] }) {
           }
         />
       ) : (
-        <div className="overflow-hidden rounded-lg ring-1 ring-border">
+        <div>
           <Table onKeyDown={handleRowNavigation}>
             <TableHeader>
               <TableRow className="bg-muted/30 hover:bg-muted/30">
@@ -69,6 +70,6 @@ export function WorkQueue({ rows }: { rows: QueueRowData[] }) {
           </Table>
         </div>
       )}
-    </Section>
+    </Frame>
   )
 }

@@ -18,6 +18,7 @@ export const routes = {
   projectDocuments: (projectId: string) => `/projects/${projectId}/documents`,
   projectExecutions: (projectId: string) => `/projects/${projectId}/executions`,
   projectDiagrams: (projectId: string) => `/projects/${projectId}/diagrams`,
+  projectPullRequests: (projectId: string) => `/projects/${projectId}/pull-requests`,
 
   diagram: (diagramId: string) => `/diagrams/${diagramId}`,
 
@@ -27,6 +28,10 @@ export const routes = {
   executions: () => '/executions',
   execution: (executionId: string) => `/executions/${executionId}`,
   approvals: () => '/approvals',
+
+  reviews: () => '/reviews',
+  review: (reviewId: string) => `/reviews/${reviewId}`,
+  activity: () => '/activity',
 
   patterns: () => '/knowledge/patterns',
   decisions: () => '/knowledge/decisions',

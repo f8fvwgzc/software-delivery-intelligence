@@ -23,7 +23,23 @@ pub trait Reasoner: Send + Sync {
     async fn refine_diagram(&self, _request: &diagrams::RefineRequest) -> Option<String> {
         None
     }
+
+    /// Rewrites the templated review walkthrough (CONTRACT.md §20) from
+    /// the structured context only: file paths, counters, findings and
+    /// impacted components, never diff lines. The heuristic keeps the draft.
+    async fn write_review_summary(&self, draft: &str, _context: &serde_json::Value) -> String {
+        draft.to_owned()
+    }
 }
+
+/// The system prompt of the review rewrite; public so a test can pin it.
+pub const REVIEW_SYSTEM_PROMPT: &str = "You rewrite a templated pull request walkthrough into clear prose for the \
+reviewer. You are given a JSON context (the pull request's title and description, the changed files grouped by area \
+with line counters, the analyzer findings with rule ids, the impacted components from the dependency graph, and a list \
+of things to verify) and the templated draft. Keep the five sections and their headings exactly: Intent, What changed, \
+Impacted components, Risk, What to verify. Use only files, numbers, findings, rules and components present in the \
+context; never invent code, behaviour, files or risks; keep every rule id the draft cites in parentheses; keep the risk \
+level word of the draft. Prefer short paragraphs over bullet walls; under 350 words; Markdown only, no preamble.";
 
 pub struct HeuristicReasoner;
 

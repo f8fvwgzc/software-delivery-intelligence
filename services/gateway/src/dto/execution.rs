@@ -254,8 +254,10 @@ impl From<proto::Execution> for Execution {
 pub struct ListExecutionsQuery {
     /// Only executions of this project. Empty lists every project.
     pub project_id: Option<String>,
-    /// Maximum number, newest first. 0 uses the service default.
+    /// Page size, newest first (default 50).
     pub limit: Option<u32>,
+    /// Cursor: executions updated strictly before this time.
+    pub before: Option<DateTime<Utc>>,
 }
 
 /// Body of `POST /executions`.

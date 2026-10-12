@@ -194,6 +194,8 @@ message ListExecutionsRequest {
   // Empty lists executions of every project.
   string project_id = 1;
   uint32 limit = 2;
+  // Cursor: executions created strictly before this time.
+  google.protobuf.Timestamp before = 3;
 }
 
 message ListExecutionsResponse {

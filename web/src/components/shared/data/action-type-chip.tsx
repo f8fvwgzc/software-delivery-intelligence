@@ -1,9 +1,8 @@
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { Tag } from '@/components/system/tag'
 
 interface ActionTypeChipProps {
   children: string
-  /** `secondary` (filled) in execution rails, `outline` in plan previews. */
+  /** `secondary` (tinted) in execution rails, `outline` in plan previews. */
   variant?: 'secondary' | 'outline'
   className?: string
 }
@@ -11,8 +10,8 @@ interface ActionTypeChipProps {
 /** Policy key such as `container.run`, always mono. */
 export function ActionTypeChip({ children, variant = 'secondary', className }: ActionTypeChipProps) {
   return (
-    <Badge variant={variant} className={cn('h-5 px-1.5 font-mono text-2xs font-normal', className)}>
+    <Tag mono variant={variant === 'outline' ? 'outline' : 'tint'} className={className}>
       {children}
-    </Badge>
+    </Tag>
   )
 }

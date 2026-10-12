@@ -24,11 +24,12 @@ function buildTabs(project: Project): ProjectTab[] {
     { label: 'Documents', to: routes.projectDocuments(project.id) },
     { label: 'Diagrams', to: routes.projectDiagrams(project.id) },
     { label: 'Executions', to: routes.projectExecutions(project.id) },
+    { label: 'Pull requests', to: routes.projectPullRequests(project.id) },
   ]
 }
 
 const TAB_CLASS =
-  'relative -mb-px inline-flex h-9 shrink-0 items-center gap-1.5 border-b-2 border-transparent px-1 text-sm whitespace-nowrap text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50'
+  'relative -mb-px inline-flex h-8 shrink-0 items-center gap-1.5 border-b border-transparent px-0.5 text-xs whitespace-nowrap text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50'
 
 /** The strip bleeds through the page gutters so its hairline closes the sticky band edge to edge. */
 const STRIP_CLASS = '-mx-4 overflow-x-auto md:-mx-6'
@@ -50,7 +51,7 @@ export function ProjectTabs({ project }: { project: Project }) {
             >
               {tab.label}
               {tab.count !== undefined && tab.count > 0 ? (
-                <span className="rounded-md bg-muted px-1.5 text-2xs tabular-nums text-muted-foreground">
+                <span className="rounded-[4px] bg-muted px-1 text-2xs tabular-nums text-muted-foreground ring-1 ring-border ring-inset">
                   {tab.count}
                 </span>
               ) : null}
@@ -65,7 +66,7 @@ export function ProjectTabs({ project }: { project: Project }) {
 export function ProjectTabsSkeleton() {
   return (
     <div className={STRIP_CLASS}>
-      <div className={cn(LIST_CLASS, 'h-9')}>
+      <div className={cn(LIST_CLASS, 'h-8')}>
         {Array.from({ length: 7 }, (_, index) => (
           <div key={index} className="h-4 w-20 animate-pulse rounded-md bg-muted" />
         ))}

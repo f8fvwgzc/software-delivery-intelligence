@@ -62,18 +62,25 @@ pub async fn get(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> sqlx::Result<Di
 }
 
 /// Spec and Mermaid are left out: list responses omit them (proto contract).
+/// Newest first, at most `limit`, created strictly before `before`.
 pub async fn list(
     pool: &PgPool,
     workspace_id: Uuid,
     project_id: &str,
+    limit: i64,
+    before: Option<DateTime<Utc>>,
 ) -> sqlx::Result<Vec<DiagramRow>> {
     sqlx::query_as(
         "SELECT id, workspace_id, project_id, kind, title, explanation, '{}'::jsonb AS spec, '' AS mermaid, source, \
          commit_sha, revision, reasoner, created_at, updated_at \
-         FROM diagrams WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC",
+         FROM diagrams WHERE workspace_id = $1 AND project_id = $2 \
+           AND ($3::timestamptz IS NULL OR created_at < $3) \
+         ORDER BY created_at DESC LIMIT $4",
     )
     .bind(workspace_id)
     .bind(project_id)
+    .bind(before)
+    .bind(limit)
     .fetch_all(pool)
     .await
 }

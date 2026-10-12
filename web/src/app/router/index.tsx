@@ -27,6 +27,7 @@ const ProjectProposalsPage = lazy(() => import('@/features/proposals/pages/proje
 const DocumentsPage = lazy(() => import('@/features/documents/pages/documents-page'))
 const DiagramsPage = lazy(() => import('@/features/diagrams/pages/diagrams-page'))
 const ProjectExecutionsPage = lazy(() => import('@/features/executions/pages/project-executions-page'))
+const PullRequestsPage = lazy(() => import('@/features/reviews/pages/pull-requests-page'))
 
 const ProposalsPage = lazy(() => import('@/features/proposals/pages/proposals-page'))
 const ProposalPage = lazy(() => import('@/features/proposals/pages/proposal-page'))
@@ -35,6 +36,9 @@ const ExecutionsPage = lazy(() => import('@/features/executions/pages/executions
 const ExecutionPage = lazy(() => import('@/features/executions/pages/execution-page'))
 const ApprovalsPage = lazy(() => import('@/features/approvals/pages/approvals-page'))
 const DiagramPage = lazy(() => import('@/features/diagrams/pages/diagram-page'))
+const ReviewsPage = lazy(() => import('@/features/reviews/pages/reviews-page'))
+const ReviewPage = lazy(() => import('@/features/reviews/pages/review-page'))
+const ActivityPage = lazy(() => import('@/features/reviews/pages/activity-page'))
 
 const PatternsPage = lazy(() => import('@/features/patterns/pages/patterns-page'))
 const DecisionsPage = lazy(() => import('@/features/decisions/pages/decisions-page'))
@@ -53,6 +57,7 @@ const ProjectCrumb = lazy(() => import('@/features/projects/components/project-c
 const ProposalCrumb = lazy(() => import('@/features/proposals/components/proposal-crumb'))
 const ExecutionCrumb = lazy(() => import('@/features/executions/components/execution-crumb'))
 const DiagramCrumb = lazy(() => import('@/features/diagrams/components/diagram-crumb'))
+const ReviewCrumb = lazy(() => import('@/features/reviews/components/review-crumb'))
 
 /** Route metadata read by the header breadcrumbs. */
 export interface RouteHandle {
@@ -86,6 +91,7 @@ const shellRoutes: RouteObject[] = [
           { path: 'documents', Component: DocumentsPage, handle: crumb('Documents') },
           { path: 'diagrams', Component: DiagramsPage, handle: crumb('Diagrams') },
           { path: 'executions', Component: ProjectExecutionsPage, handle: crumb('Executions') },
+          { path: 'pull-requests', Component: PullRequestsPage, handle: crumb('Pull requests') },
         ],
       },
     ],
@@ -109,6 +115,15 @@ const shellRoutes: RouteObject[] = [
     ],
   },
   { path: 'approvals', Component: ApprovalsPage, handle: crumb('Approvals') },
+  {
+    path: 'reviews',
+    handle: crumb('Reviews'),
+    children: [
+      { index: true, Component: ReviewsPage },
+      { path: ':reviewId', Component: ReviewPage, handle: crumb(ReviewCrumb) },
+    ],
+  },
+  { path: 'activity', Component: ActivityPage, handle: crumb('Activity') },
   { path: 'diagrams/:diagramId', Component: DiagramPage, handle: crumb(DiagramCrumb) },
 
   {
