@@ -1057,3 +1057,110 @@ Roles: start/decide MEMBER, publish APPROVER. PlatformEvent entity `review`
   transitions (page enter 150 ms fade+4 px rise, list rows 80 ms stagger,
   rail step changes), honouring `prefers-reduced-motion`; no scroll-linked
   animation; all transitions ≤ 250 ms.
+
+## 22. Continuous delivery
+
+CI builds an image; CD moves that exact image through environments. SDI
+does not replace the tools that deploy (GitHub Actions, Flux, Argo CD,
+Jenkins, Azure Pipelines); it **orchestrates them through the same gates
+as everything else**: permission → policy → approval → act → verify →
+checkpoint, and stops on failure.
+
+**Objects** (execution service, schema `execution`, all per workspace):
+
+- `Registry` — where images live. `ghcr` is seeded as the workspace default
+  (`ghcr.io/<workspace slug>`, auth `github_token`: nothing to configure).
+  Others: `dockerhub`, `acr`, `ecr`, `gar`, `generic`, with auth `oidc`
+  (cloud registries, from CI) or `secret` (names of workspace secrets).
+- `Environment` — per project, ordered by `position` (promotion order),
+  with a deployer `kind` and its `config`:
+
+  | kind | what SDI does | config keys |
+  |---|---|---|
+  | `github_actions` | dispatches the deploy workflow (`workflow_dispatch` with inputs `environment`, `image`, `digest`, `version`) and follows that run to completion | `workflow` (default `deploy.yml`), `ref` (default branch) |
+  | `gitops_flux`, `gitops_argocd` | edits the image tag in the GitOps repository and opens a pull request (or commits), then waits for the merge; the controller reconciles | `repo` (`owner/name`, default the project repo), `branch`, `path` (file), `strategy` (`kustomize_image` \| `helm_values` \| `yaml_path`), `yaml_path`, `mode` (`pull_request` default \| `commit`) |
+  | `jenkins` | `POST <url>/job/<job>/buildWithParameters` and polls the queued build | `url`, `job`, `user_secret`, `token_secret` |
+  | `azure_devops` | `POST dev.azure.com/<organization>/<project>/_apis/pipelines/<pipeline_id>/runs` and polls the run | `organization`, `project`, `pipeline_id`, `pat_secret` |
+  | `webhook` | signed `POST` (HMAC-SHA256 in `X-SDI-Signature-256`) with the release JSON; 2xx is success | `url`, `secret`, `timeout_seconds` |
+  | `docker_local` | runs the image on the host's Docker (development only; needs the `local-exec` profile) | `port`, `env` (JSON) |
+
+  `protected=true` gives production semantics. `auto_promote=true` promotes
+  into the stage as soon as the previous one succeeds (still gated).
+  `source=config` environments come from `.sdi.yml` and are read-only in
+  the UI.
+- `Release` — one immutable image at one commit (`image`, `tag`, `digest`,
+  `version`, `notes` = commit subjects since the previous release).
+  Created (a) by the `workflow_run` webhook when a build workflow of the
+  project succeeds on the default branch, (b) by `registry_package` /
+  `package` webhooks, (c) manually (`POST …/releases`, default: default
+  branch head). The tag defaults to the short commit SHA; the image
+  defaults to `<registry host>/<namespace>/<repo name>`.
+- `DeploymentRun` — a release going to an environment (`promote` or
+  `rollback`), backed by an `Execution` so approvals, logs, diagnosis and
+  replanning are the ones in §7. Plan:
+
+  | step | action_type | adapter | default policy |
+  |---|---|---|---|
+  | verify image | `registry.verify_image` | `registry` (Registry v2 `HEAD /v2/<name>/manifests/<tag>`, token auth; records the digest) | safe · auto |
+  | deploy | `deploy.development` (position 0, not protected) · `deploy.staging` · `deploy.production` (protected) | the environment's deployer | medium · auto / high · approval / high · required |
+  | verify health | `deploy.verify_health` | `http` (polls `url + health_path` for 2xx, up to `health_timeout_seconds`, default 120; skipped without a URL) | safe · auto |
+  | record | `deploy.record` | `github` (creates a GitHub Deployment + status so the repository shows the environment) | safe · auto |
+
+  A failed deploy or health check pauses the run with remediations
+  `retry`, `rollback_to_previous` (starts a rollback run) and `cancel`.
+  `Rollback` is the same plan with action type `deploy.rollback`
+  (high · approval). New permissions: `registry:read`,
+  `deploy:development`, `pipeline:trigger`; the `github-token` identity
+  holds `pipeline:trigger`, deploy permissions are granted per §5.3.
+- `DeliveryPipeline` (`GetPipeline`) — stages in order with the current
+  release, last run, health and the promotable `candidate`, plus 30-day
+  success rate, deployment count and median lead time.
+
+**Workspace secrets** (identity): `SetSecret`/`ListSecrets`/`DeleteSecret`
+store values encrypted with `SDI_SESSION_SECRET`; only names and a 4-char
+hint are ever returned; `ResolveSecret` is service-to-service and audited
+(`secret.resolve`). Deployers reference secrets by name, never by value.
+
+**Config as code** — `.sdi.yml`:
+
+```yaml
+delivery:
+  registry: { kind: ghcr }                # or acr/ecr/gar/dockerhub/generic with host + namespace
+  build_workflow: ci.yml                  # which workflow's success creates a release
+  environments:
+    - name: staging
+      kind: github_actions
+      url: https://staging.example.com
+      health_path: /health
+      auto_promote: true
+    - name: production
+      kind: gitops_flux
+      protected: true
+      config: { repo: acme/fleet, path: apps/api/kustomization.yaml, strategy: kustomize_image }
+```
+
+The analyzer parses it into `ProjectConfig.delivery_json`; after each scan
+the knowledge service calls `Execution.SyncEnvironments`.
+
+**Setup files** (`Intelligence.GenerateDeliveryArtifacts`, generators in
+§14): `.github/workflows/build.yml` (login per registry kind — GHCR with
+`GITHUB_TOKEN` and `packages: write`, ACR/ECR/GAR through OIDC actions,
+Docker Hub through secrets — `docker/metadata-action`, `build-push-action`
+with provenance + SBOM, digest output), `.github/workflows/deploy.yml`
+(`workflow_dispatch` inputs, `environment:` so GitHub Environment rules
+also apply), Flux (`GitRepository`, `Kustomization`, optional image
+automation) or Argo CD (`Application`) manifests, `Jenkinsfile`,
+`azure-pipelines.yml` — only for the deployer kinds the project uses. The
+web app offers them as a pull request through the `github` adapter.
+
+**Routes**: `GET/POST /registries`, `PUT/DELETE /registries/{id}`,
+`GET/POST /projects/{id}/environments`, `PUT/DELETE /environments/{id}`,
+`GET /projects/{id}/pipeline`, `GET/POST /projects/{id}/releases`,
+`GET /releases/{id}`, `POST /environments/{id}/promote {releaseId?}`,
+`POST /environments/{id}/rollback {releaseId?, reason?}`,
+`GET /projects/{id}/deployment-runs?environmentId=&limit=&before=`,
+`GET /deployment-runs/{id}`, `GET /projects/{id}/delivery/artifacts`,
+`GET /workspaces/{id}/secrets`, `PUT/DELETE /workspaces/{id}/secrets/{name}`.
+Roles: registries, secrets and environment edits ADMIN; create release
+MEMBER; promote/rollback APPROVER. PlatformEvent entities `release`,
+`deployment` and `environment` (with `data["workspace_id"]`).

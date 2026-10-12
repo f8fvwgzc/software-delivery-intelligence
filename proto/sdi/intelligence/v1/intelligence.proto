@@ -58,6 +58,12 @@ service IntelligenceService {
   // Recent review and finding activity, newest first.
   rpc ListReviewActivity(ListReviewActivityRequest) returns (ListReviewActivityResponse);
 
+  // --- Delivery setup ---------------------------------------------------------
+  // Files that wire a project's CI to its registry and its environments'
+  // deployers (build-and-push workflow, deploy workflow, Flux / Argo CD
+  // manifests, Jenkinsfile, azure-pipelines.yml), generated from facts.
+  rpc GenerateDeliveryArtifacts(GenerateDeliveryArtifactsRequest) returns (DeliveryArtifacts);
+
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (IntelligenceSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
@@ -760,4 +766,16 @@ message WorkspaceDataRecord {
   string entity = 1;
   // The full row as one JSON object.
   string json = 2;
+}
+
+message GenerateDeliveryArtifactsRequest {
+  string project_id = 1;
+}
+
+message DeliveryArtifacts {
+  repeated Artifact artifacts = 1;
+  // Plain sentences: what each file does and what the user must configure (secret names, OIDC trust).
+  repeated string notes = 2;
+  // Secret names the generated files reference.
+  repeated string required_secrets = 3;
 }

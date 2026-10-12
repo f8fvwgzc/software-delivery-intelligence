@@ -41,6 +41,27 @@ service ExecutionService {
 
   rpc GetDeliveryStats(GetDeliveryStatsRequest) returns (DeliveryStats);
 
+  // --- Continuous delivery (CONTRACT.md §22) ---------------------------------
+  rpc ListRegistries(ListRegistriesRequest) returns (ListRegistriesResponse);
+  rpc UpsertRegistry(UpsertRegistryRequest) returns (Registry);
+  rpc DeleteRegistry(DeleteRegistryRequest) returns (DeleteRegistryResponse);
+  rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse);
+  rpc UpsertEnvironment(UpsertEnvironmentRequest) returns (Environment);
+  rpc DeleteEnvironment(DeleteEnvironmentRequest) returns (DeleteEnvironmentResponse);
+  // Replaces the config-managed environments of a project (from `.sdi.yml`).
+  rpc SyncEnvironments(SyncEnvironmentsRequest) returns (ListEnvironmentsResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  rpc CreateRelease(CreateReleaseRequest) returns (Release);
+  rpc GetRelease(GetReleaseRequest) returns (Release);
+  // Environments in order, what runs in each, and what could be promoted next.
+  rpc GetPipeline(GetPipelineRequest) returns (DeliveryPipeline);
+  // Deploys a release to an environment: creates a gated execution.
+  rpc Promote(PromoteRequest) returns (DeploymentRun);
+  // Redeploys the previous successful release of an environment.
+  rpc Rollback(RollbackRequest) returns (DeploymentRun);
+  rpc ListDeploymentRuns(ListDeploymentRunsRequest) returns (ListDeploymentRunsResponse);
+  rpc GetDeploymentRun(GetDeploymentRunRequest) returns (DeploymentRun);
+
   // Execution and approval changes as they happen (not the per-step log). Never ends.
   rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
 
@@ -440,4 +461,233 @@ message WorkspaceDataRecord {
   string entity = 1;
   // The full row as one JSON object.
   string json = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Continuous delivery
+// ---------------------------------------------------------------------------
+
+// Where images live. One per workspace is the default; GHCR needs no secret.
+message Registry {
+  string id = 1;
+  string name = 2;
+  // "ghcr" | "dockerhub" | "acr" | "ecr" | "gar" | "generic"
+  string kind = 3;
+  // e.g. "ghcr.io", "myorg.azurecr.io", "123456789.dkr.ecr.eu-west-1.amazonaws.com"
+  string host = 4;
+  // Org, user or project path images are pushed under.
+  string namespace = 5;
+  // "github_token" (GHCR) | "oidc" (cloud registries from CI) | "secret"
+  string auth = 6;
+  // Names of workspace secrets (never the values).
+  string username_secret = 7;
+  string password_secret = 8;
+  bool is_default = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message ListRegistriesRequest {}
+
+message ListRegistriesResponse {
+  repeated Registry registries = 1;
+}
+
+message UpsertRegistryRequest {
+  // Empty id creates.
+  Registry registry = 1;
+}
+
+message DeleteRegistryRequest {
+  string id = 1;
+}
+
+message DeleteRegistryResponse {}
+
+// A place a release runs, and how it gets there.
+message Environment {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  // Promotion order, 0 first.
+  uint32 position = 4;
+  // Deployer: "github_actions" | "gitops_flux" | "gitops_argocd" | "jenkins" | "azure_devops" | "webhook" | "docker_local"
+  string kind = 5;
+  // Deployer settings; keys per kind in CONTRACT.md §22.
+  map<string, string> config = 6;
+  string url = 7;
+  string health_path = 8;
+  // Empty uses the workspace default registry.
+  string registry_id = 9;
+  // Production semantics: `deploy.production` policy (approval always required).
+  bool protected = 10;
+  // Promote here automatically when the previous stage succeeds (still policy-gated).
+  bool auto_promote = 11;
+  // "ui" | "config" (declared in `.sdi.yml`, read-only in the UI)
+  string source = 12;
+  string current_release_id = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+message ListEnvironmentsRequest {
+  string project_id = 1;
+}
+
+message ListEnvironmentsResponse {
+  repeated Environment environments = 1;
+}
+
+message UpsertEnvironmentRequest {
+  Environment environment = 1;
+}
+
+message DeleteEnvironmentRequest {
+  string id = 1;
+}
+
+message DeleteEnvironmentResponse {}
+
+message SyncEnvironmentsRequest {
+  string project_id = 1;
+  repeated Environment environments = 2;
+}
+
+// One immutable image at one commit.
+message Release {
+  string id = 1;
+  string project_id = 2;
+  // Tag shown to people, e.g. "v1.4.2" or the short SHA.
+  string version = 3;
+  string commit_sha = 4;
+  // host/namespace/name, without tag.
+  string image = 5;
+  string tag = 6;
+  // sha256:... once verified in the registry.
+  string digest = 7;
+  // "pipeline" | "package" | "manual"
+  string source = 8;
+  string pipeline_run_id = 9;
+  // Commit subjects since the previous release, Markdown.
+  string notes = 10;
+  // The registry confirmed the manifest exists.
+  bool verified = 11;
+  string created_by = 12;
+  google.protobuf.Timestamp created_at = 13;
+  // Environment names this release currently runs in.
+  repeated string deployed_to = 14;
+}
+
+message ListReleasesRequest {
+  string project_id = 1;
+  uint32 limit = 2;
+  google.protobuf.Timestamp before = 3;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+}
+
+message CreateReleaseRequest {
+  string project_id = 1;
+  // Empty derives from the commit (short SHA).
+  string version = 2;
+  // Empty uses the default branch head.
+  string commit_sha = 3;
+  // Empty derives from the registry and repository name.
+  string image = 4;
+  string tag = 5;
+  string digest = 6;
+  string source = 7;
+  string pipeline_run_id = 8;
+}
+
+message GetReleaseRequest {
+  string id = 1;
+}
+
+enum DeploymentStatus {
+  DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  DEPLOYMENT_STATUS_PENDING = 1;
+  DEPLOYMENT_STATUS_AWAITING_APPROVAL = 2;
+  DEPLOYMENT_STATUS_DEPLOYING = 3;
+  DEPLOYMENT_STATUS_VERIFYING = 4;
+  DEPLOYMENT_STATUS_SUCCEEDED = 5;
+  DEPLOYMENT_STATUS_FAILED = 6;
+  DEPLOYMENT_STATUS_CANCELLED = 7;
+}
+
+message DeploymentRun {
+  string id = 1;
+  string project_id = 2;
+  string environment_id = 3;
+  string environment_name = 4;
+  string release_id = 5;
+  string release_version = 6;
+  // "promote" | "rollback"
+  string kind = 7;
+  DeploymentStatus status = 8;
+  // The gated execution that carries the steps, approvals and logs.
+  string execution_id = 9;
+  // Workflow run, pull request or build URL at the deployer.
+  string external_url = 10;
+  string previous_release_id = 11;
+  string started_by = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp finished_at = 14;
+  uint32 duration_seconds = 15;
+}
+
+message PipelineStage {
+  Environment environment = 1;
+  // What runs there now.
+  Release current = 2;
+  DeploymentRun last_run = 3;
+  // Newest release that is ahead of `current` and already succeeded in the previous stage (any release for stage 0).
+  Release candidate = 4;
+  // "healthy" | "unhealthy" | "unknown" (no URL configured)
+  string health = 5;
+}
+
+message DeliveryPipeline {
+  string project_id = 1;
+  repeated PipelineStage stages = 2;
+  Registry registry = 3;
+  // 0.0 – 1.0 over finished deployment runs of the last 30 days.
+  double success_rate = 4;
+  uint32 deployments_30d = 5;
+  // Median seconds from release creation to the last stage succeeding.
+  uint32 lead_time_seconds = 6;
+}
+
+message GetPipelineRequest {
+  string project_id = 1;
+}
+
+message PromoteRequest {
+  string environment_id = 1;
+  // Empty promotes the stage's candidate.
+  string release_id = 2;
+}
+
+message RollbackRequest {
+  string environment_id = 1;
+  // Empty rolls back to the previous successful release.
+  string release_id = 2;
+  string reason = 3;
+}
+
+message ListDeploymentRunsRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  uint32 limit = 3;
+  google.protobuf.Timestamp before = 4;
+}
+
+message ListDeploymentRunsResponse {
+  repeated DeploymentRun runs = 1;
+}
+
+message GetDeploymentRunRequest {
+  string id = 1;
 }

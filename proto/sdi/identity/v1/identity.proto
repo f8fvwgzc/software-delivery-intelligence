@@ -42,6 +42,13 @@ service IdentityService {
   rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
   rpc GetDataControls(GetDataControlsRequest) returns (DataControls);
   rpc UpdateDataControls(UpdateDataControlsRequest) returns (DataControls);
+  // --- Workspace secrets (encrypted at rest, never returned to clients) ------
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+  rpc SetSecret(SetSecretRequest) returns (SecretInfo);
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
+  // Service-to-service only: the execution service resolves a secret by name.
+  rpc ResolveSecret(ResolveSecretRequest) returns (ResolvedSecret);
+
   // Stores a workspace-owned LLM key (encrypted at rest); never returned.
   rpc SetReasonerKey(SetReasonerKeyRequest) returns (DataControls);
   // Internal (intelligence only): the decrypted workspace key so the reasoner
@@ -321,4 +328,49 @@ message ReasonerKey {
   // Model the workspace chose when storing the key; empty means the
   // intelligence service's default.
   string model = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace secrets
+// ---------------------------------------------------------------------------
+
+message SecretInfo {
+  string name = 1;
+  // Last 4 characters, for recognition only.
+  string hint = 2;
+  string description = 3;
+  string updated_by = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ListSecretsRequest {
+  string workspace_id = 1;
+}
+
+message ListSecretsResponse {
+  repeated SecretInfo secrets = 1;
+}
+
+message SetSecretRequest {
+  string workspace_id = 1;
+  // Upper snake case, e.g. "JENKINS_TOKEN".
+  string name = 2;
+  string value = 3;
+  string description = 4;
+}
+
+message DeleteSecretRequest {
+  string workspace_id = 1;
+  string name = 2;
+}
+
+message DeleteSecretResponse {}
+
+message ResolveSecretRequest {
+  string workspace_id = 1;
+  string name = 2;
+}
+
+message ResolvedSecret {
+  string value = 1;
 }

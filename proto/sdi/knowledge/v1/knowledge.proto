@@ -449,6 +449,8 @@ message ProjectConfig {
   repeated string scan_exclude = 10;
   // Parse problems, in plain words. The config is ignored when non-empty.
   repeated string errors = 11;
+  // The `delivery:` section as JSON (registry + environments), empty when absent. CONTRACT.md §22.
+  string delivery_json = 12;
 }
 
 // Scanner limits. Changed from the settings page.
