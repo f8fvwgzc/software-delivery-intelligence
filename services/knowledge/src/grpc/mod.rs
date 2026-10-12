@@ -38,6 +38,7 @@ use crate::{
     controls::ControlsProvider,
     db::{self, projects::ProjectRow, settings::SettingsRow},
     events::EventBus,
+    execution::DeliveryGateway,
     github::{Github, GithubClient, GithubError},
     identity::Identity,
     scanner::{ScanInputs, ScanLimits},
@@ -54,6 +55,9 @@ pub struct KnowledgeState {
     pub events: EventBus,
     pub identity: Identity,
     pub controls: Arc<ControlsProvider>,
+    /// Where a scan syncs the `.sdi.yml` environments (CONTRACT.md §22).
+    /// `None` (tests, tools that only touch the database) skips that step.
+    pub execution: Option<Arc<dyn DeliveryGateway>>,
 }
 
 impl KnowledgeState {
@@ -64,7 +68,14 @@ impl KnowledgeState {
             events,
             controls: Arc::new(ControlsProvider::new(identity.clone())),
             identity,
+            execution: None,
         }
+    }
+
+    /// The execution service scans report the configured environments to.
+    pub fn with_execution(mut self, execution: Arc<dyn DeliveryGateway>) -> Self {
+        self.execution = Some(execution);
+        self
     }
 
     /// The project by id, in the caller's workspace only: another
@@ -116,6 +127,7 @@ impl KnowledgeState {
             settings,
             controls,
             limits: ScanLimits::from_env(),
+            delivery: self.execution.clone(),
         })
     }
 }

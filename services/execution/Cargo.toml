@@ -12,13 +12,17 @@ sdi-proto.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 futures.workspace = true
+hex.workspace = true
+hmac.workspace = true
 prost-types.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 tar.workspace = true
 tempfile.workspace = true
@@ -31,5 +35,9 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-# Fake GitHub API for the github adapter tests (a plain axum server on a random port).
+# Fake GitHub, registry, Jenkins, Azure DevOps and webhook receivers for the
+# adapter tests (plain axum servers on random ports).
 axum.workspace = true
+# Parses the files the GitOps text editor produced, to prove they are still
+# the YAML they were. Never used to write a file.
+serde_yaml_ng.workspace = true

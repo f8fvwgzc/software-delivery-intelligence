@@ -665,6 +665,30 @@ impl IdentityService for FakeIdentity {
     ) -> Result<GrpcResponse<sdi_proto::identity::v1::ReasonerKey>, Status> {
         Err(Status::unimplemented(""))
     }
+    async fn list_secrets(
+        &self,
+        _: Request<sdi_proto::identity::v1::ListSecretsRequest>,
+    ) -> Result<GrpcResponse<sdi_proto::identity::v1::ListSecretsResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn set_secret(
+        &self,
+        _: Request<sdi_proto::identity::v1::SetSecretRequest>,
+    ) -> Result<GrpcResponse<sdi_proto::identity::v1::SecretInfo>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn delete_secret(
+        &self,
+        _: Request<sdi_proto::identity::v1::DeleteSecretRequest>,
+    ) -> Result<GrpcResponse<sdi_proto::identity::v1::DeleteSecretResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn resolve_secret(
+        &self,
+        _: Request<sdi_proto::identity::v1::ResolveSecretRequest>,
+    ) -> Result<GrpcResponse<sdi_proto::identity::v1::ResolvedSecret>, Status> {
+        Err(Status::unimplemented(""))
+    }
 }
 
 async fn serve_identity(api_base_url: String) -> SocketAddr {

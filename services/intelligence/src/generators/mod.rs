@@ -3,9 +3,14 @@
 //! `fn(&GenInput) -> Vec<ArtifactData>`. Which families a pattern needs is
 //! decided here from the catalog slug (CONTRACT.md §5.6) with a fallback on
 //! the pattern's category, so a learned pattern still gets sensible files.
+//!
+//! `delivery` is the one family that is not driven by a pattern: it wires
+//! the project to the registries and environments the execution service
+//! holds for it (CONTRACT.md §22).
 
 pub mod bicep;
 pub mod compose;
+pub mod delivery;
 pub mod dependabot;
 pub mod dockerfile;
 pub mod docs;

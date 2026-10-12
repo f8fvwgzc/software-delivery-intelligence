@@ -11,14 +11,15 @@ use sdi_proto::{
     intelligence::v1::{
         AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, DecisionScope,
         DecisionSource, DeleteDiagramRequest, DeleteWorkspaceDataRequest, DiagramKind, DiagramSpec,
-        DocumentKind, ExportWorkspaceDataRequest, FindingDecision, GenerateDiagramRequest,
-        GenerateDocumentRequest, GenerateProposalRequest, GetDiagramRequest,
-        GetIntelligenceStatsRequest, GetProposalRequest, GetReviewRequest, GetSettingsRequest,
-        IntelligenceSettings, ListDecisionsRequest, ListDiagramsRequest, ListMessagesRequest,
-        ListProposalsRequest, ListReviewActivityRequest, ListReviewsRequest, MessageRole,
-        NegotiateRequest, ProposalKind, ProposalStatus, PublishReviewRequest, ReviewStatus,
-        ScoreWeights, StartReviewRequest, SupersedeDecisionRequest, UpdateDiagramRequest,
-        UpdateSettingsRequest, intelligence_service_server::IntelligenceService,
+        DocumentKind, ExportWorkspaceDataRequest, FindingDecision,
+        GenerateDeliveryArtifactsRequest, GenerateDiagramRequest, GenerateDocumentRequest,
+        GenerateProposalRequest, GetDiagramRequest, GetIntelligenceStatsRequest,
+        GetProposalRequest, GetReviewRequest, GetSettingsRequest, IntelligenceSettings,
+        ListDecisionsRequest, ListDiagramsRequest, ListMessagesRequest, ListProposalsRequest,
+        ListReviewActivityRequest, ListReviewsRequest, MessageRole, NegotiateRequest, ProposalKind,
+        ProposalStatus, PublishReviewRequest, ReviewStatus, ScoreWeights, StartReviewRequest,
+        SupersedeDecisionRequest, UpdateDiagramRequest, UpdateSettingsRequest,
+        intelligence_service_server::IntelligenceService,
     },
 };
 use tokio_stream::StreamExt;
@@ -2562,4 +2563,333 @@ async fn osv_check_queries_once_caches_and_fails_soft() {
     seen.lock().unwrap().broken = false;
     client.check(&deps).await;
     assert_eq!(seen.lock().unwrap().batches.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Continuous delivery setup files (CONTRACT.md §22)
+// ---------------------------------------------------------------------------
+
+fn delivery_registry() -> sdi_proto::execution::v1::Registry {
+    sdi_proto::execution::v1::Registry {
+        id: "reg-default".into(),
+        name: "GitHub Container Registry".into(),
+        kind: "ghcr".into(),
+        host: "ghcr.io".into(),
+        namespace: "f8fvwgzc".into(),
+        auth: "github_token".into(),
+        is_default: true,
+        ..Default::default()
+    }
+}
+
+fn delivery_environment(
+    project: &str,
+    name: &str,
+    position: u32,
+    kind: &str,
+) -> sdi_proto::execution::v1::Environment {
+    sdi_proto::execution::v1::Environment {
+        id: format!("env-{project}-{name}"),
+        project_id: project.into(),
+        name: name.into(),
+        position,
+        kind: kind.into(),
+        protected: name == "production",
+        source: "config".into(),
+        ..Default::default()
+    }
+}
+
+fn artifact_paths(artifacts: &[sdi_proto::intelligence::v1::Artifact]) -> Vec<&str> {
+    artifacts.iter().map(|a| a.path.as_str()).collect()
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn delivery_artifacts_come_from_the_context_registries_and_environments() {
+    let (svc, peers) = service_with_peers("intelligence_test_delivery_rpc").await;
+    let request = || GenerateDeliveryArtifactsRequest {
+        project_id: "proj-1".into(),
+    };
+
+    // Nothing configured in execution yet: the build alone, on GHCR under
+    // the repository's owner, and a note that says why there is no more.
+    let files = svc
+        .generate_delivery_artifacts(as_role(Role::Viewer, WS_A, request()))
+        .await
+        .expect("a viewer may read the setup files")
+        .into_inner();
+    assert_eq!(
+        artifact_paths(&files.artifacts),
+        [".github/workflows/build.yml"]
+    );
+    assert!(
+        files.artifacts[0]
+            .content
+            .contains("ghcr.io/f8fvwgzc/view-engine")
+    );
+    assert!(files.required_secrets.is_empty(), "GHCR needs no secret");
+    assert!(
+        files
+            .notes
+            .iter()
+            .any(|n| n.contains("No environments are configured")),
+        "{:#?}",
+        files.notes
+    );
+    // Both lists were asked for with the caller's own principal.
+    {
+        let callers = peers.execution.callers.lock().unwrap();
+        assert_eq!(callers.len(), 2);
+        assert!(callers.iter().all(|p| *p == principal(Role::Viewer, WS_A)));
+    }
+    assert_eq!(
+        peers.knowledge.callers.lock().unwrap().last().unwrap(),
+        &principal(Role::Viewer, WS_A)
+    );
+
+    // With a registry and environments: one file set per deployer in use.
+    *peers.execution.registries.lock().unwrap() = vec![
+        delivery_registry(),
+        sdi_proto::execution::v1::Registry {
+            id: "reg-hub".into(),
+            kind: "dockerhub".into(),
+            host: "docker.io".into(),
+            namespace: "acme".into(),
+            auth: "secret".into(),
+            username_secret: "hub-user".into(),
+            password_secret: "hub-token".into(),
+            ..Default::default()
+        },
+    ];
+    let mut production = delivery_environment("proj-1", "production", 1, "gitops_flux");
+    production.registry_id = "reg-hub".into();
+    *peers.execution.environments.lock().unwrap() = vec![
+        production,
+        delivery_environment("proj-1", "staging", 0, "github_actions"),
+        // Another project's environment must not leak in.
+        delivery_environment("proj-2", "elsewhere", 0, "jenkins"),
+    ];
+    let files = svc
+        .generate_delivery_artifacts(req(request()))
+        .await
+        .unwrap()
+        .into_inner();
+    let paths = artifact_paths(&files.artifacts);
+    for expected in [
+        ".github/workflows/build.yml",
+        ".github/workflows/deploy.yml",
+        "deploy/production/kustomization.yaml",
+        "clusters/production/view-engine-production.yaml",
+    ] {
+        assert!(paths.contains(&expected), "missing {expected} in {paths:?}");
+    }
+    assert!(!paths.contains(&"Jenkinsfile"), "{paths:?}");
+    let build = &files.artifacts[0];
+    assert_eq!(build.language, "yaml");
+    assert!(!build.purpose.is_empty());
+    // Both registries the environments pull from are pushed to.
+    assert!(
+        build
+            .content
+            .contains("            ghcr.io/f8fvwgzc/view-engine\n")
+    );
+    assert!(
+        build
+            .content
+            .contains("            docker.io/acme/view-engine\n")
+    );
+    assert!(build.content.contains("username: ${{ secrets.HUB_USER }}"));
+    // The secrets the files reference, in first-use order: the registry's,
+    // then the deploy workflow's (no target detected: SSH and Compose).
+    assert_eq!(
+        files.required_secrets,
+        [
+            "HUB_USER",
+            "HUB_TOKEN",
+            "DEPLOY_HOST",
+            "DEPLOY_USER",
+            "DEPLOY_SSH_KEY"
+        ]
+    );
+    for artifact in &files.artifacts {
+        assert!(
+            !artifact.content.contains("TODO") && !artifact.content.contains("placeholder"),
+            "{} has a placeholder",
+            artifact.path
+        );
+        assert!(artifact.content.ends_with('\n'), "{}", artifact.path);
+    }
+    assert!(files.notes.len() >= 5, "{:#?}", files.notes);
+    assert!(files.notes.iter().any(|n| {
+        n.contains("A promotion to `production` edits `deploy/production/kustomization.yaml`")
+    }));
+    // Deterministic: the same request answers the same files.
+    let again = svc
+        .generate_delivery_artifacts(req(request()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(again, files);
+
+    // Validation, tenancy and peers.
+    let err = svc
+        .generate_delivery_artifacts(req(GenerateDeliveryArtifactsRequest {
+            project_id: "  ".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    let err = svc
+        .generate_delivery_artifacts(req(GenerateDeliveryArtifactsRequest {
+            project_id: "proj-404".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = svc
+        .generate_delivery_artifacts(Request::new(request()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+    peers
+        .execution
+        .delivery_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = svc
+        .generate_delivery_artifacts(req(request()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unavailable, "{err:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs the dev Postgres"]
+async fn deployment_proposals_ship_the_delivery_setup_once_environments_exist() {
+    let (svc, peers) = service_with_peers("intelligence_test_delivery_proposals").await;
+
+    // Without environments an option carries its pattern's files only.
+    let before = propose(&svc, 0.0).await;
+    for option in &before.options {
+        let paths = artifact_paths(&option.artifacts);
+        assert!(!paths.contains(&".github/workflows/build.yml"), "{paths:?}");
+    }
+    let pattern_deploy = before.options[0]
+        .artifacts
+        .iter()
+        .find(|a| a.path == ".github/workflows/deploy.yml")
+        .expect("the pattern's own deploy workflow")
+        .content
+        .clone();
+    assert!(pattern_deploy.contains("push:"), "deploys on push");
+
+    *peers.execution.registries.lock().unwrap() = vec![delivery_registry()];
+    *peers.execution.environments.lock().unwrap() = vec![
+        delivery_environment("proj-1", "staging", 0, "github_actions"),
+        delivery_environment("proj-1", "production", 1, "gitops_flux"),
+    ];
+    let proposal = propose(&svc, 0.0).await;
+    assert!(!proposal.options.is_empty());
+    for option in &proposal.options {
+        let paths = artifact_paths(&option.artifacts);
+        for expected in [
+            "Dockerfile",
+            ".github/workflows/ci.yml",
+            ".github/workflows/build.yml",
+            ".github/workflows/deploy.yml",
+            "deploy/production/kustomization.yaml",
+            "clusters/production/view-engine-production.yaml",
+        ] {
+            assert!(
+                paths.contains(&expected),
+                "{}: missing {expected} in {paths:?}",
+                option.pattern_id
+            );
+        }
+        // One file per path: the setup replaced what it supersedes.
+        let unique: std::collections::BTreeSet<&&str> = paths.iter().collect();
+        assert_eq!(unique.len(), paths.len(), "{paths:?}");
+        // The deploy workflow is the gated one: dispatched, never on push.
+        let deploy = option
+            .artifacts
+            .iter()
+            .find(|a| a.path == ".github/workflows/deploy.yml")
+            .unwrap();
+        assert!(deploy.content.contains("workflow_dispatch:"));
+        assert!(deploy.content.contains("type: environment"));
+        assert!(
+            deploy
+                .content
+                .contains("environment: ${{ inputs.environment }}"),
+            "{}",
+            option.pattern_id
+        );
+        assert!(!deploy.content.contains("docker/build-push-action"));
+        // The pattern's documents stay.
+        assert!(paths.contains(&"docs/deployment.md"), "{paths:?}");
+    }
+
+    // A negotiation turn re-ranks and regenerates: the setup is still there.
+    svc.negotiate(req(NegotiateRequest {
+        proposal_id: proposal.id.clone(),
+        content: "cheaper".into(),
+    }))
+    .await
+    .unwrap();
+    let renegotiated = svc
+        .get_proposal(req(GetProposalRequest {
+            id: proposal.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(renegotiated.revision > proposal.revision);
+    for option in &renegotiated.options {
+        assert!(
+            artifact_paths(&option.artifacts).contains(&".github/workflows/build.yml"),
+            "{} lost the delivery setup after negotiation",
+            option.pattern_id
+        );
+    }
+
+    // "Open pull request" commits exactly those files.
+    let option = renegotiated.options[0].clone();
+    svc.accept_proposal(req(AcceptProposalRequest {
+        id: proposal.id.clone(),
+        option_id: option.id.clone(),
+        create_execution: true,
+        adapter: "github".into(),
+    }))
+    .await
+    .unwrap();
+    {
+        let created = peers.execution.created.lock().unwrap();
+        let request = created.last().unwrap();
+        assert_eq!(request.adapter, "github");
+        assert_eq!(request.artifacts.len(), option.artifacts.len());
+        let build = request
+            .artifacts
+            .get(".github/workflows/build.yml")
+            .expect("the pull request ships the build workflow");
+        assert!(build.contains("docker/build-push-action@v6"));
+        assert!(
+            request
+                .artifacts
+                .contains_key("clusters/production/view-engine-production.yaml")
+        );
+    }
+
+    // An execution outage never fails or blocks a proposal: the options
+    // simply keep the files of their pattern.
+    peers
+        .execution
+        .delivery_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let degraded = propose(&svc, 0.0).await;
+    assert!(!degraded.options.is_empty());
+    for option in &degraded.options {
+        let paths = artifact_paths(&option.artifacts);
+        assert!(paths.contains(&"Dockerfile"), "{paths:?}");
+        assert!(!paths.contains(&".github/workflows/build.yml"), "{paths:?}");
+    }
 }

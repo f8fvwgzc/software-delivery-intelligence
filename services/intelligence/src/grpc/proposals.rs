@@ -178,7 +178,15 @@ pub(super) async fn rank_with(
         cost_ceiling,
     };
     let options = if artifacts {
-        ranking::rank(&input)
+        let mut options = ranking::rank(&input);
+        // The same delivery setup the background step of `GenerateProposal`
+        // attaches, so a re-ranked proposal keeps it.
+        if let Some(setup) =
+            super::delivery::for_proposal(&svc.execution, &caller.principal, kind, context).await
+        {
+            ranking::attach_delivery(&mut options, &patterns, context, &setup);
+        }
+        options
     } else {
         ranking::rank_options(&input)
     };
@@ -391,6 +399,8 @@ fn spawn_artifacts(
     }
     let pool = svc.pool.clone();
     let events = svc.events.clone();
+    let execution = svc.execution.clone();
+    let principal = caller.principal.clone();
     let workspace = caller.workspace;
     let (id, project_id, kind_str, revision) = (
         row.id,
@@ -426,8 +436,14 @@ fn spawn_artifacts(
     };
     tokio::spawn(async move {
         announce("generating_artifacts");
+        // With environments configured, the options ship the project's real
+        // delivery setup (CONTRACT.md §22) on top of their pattern's files.
+        let delivery = super::delivery::for_proposal(&execution, &principal, kind, &context).await;
         let generated = tokio::task::spawn_blocking(move || {
             ranking::attach_artifacts(&mut options, kind, &patterns, &context, &constraints);
+            if let Some(setup) = &delivery {
+                ranking::attach_delivery(&mut options, &patterns, &context, setup);
+            }
             options
         })
         .await;

@@ -3,9 +3,13 @@
 //! them and holds the shared helpers.
 //!
 //! Roles: reads need VIEWER; create / start / resolve / cancel of a
-//! `simulated` run need MEMBER, of a `docker` or `github` run APPROVER;
-//! DecideApproval and GrantPermission need APPROVER; UpdatePolicy needs
-//! ADMIN; the workspace export needs ADMIN and the delete needs OWNER.
+//! `simulated` run need MEMBER, of a `docker`, `github` or `delivery` run
+//! APPROVER; DecideApproval and GrantPermission need APPROVER; UpdatePolicy
+//! needs ADMIN; the workspace export needs ADMIN and the delete needs OWNER.
+//!
+//! Continuous delivery (CONTRACT.md §22, handlers in `crate::delivery::grpc`):
+//! reads VIEWER; CreateRelease and SyncEnvironments MEMBER; Promote and
+//! Rollback APPROVER; registries and environment edits ADMIN.
 
 use std::sync::Arc;
 
@@ -16,25 +20,32 @@ use sdi_common::{
 use sdi_proto::{
     common::v1::{PlatformEvent, WatchEventsRequest},
     execution::v1::{
-        Approval, CancelExecutionRequest, CreateExecutionRequest, DecideApprovalRequest,
-        DeleteWorkspaceDataRequest, DeleteWorkspaceDataResponse, DeliveryStats, Execution,
-        ExecutionEvent, ExportWorkspaceDataRequest, GetDeliveryStatsRequest, GetExecutionRequest,
+        Approval, CancelExecutionRequest, CreateExecutionRequest, CreateReleaseRequest,
+        DecideApprovalRequest, DeleteEnvironmentRequest, DeleteEnvironmentResponse,
+        DeleteRegistryRequest, DeleteRegistryResponse, DeleteWorkspaceDataRequest,
+        DeleteWorkspaceDataResponse, DeliveryPipeline, DeliveryStats, DeploymentRun, Environment,
+        Execution, ExecutionEvent, ExportWorkspaceDataRequest, GetDeliveryStatsRequest,
+        GetDeploymentRunRequest, GetExecutionRequest, GetPipelineRequest, GetReleaseRequest,
         GrantPermissionRequest, Identity, ListApprovalsRequest, ListApprovalsResponse,
-        ListEventsRequest, ListEventsResponse, ListExecutionsRequest, ListExecutionsResponse,
-        ListIdentitiesRequest, ListIdentitiesResponse, ListPoliciesRequest, ListPoliciesResponse,
-        Policy, ResolveFailureRequest, StartExecutionRequest, UpdatePolicyRequest,
-        WatchExecutionRequest, WorkspaceDataRecord, execution_service_server::ExecutionService,
+        ListDeploymentRunsRequest, ListDeploymentRunsResponse, ListEnvironmentsRequest,
+        ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse, ListExecutionsRequest,
+        ListExecutionsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListPoliciesRequest,
+        ListPoliciesResponse, ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest,
+        ListReleasesResponse, Policy, PromoteRequest, Registry, Release, ResolveFailureRequest,
+        RollbackRequest, StartExecutionRequest, SyncEnvironmentsRequest, UpdatePolicyRequest,
+        UpsertEnvironmentRequest, UpsertRegistryRequest, WatchExecutionRequest,
+        WorkspaceDataRecord, execution_service_server::ExecutionService,
     },
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-use crate::{adapters, convert, db, identity, runner::Runtime};
+use crate::{adapters, convert, db, delivery, identity, runner::Runtime};
 
 mod approvals;
 mod events;
-mod executions;
+pub(crate) mod executions;
 mod identities;
 mod policies;
 mod stats;
@@ -271,6 +282,161 @@ impl ExecutionService for ExecutionGrpc {
     ) -> Result<Response<DeliveryStats>, Status> {
         let caller = self.caller(&request, Role::Viewer).await?;
         stats::get(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    // --- Continuous delivery (CONTRACT.md §22) -------------------------------
+
+    async fn list_registries(
+        &self,
+        request: Request<ListRegistriesRequest>,
+    ) -> Result<Response<ListRegistriesResponse>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::list_registries(&self.rt, &caller)
+            .await
+            .map(Response::new)
+    }
+
+    async fn upsert_registry(
+        &self,
+        request: Request<UpsertRegistryRequest>,
+    ) -> Result<Response<Registry>, Status> {
+        let caller = self.caller(&request, Role::Admin).await?;
+        delivery::grpc::upsert_registry(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn delete_registry(
+        &self,
+        request: Request<DeleteRegistryRequest>,
+    ) -> Result<Response<DeleteRegistryResponse>, Status> {
+        let caller = self.caller(&request, Role::Admin).await?;
+        delivery::grpc::delete_registry(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_environments(
+        &self,
+        request: Request<ListEnvironmentsRequest>,
+    ) -> Result<Response<ListEnvironmentsResponse>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::list_environments(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn upsert_environment(
+        &self,
+        request: Request<UpsertEnvironmentRequest>,
+    ) -> Result<Response<Environment>, Status> {
+        let caller = self.caller(&request, Role::Admin).await?;
+        delivery::grpc::upsert_environment(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn delete_environment(
+        &self,
+        request: Request<DeleteEnvironmentRequest>,
+    ) -> Result<Response<DeleteEnvironmentResponse>, Status> {
+        let caller = self.caller(&request, Role::Admin).await?;
+        delivery::grpc::delete_environment(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    /// The knowledge service calls this after a scan, as whoever started
+    /// the scan or as `system`: a member may scan, so a member may sync
+    /// what the repository's own `.sdi.yml` declares.
+    async fn sync_environments(
+        &self,
+        request: Request<SyncEnvironmentsRequest>,
+    ) -> Result<Response<ListEnvironmentsResponse>, Status> {
+        let caller = self.caller(&request, Role::Member).await?;
+        delivery::grpc::sync_environments(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_releases(
+        &self,
+        request: Request<ListReleasesRequest>,
+    ) -> Result<Response<ListReleasesResponse>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::list_releases(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn create_release(
+        &self,
+        request: Request<CreateReleaseRequest>,
+    ) -> Result<Response<Release>, Status> {
+        let caller = self.caller(&request, Role::Member).await?;
+        delivery::grpc::create_release(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_release(
+        &self,
+        request: Request<GetReleaseRequest>,
+    ) -> Result<Response<Release>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::get_release(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_pipeline(
+        &self,
+        request: Request<GetPipelineRequest>,
+    ) -> Result<Response<DeliveryPipeline>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::get_pipeline(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn promote(
+        &self,
+        request: Request<PromoteRequest>,
+    ) -> Result<Response<DeploymentRun>, Status> {
+        let caller = self.caller(&request, Role::Approver).await?;
+        delivery::grpc::promote(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn rollback(
+        &self,
+        request: Request<RollbackRequest>,
+    ) -> Result<Response<DeploymentRun>, Status> {
+        let caller = self.caller(&request, Role::Approver).await?;
+        delivery::grpc::rollback(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_deployment_runs(
+        &self,
+        request: Request<ListDeploymentRunsRequest>,
+    ) -> Result<Response<ListDeploymentRunsResponse>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::list_runs(&self.rt, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_deployment_run(
+        &self,
+        request: Request<GetDeploymentRunRequest>,
+    ) -> Result<Response<DeploymentRun>, Status> {
+        let caller = self.caller(&request, Role::Viewer).await?;
+        delivery::grpc::get_run(&self.rt, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

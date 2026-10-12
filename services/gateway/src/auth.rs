@@ -101,6 +101,12 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (_, ["workspaces", _, "members", ..]) if method != Method::GET => Role::Admin,
         (_, ["workspaces", _, "data-controls", ..]) if method != Method::GET => Role::Admin,
         (_, ["workspaces", _, "data", ..]) => Role::Admin,
+        // Continuous delivery (§22): secrets (even their names), registries
+        // and environment edits are an admin's.
+        (_, ["workspaces", _, "secrets", ..]) => Role::Admin,
+        (&Method::POST | &Method::PUT | &Method::DELETE, ["registries", ..]) => Role::Admin,
+        (&Method::POST, ["projects", _, "environments"]) => Role::Admin,
+        (&Method::PUT | &Method::DELETE, ["environments", _]) => Role::Admin,
         (&Method::PATCH, ["policies", ..]) | (&Method::PATCH, ["settings"]) => Role::Admin,
         (&Method::GET | &Method::HEAD | &Method::OPTIONS, _) => Role::Viewer,
         (&Method::POST, ["auth", "logout"]) => Role::Viewer,
@@ -108,6 +114,8 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (&Method::POST, ["identities", _, "grants"]) => Role::Approver,
         (&Method::POST, ["proposals", _, "pull-request"]) => Role::Approver,
         (&Method::POST, ["reviews", _, "publish"]) => Role::Approver,
+        // Promoting and rolling back start a real deployment.
+        (&Method::POST, ["environments", _, "promote" | "rollback"]) => Role::Approver,
         (&Method::POST, ["executions"]) if real_adapter => Role::Approver,
         (&Method::POST, ["proposals", _, "accept"]) if real_adapter => Role::Approver,
         _ => Role::Member,
@@ -258,6 +266,26 @@ pub fn audit_action(method: &Method, path: &str) -> (String, String, String) {
             (owned("policy.update"), "policy", action_type)
         }
         (&Method::POST, ["identities", id, "grants"]) => (owned("identity.grant"), "identity", id),
+        // Continuous delivery (§22).
+        (&Method::POST, ["registries"]) => (owned("registry.upsert"), "registry", ""),
+        (&Method::PUT, ["registries", id]) => (owned("registry.upsert"), "registry", id),
+        (&Method::DELETE, ["registries", id]) => (owned("registry.delete"), "registry", id),
+        (&Method::POST, ["projects", id, "environments"]) => {
+            (owned("environment.upsert"), "project", id)
+        }
+        (&Method::PUT, ["environments", id]) => (owned("environment.upsert"), "environment", id),
+        (&Method::DELETE, ["environments", id]) => (owned("environment.delete"), "environment", id),
+        (&Method::POST, ["projects", id, "releases"]) => (owned("release.create"), "project", id),
+        (&Method::POST, ["environments", id, "promote"]) => {
+            (owned("deployment.promote"), "environment", id)
+        }
+        (&Method::POST, ["environments", id, "rollback"]) => {
+            (owned("deployment.rollback"), "environment", id)
+        }
+        (&Method::PUT, ["workspaces", _, "secrets", name]) => (owned("secret.set"), "secret", name),
+        (&Method::DELETE, ["workspaces", _, "secrets", name]) => {
+            (owned("secret.delete"), "secret", name)
+        }
         (&Method::PATCH, ["settings"]) => (owned("settings.update"), "settings", ""),
         (&Method::PATCH, ["workspaces", _, "members", user_id]) => {
             (owned("member.override"), "member", user_id)
@@ -557,6 +585,48 @@ mod tests {
             Role::Approver
         );
         assert_eq!(r(Method::GET, "/api/v1/activity", None), Role::Viewer);
+        // Continuous delivery (§22): reads viewer, create release member,
+        // promote/rollback approver, registries, secrets and environment
+        // edits admin.
+        for path in [
+            "/api/v1/registries",
+            "/api/v1/projects/p/environments",
+            "/api/v1/projects/p/pipeline",
+            "/api/v1/projects/p/releases",
+            "/api/v1/releases/r",
+            "/api/v1/projects/p/deployment-runs",
+            "/api/v1/deployment-runs/d",
+            "/api/v1/projects/p/delivery/artifacts",
+        ] {
+            assert_eq!(r(Method::GET, path, None), Role::Viewer, "{path}");
+        }
+        assert_eq!(
+            r(Method::POST, "/api/v1/projects/p/releases", None),
+            Role::Member
+        );
+        for path in [
+            "/api/v1/environments/e/promote",
+            "/api/v1/environments/e/rollback",
+        ] {
+            assert_eq!(r(Method::POST, path, None), Role::Approver, "{path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/api/v1/registries"),
+            (Method::PUT, "/api/v1/registries/r"),
+            (Method::DELETE, "/api/v1/registries/r"),
+            (Method::POST, "/api/v1/projects/p/environments"),
+            (Method::PUT, "/api/v1/environments/e"),
+            (Method::DELETE, "/api/v1/environments/e"),
+            (Method::GET, "/api/v1/workspaces/w/secrets"),
+            (Method::PUT, "/api/v1/workspaces/w/secrets/JENKINS_TOKEN"),
+            (Method::DELETE, "/api/v1/workspaces/w/secrets/JENKINS_TOKEN"),
+        ] {
+            assert_eq!(
+                r(method.clone(), path, None),
+                Role::Admin,
+                "{method} {path}"
+            );
+        }
     }
 
     #[test]
@@ -602,6 +672,92 @@ mod tests {
             a(Method::POST, "/api/v1/reviews/r1/publish"),
             ("review.publish".into(), "review".into(), "r1".into())
         );
+        // Continuous delivery (§22).
+        for (method, path, action, entity, id) in [
+            (
+                Method::POST,
+                "/api/v1/registries",
+                "registry.upsert",
+                "registry",
+                "",
+            ),
+            (
+                Method::PUT,
+                "/api/v1/registries/r1",
+                "registry.upsert",
+                "registry",
+                "r1",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/registries/r1",
+                "registry.delete",
+                "registry",
+                "r1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/projects/p1/environments",
+                "environment.upsert",
+                "project",
+                "p1",
+            ),
+            (
+                Method::PUT,
+                "/api/v1/environments/e1",
+                "environment.upsert",
+                "environment",
+                "e1",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/environments/e1",
+                "environment.delete",
+                "environment",
+                "e1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/projects/p1/releases",
+                "release.create",
+                "project",
+                "p1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/environments/e1/promote",
+                "deployment.promote",
+                "environment",
+                "e1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/environments/e1/rollback",
+                "deployment.rollback",
+                "environment",
+                "e1",
+            ),
+            (
+                Method::PUT,
+                "/api/v1/workspaces/w/secrets/JENKINS_TOKEN",
+                "secret.set",
+                "secret",
+                "JENKINS_TOKEN",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/workspaces/w/secrets/JENKINS_TOKEN",
+                "secret.delete",
+                "secret",
+                "JENKINS_TOKEN",
+            ),
+        ] {
+            assert_eq!(
+                a(method, path),
+                (action.to_owned(), entity.to_owned(), id.to_owned()),
+                "{path}"
+            );
+        }
         // Unknown mutating routes still get a sensible key.
         assert_eq!(
             a(Method::POST, "/api/v1/widgets/x/spin"),

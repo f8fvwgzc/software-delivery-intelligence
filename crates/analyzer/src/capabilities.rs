@@ -41,6 +41,12 @@ fn capability_for(key: &str) -> Option<String> {
     if key.starts_with("iac:terraform:") {
         return None;
     }
+    // Delivery (CONTRACT.md §22): the GitOps controller that reconciles the
+    // project and the registries its pipelines push to. Jenkins, Azure
+    // Pipelines and GitHub environments stay facts: no pattern requires them.
+    if key.starts_with("registry:") {
+        return Some(key.to_string());
+    }
     Some(
         match key {
             "security:lockfile" => "lockfile",
@@ -48,6 +54,7 @@ fn capability_for(key: &str) -> Option<String> {
             "security:dependabot" => "dependabot",
             "iac:terraform" | "iac:bicep" | "iac:pulumi" | "iac:cloudformation" => key,
             "k8s:manifests" | "k8s:helm" => key,
+            "cd:flux" | "cd:argocd" => key,
             "tests:unit" | "tests:e2e" => key,
             "repository:static_site" => "static_site",
             "repository:monorepo" => "monorepo",
@@ -90,5 +97,33 @@ mod tests {
             Some("migrations")
         );
         assert_eq!(capability_for("iac:terraform:provider:azurerm"), None);
+        assert_eq!(capability_for("cd:flux").as_deref(), Some("cd:flux"));
+        assert_eq!(capability_for("cd:argocd").as_deref(), Some("cd:argocd"));
+        assert_eq!(
+            capability_for("registry:ghcr").as_deref(),
+            Some("registry:ghcr")
+        );
+        assert_eq!(capability_for("cd:jenkins"), None);
+        assert_eq!(capability_for("cd:github_environment:production"), None);
+        assert_eq!(
+            capability_for("ci:build_image:.github/workflows/ci.yml"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_guessed_registry_is_not_a_capability() {
+        let fact = |kind, confidence| FactDraft {
+            kind,
+            category: FactCategory::Container,
+            key: "registry:ghcr".into(),
+            label: String::new(),
+            value: String::new(),
+            confidence,
+            source_path: String::new(),
+            evidence: String::new(),
+        };
+        assert!(derive(&[fact(FactKind::Inferred, 0.6)]).is_empty());
+        assert_eq!(derive(&[fact(FactKind::Detected, 1.0)]), ["registry:ghcr"]);
     }
 }

@@ -1,0 +1,30 @@
+# Argo CD application of the staging environment of view-engine.
+# Apply it to the cluster Argo CD runs in, or let an app-of-apps pick it up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: view-engine-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/f8fvwgzc/view-engine.git
+    targetRevision: "main"
+    path: "deploy/staging"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: view-engine-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

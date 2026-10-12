@@ -51,7 +51,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         (name = "github", description = "Read-only GitHub connector"),
         (name = "projects", description = "Connected repositories and what is known about them"),
         (name = "scans", description = "Repository analysis runs"),
-        (name = "delivery", description = "Observed pipelines and deployments"),
+        (name = "delivery", description = "Observed pipelines and deployments, and continuous delivery: registries, environments, releases, promotions and rollbacks (§22)"),
         (name = "knowledge", description = "Pattern memory and semantic search"),
         (name = "proposals", description = "Ranked proposals and negotiation"),
         (name = "decisions", description = "Decision memory with provenance"),
@@ -423,8 +423,9 @@ mod tests {
         let paths = json["paths"].as_object().expect("paths object");
         // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1, plus the
         // two code browser routes of §15, the two diagram routes of §16, the
-        // 17 identity routes of §18 and the 8 review routes of §20.
-        assert_eq!(paths.len(), 84, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // 17 identity routes of §18, the 8 review routes of §20 and the 14
+        // continuous delivery paths of §22.
+        assert_eq!(paths.len(), 98, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -464,9 +465,113 @@ mod tests {
             "/api/v1/reviews/{id}/publish",
             "/api/v1/activity",
             "/api/v1/workspaces/{id}/data/purge-code-cache",
+            // §22
+            "/api/v1/registries",
+            "/api/v1/registries/{id}",
+            "/api/v1/projects/{id}/environments",
+            "/api/v1/environments/{id}",
+            "/api/v1/projects/{id}/pipeline",
+            "/api/v1/projects/{id}/releases",
+            "/api/v1/releases/{id}",
+            "/api/v1/environments/{id}/promote",
+            "/api/v1/environments/{id}/rollback",
+            "/api/v1/projects/{id}/deployment-runs",
+            "/api/v1/deployment-runs/{id}",
+            "/api/v1/projects/{id}/delivery/artifacts",
+            "/api/v1/workspaces/{id}/secrets",
+            "/api/v1/workspaces/{id}/secrets/{name}",
         ] {
             assert!(paths.contains_key(path), "missing {path}");
         }
+        // Every method §22 lists is there, with flat request bodies.
+        for (path, methods) in [
+            ("/api/v1/registries", vec!["get", "post"]),
+            ("/api/v1/registries/{id}", vec!["put", "delete"]),
+            ("/api/v1/projects/{id}/environments", vec!["get", "post"]),
+            ("/api/v1/environments/{id}", vec!["put", "delete"]),
+            ("/api/v1/projects/{id}/releases", vec!["get", "post"]),
+            (
+                "/api/v1/workspaces/{id}/secrets/{name}",
+                vec!["put", "delete"],
+            ),
+        ] {
+            let operations = paths[path].as_object().unwrap();
+            assert_eq!(
+                operations.keys().map(String::as_str).collect::<Vec<_>>(),
+                {
+                    let mut sorted = methods.clone();
+                    sorted.sort_unstable();
+                    sorted
+                },
+                "{path}"
+            );
+        }
+        let schemas = &json["components"]["schemas"];
+        for schema in [
+            "Registry",
+            "UpsertRegistryRequest",
+            "Environment",
+            "UpsertEnvironmentRequest",
+            "Release",
+            "CreateReleaseRequest",
+            "DeploymentRun",
+            "DeploymentRunStatus",
+            "PipelineStage",
+            "DeliveryPipeline",
+            "PromoteRequest",
+            "RollbackRequest",
+            "DeliveryArtifacts",
+            "SecretInfo",
+            "SetSecretRequest",
+        ] {
+            assert!(schemas[schema].is_object(), "missing schema {schema}");
+        }
+        let pipeline = &schemas["DeliveryPipeline"]["properties"];
+        for field in [
+            "successRate",
+            "deployments30d",
+            "leadTimeSeconds",
+            "stages",
+            "registry",
+        ] {
+            assert!(pipeline[field].is_object(), "DeliveryPipeline.{field}");
+        }
+        assert!(
+            schemas["UpsertEnvironmentRequest"]["properties"]["healthPath"].is_object(),
+            "bodies are flat, camelCase"
+        );
+        assert!(schemas["SecretInfo"]["properties"]["value"].is_null());
+        // The knowledge service's observed deployments keep their own enum.
+        assert_eq!(
+            schemas["DeploymentStatus"]["enum"],
+            json!([
+                "unspecified",
+                "pending",
+                "in_progress",
+                "succeeded",
+                "failed",
+                "inactive"
+            ])
+        );
+        assert_eq!(
+            schemas["DeploymentRunStatus"]["enum"],
+            json!([
+                "unspecified",
+                "pending",
+                "awaiting_approval",
+                "deploying",
+                "verifying",
+                "succeeded",
+                "failed",
+                "cancelled"
+            ])
+        );
+        assert_eq!(
+            json["paths"]["/api/v1/registries"]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["type"],
+            "array",
+            "lists are bare arrays"
+        );
         assert!(paths["/api/v1/workspaces/{id}"]["delete"].is_object());
         assert_eq!(
             json["paths"]["/api/v1/projects"]["post"]["responses"]["201"]["content"]["application/json"]
@@ -1065,6 +1170,7 @@ mod tests {
         assert_eq!(json["deleted"]["knowledge"]["facts"], 40);
         assert_eq!(json["deleted"]["intelligence"]["proposals"], 2);
         assert_eq!(json["deleted"]["execution"]["cancelled"], 1);
+        assert_eq!(json["deleted"]["identity"]["secret"], 0);
     }
 
     #[tokio::test]
@@ -1100,6 +1206,7 @@ mod tests {
             "{json}"
         );
         assert_eq!(json["audit"][0]["action"], "project.connect");
+        assert_eq!(json["secrets"], json!([]), "names only, and there are none");
         assert!(json["exportedAt"].is_string());
     }
 
@@ -1657,9 +1764,20 @@ mod tests {
         );
         let has = |seen: &[Value], entity: &str| seen.iter().any(|e| e["entity"] == entity);
         let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
-            has(seen, "scan") && has(seen, "proposal") && has(seen, "execution")
+            has(seen, "scan")
+                && has(seen, "proposal")
+                && has(seen, "execution")
+                && has(seen, "environment")
         })
         .await;
+        // The delivery entities of CONTRACT.md §22 pass like any other.
+        let deployment = events.iter().find(|e| e["entity"] == "deployment").unwrap();
+        assert_eq!(deployment["entityId"], "d1");
+        assert_eq!(deployment["status"], "awaiting_approval");
+        assert_eq!(deployment["data"]["workspace_id"], "w1");
+        let release = events.iter().find(|e| e["entity"] == "release").unwrap();
+        assert_eq!(release["action"], "created");
+        assert!(has(&events, "environment"), "{events:?}");
         assert!(has(&events, "project"), "{events:?}");
         assert!(
             events.iter().all(|e| e["entityId"] != "other"),
@@ -2065,6 +2183,789 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{json}");
         assert_eq!(json["adapter"], "simulated");
         assert_eq!(json["outputs"], json!({}));
+    }
+
+    // --- Continuous delivery (CONTRACT.md §22) -------------------------------
+
+    /// The shapes the web app is written against: flat bodies, bare
+    /// arrays, camelCase, `null` for what is not set.
+    #[tokio::test]
+    async fn delivery_routes_speak_flat_bodies_and_bare_arrays() {
+        let app = app_with_fake_execution().await;
+
+        let (status, json) = send(app.clone(), "GET", "/api/v1/registries", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let registries = json.as_array().expect("a bare array");
+        assert_eq!(registries[0]["host"], "ghcr.io");
+        assert_eq!(registries[0]["isDefault"], true);
+        assert_eq!(registries[0]["usernameSecret"], Value::Null);
+        assert_eq!(registries[0]["createdAt"], "2023-11-14T22:13:20Z");
+
+        let body = json!({
+            "name": "acr", "kind": "acr", "host": "acme.azurecr.io", "namespace": "shop",
+            "auth": "secret", "usernameSecret": "ACR_USER", "passwordSecret": "ACR_PASSWORD",
+            "isDefault": false,
+        });
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/registries",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["id"], "r-new");
+        assert_eq!(json["passwordSecret"], "ACR_PASSWORD");
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/registries/r7",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "r7", "the path names what is updated");
+        // A wrapped body is not the contract.
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/registries",
+            Some(json!({"registry": body})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_body");
+        // The service's refusals pass through with their message.
+        let mut taken = body.clone();
+        taken["name"] = json!("taken");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/registries", Some(taken)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{json}");
+        assert!(json["message"].as_str().unwrap().starts_with("name: "));
+        let (status, json) = send(app.clone(), "DELETE", "/api/v1/registries/r1", None).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        let (status, _) = send(app.clone(), "DELETE", "/api/v1/registries/r7", None).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Environments.
+        let (status, json) =
+            send(app.clone(), "GET", "/api/v1/projects/p1/environments", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let environments = json.as_array().expect("a bare array");
+        assert_eq!(environments[0]["projectId"], "p1");
+        assert_eq!(environments[0]["healthPath"], "/health");
+        assert_eq!(environments[0]["autoPromote"], false);
+        assert_eq!(environments[0]["registryId"], Value::Null);
+        assert_eq!(environments[0]["currentReleaseId"], "rel1");
+        assert_eq!(environments[0]["config"]["workflow"], "deploy.yml");
+        let environment = json!({
+            "name": "production", "kind": "webhook",
+            "config": {"url": "https://deploy.example.com/hook", "secret": "HOOK_KEY"},
+            "url": "https://api.example.com", "healthPath": "/health", "registryId": null,
+            "protected": true, "autoPromote": true, "position": 1,
+        });
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/projects/p9/environments",
+            Some(environment.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["id"], "e-new");
+        assert_eq!(json["projectId"], "p9", "the path names the project");
+        assert_eq!(json["position"], 1);
+        assert_eq!(json["protected"], true);
+        assert_eq!(json["config"]["secret"], "HOOK_KEY");
+        assert_eq!(json["source"], "ui");
+        // An edit that does not say where the stage goes leaves that to the
+        // service (which keeps it in place): the position travels as unset.
+        let mut edit = environment.clone();
+        edit.as_object_mut().unwrap().remove("position");
+        let (status, json) = send(app.clone(), "PUT", "/api/v1/environments/e7", Some(edit)).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "e7");
+        assert_eq!(json["position"], u32::MAX, "{json}");
+        // A refused setting names its key in the message the editor shows.
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/projects/p1/environments",
+            Some(json!({"name": "staging", "kind": "gitops_flux", "config": {}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_argument");
+        assert_eq!(
+            json["message"],
+            "config.path is required for gitops_flux environments"
+        );
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/environments/from-config",
+            Some(environment.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert!(json["message"].as_str().unwrap().contains(".sdi.yml"));
+        let (status, _) = send(app.clone(), "DELETE", "/api/v1/environments/e7", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, json) =
+            send(app.clone(), "DELETE", "/api/v1/environments/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+        // The pipeline, with the names the board reads.
+        let (status, json) = send(app.clone(), "GET", "/api/v1/projects/p1/pipeline", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["projectId"], "p1");
+        assert_eq!(json["successRate"], 0.75);
+        assert_eq!(json["deployments30d"], 8);
+        assert_eq!(json["leadTimeSeconds"], 5400);
+        assert_eq!(json["registry"]["name"], "ghcr");
+        let stages = json["stages"].as_array().unwrap();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0]["environment"]["name"], "staging");
+        assert_eq!(stages[0]["current"]["id"], "rel1");
+        assert_eq!(stages[0]["current"]["deployedTo"], json!(["staging"]));
+        assert_eq!(stages[0]["lastRun"]["status"], "awaiting_approval");
+        assert_eq!(stages[0]["lastRun"]["executionId"], "x1");
+        assert_eq!(stages[0]["candidate"]["id"], "rel2");
+        assert_eq!(stages[0]["health"], "healthy");
+        assert_eq!(stages[1]["environment"]["source"], "config");
+        assert_eq!(stages[1]["environment"]["url"], Value::Null);
+        assert_eq!(stages[1]["current"], Value::Null);
+        assert_eq!(stages[1]["lastRun"], Value::Null);
+        assert_eq!(stages[1]["candidate"], Value::Null);
+        assert_eq!(stages[1]["health"], "unknown");
+
+        // Releases.
+        let (status, json) = send(app.clone(), "GET", "/api/v1/projects/p1/releases", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let releases = json.as_array().expect("a bare array");
+        assert_eq!(releases.len(), 2);
+        assert_eq!(
+            releases[0]["commitSha"],
+            "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+        );
+        assert_eq!(releases[0]["digest"], Value::Null);
+        assert_eq!(releases[0]["pipelineRunId"], Value::Null);
+        assert_eq!(releases[0]["verified"], false);
+        let (_, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/releases?limit=1",
+            None,
+        )
+        .await;
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        let (_, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/releases?before=2023-11-14T22:13:20Z",
+            None,
+        )
+        .await;
+        assert_eq!(json, json!([]), "the cursor reached the service");
+        let (status, json) = send(app.clone(), "GET", "/api/v1/releases/rel1", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["notes"], "- Add health endpoint (a1b2c3d)");
+        let (status, _) = send(app.clone(), "GET", "/api/v1/releases/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // A manual release: both fields optional, `null` is "not said".
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/projects/p1/releases",
+            Some(json!({"commitSha": null, "version": "v1.4.2"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["version"], "v1.4.2");
+        assert_eq!(json["source"], "manual");
+        assert_eq!(json["createdBy"], "u1");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/projects/p1/releases", None).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "no body is the default branch head: {json}"
+        );
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/projects/p1/releases",
+            Some(json!({"commitSha": "0000000"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(json["message"].as_str().unwrap().starts_with("commit_sha"));
+
+        // Promote and rollback answer the run, with its execution.
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/environments/e1/promote",
+            Some(json!({"releaseId": null})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["kind"], "promote");
+        assert_eq!(json["environmentId"], "e1");
+        assert_eq!(
+            json["releaseId"], "candidate",
+            "no release: the stage's candidate"
+        );
+        assert_eq!(json["executionId"], "x1");
+        assert_eq!(json["status"], "awaiting_approval");
+        assert_eq!(json["externalUrl"], Value::Null);
+        assert_eq!(json["finishedAt"], Value::Null);
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/environments/e1/promote",
+            Some(json!({"releaseId": "rel2"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["releaseId"], "rel2");
+        let (status, json) =
+            send(app.clone(), "POST", "/api/v1/environments/e1/promote", None).await;
+        assert_eq!(status, StatusCode::CREATED, "a body is optional: {json}");
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/environments/busy/promote",
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert!(json["message"].as_str().unwrap().contains("still open"));
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/environments/e1/rollback",
+            Some(json!({"releaseId": null, "reason": "login is broken"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["kind"], "rollback");
+        assert_eq!(json["releaseId"], "previous");
+        assert_eq!(json["previousReleaseId"], "rel2");
+        assert_eq!(json["executionId"], "x1");
+        assert_eq!(
+            json["externalUrl"], "login is broken",
+            "the reason reached the service"
+        );
+
+        // Deployment runs.
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/deployment-runs",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json.as_array().expect("a bare array").len(), 2);
+        let (_, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/deployment-runs?environmentId=e9&limit=1",
+            None,
+        )
+        .await;
+        assert_eq!(json, json!([]), "the filter reached the service");
+        let (status, json) = send(app.clone(), "GET", "/api/v1/deployment-runs/d1", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["status"], "succeeded");
+        assert_eq!(json["durationSeconds"], 90);
+        assert_eq!(json["finishedAt"], "2023-11-14T22:14:50Z");
+        assert_eq!(
+            json["externalUrl"],
+            "https://github.com/acme/repo/actions/runs/7"
+        );
+        let (status, _) = send(app, "GET", "/api/v1/deployment-runs/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Reads viewer, create release member, promote and rollback approver,
+    /// registries and environment edits admin; the role travels on.
+    #[tokio::test]
+    async fn delivery_routes_follow_the_role_matrix() {
+        let app = app_with_fake_execution().await;
+        let (viewer, member, approver, admin) = (
+            Some("t-viewer"),
+            Some("t-member"),
+            Some("t-approver"),
+            Some("t-admin"),
+        );
+        for path in [
+            "/api/v1/registries",
+            "/api/v1/projects/p1/environments",
+            "/api/v1/projects/p1/pipeline",
+            "/api/v1/projects/p1/releases",
+            "/api/v1/releases/rel1",
+            "/api/v1/projects/p1/deployment-runs",
+            "/api/v1/deployment-runs/d1",
+        ] {
+            let (status, json, _) = send_as(app.clone(), viewer, "GET", path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {json}");
+        }
+        let release = Some(json!({}));
+        let (status, _, _) = send_as(
+            app.clone(),
+            viewer,
+            "POST",
+            "/api/v1/projects/p1/releases",
+            release.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/projects/p1/releases",
+            release,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+
+        for path in [
+            "/api/v1/environments/e1/promote",
+            "/api/v1/environments/e1/rollback",
+        ] {
+            let (status, json, _) =
+                send_as(app.clone(), member, "POST", path, Some(json!({}))).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {json}");
+            assert!(json["message"].as_str().unwrap().contains("approver"));
+            let (status, json, _) =
+                send_as(app.clone(), approver, "POST", path, Some(json!({}))).await;
+            assert_eq!(status, StatusCode::CREATED, "{path}: {json}");
+            assert_eq!(json["executionId"], "x1");
+        }
+
+        let registry = json!({"name": "acr", "kind": "acr"});
+        let environment = json!({"name": "staging", "kind": "github_actions"});
+        for (method, path, body) in [
+            ("POST", "/api/v1/registries", Some(registry.clone())),
+            ("PUT", "/api/v1/registries/r7", Some(registry.clone())),
+            ("DELETE", "/api/v1/registries/r7", None),
+            (
+                "POST",
+                "/api/v1/projects/p1/environments",
+                Some(environment.clone()),
+            ),
+            ("PUT", "/api/v1/environments/e7", Some(environment.clone())),
+            ("DELETE", "/api/v1/environments/e7", None),
+        ] {
+            let (status, json, _) =
+                send_as(app.clone(), approver, method, path, body.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {json}");
+            let (status, json, _) = send_as(app.clone(), admin, method, path, body).await;
+            assert!(status.is_success(), "{method} {path}: {status} {json}");
+        }
+    }
+
+    /// The setup files come from the intelligence service; while it does
+    /// not generate them the route says 501, not an opaque 500.
+    #[tokio::test]
+    async fn delivery_artifacts_pass_an_unimplemented_generator_through_as_501() {
+        let (status, json) = send(
+            app_with_fake_intelligence().await,
+            "GET",
+            "/api/v1/projects/p1/delivery/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{json}");
+        assert_eq!(json["code"], "unimplemented");
+        assert!(json["message"].as_str().unwrap().contains("setup files"));
+        // Other failures keep their mapping.
+        let (status, json) = send(
+            app().await,
+            "GET",
+            "/api/v1/projects/p1/delivery/artifacts",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    }
+
+    /// Workspace secrets: an admin stores, lists and deletes them; a value
+    /// goes in and never comes out; the export names them; deleting the
+    /// workspace removes them.
+    #[tokio::test]
+    async fn workspace_secrets_are_write_only_exported_by_name_and_deleted_with_the_workspace() {
+        let stack = app_with_every_fake().await;
+        let app = stack.app.clone();
+        let value = "jenkins-api-token-0123456789-wxyz";
+
+        let (status, json) = send(app.clone(), "GET", "/api/v1/workspaces/w1/secrets", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json, json!([]), "a bare array");
+
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/workspaces/w1/secrets/JENKINS_TOKEN",
+            Some(json!({"value": value, "description": "CI trigger token"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["name"], "JENKINS_TOKEN");
+        assert_eq!(json["hint"], "wxyz");
+        assert_eq!(json["description"], "CI trigger token");
+        assert_eq!(json["updatedBy"], "octo");
+        assert!(json.get("value").is_none());
+        assert!(!json.to_string().contains(value));
+        // The value reached identity (and only its length was kept there).
+        assert_eq!(
+            *stack.recorder.secret_value_lengths.lock().unwrap(),
+            [value.len()]
+        );
+        // `description` is optional.
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/workspaces/w1/secrets/DEPLOY_HOOK_SECRET",
+            Some(json!({"value": "whsec_abcdef0123456789"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["description"], Value::Null);
+        // Identity's refusals name the field.
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/workspaces/w1/secrets/jenkins",
+            Some(json!({"value": value})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("name must be")
+        );
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/workspaces/w1/secrets/EMPTY_ONE",
+            Some(json!({"value": ""})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(json["message"].as_str().unwrap().starts_with("value must"));
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/workspaces/w1/secrets/NO_VALUE",
+            Some(json!({"description": "forgot the value"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+
+        let (status, json) = send(app.clone(), "GET", "/api/v1/workspaces/w1/secrets", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let names: Vec<&str> = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["DEPLOY_HOOK_SECRET", "JENKINS_TOKEN"]);
+        assert!(!json.to_string().contains(value));
+
+        // Admins only, also to read the names; another workspace's are 403.
+        for (method, path, body) in [
+            ("GET", "/api/v1/workspaces/w1/secrets", None),
+            (
+                "PUT",
+                "/api/v1/workspaces/w1/secrets/JENKINS_TOKEN",
+                Some(json!({"value": value})),
+            ),
+            (
+                "DELETE",
+                "/api/v1/workspaces/w1/secrets/JENKINS_TOKEN",
+                None,
+            ),
+        ] {
+            let (status, json, _) =
+                send_as(app.clone(), Some("t-approver"), method, path, body.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {json}");
+            let (status, _, _) = send_as(app.clone(), None, method, path, body).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
+        }
+        let (status, _) = send(app.clone(), "GET", "/api/v1/workspaces/w2/secrets", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-admin"),
+            "GET",
+            "/api/v1/workspaces/w1/secrets",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+
+        // The export lists the names, never a value.
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/v1/workspaces/w1/data/export",
+                Some(OWNER),
+                None,
+            ))
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let export: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert_eq!(
+            export["secrets"],
+            json!(["DEPLOY_HOOK_SECRET", "JENKINS_TOKEN"])
+        );
+        assert!(!text.contains(value));
+        assert!(!text.contains("wxyz"), "not even the hint");
+
+        // Deleting one, then the workspace: the rest goes with it.
+        let (status, json) = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/workspaces/w1/secrets/JENKINS_TOKEN",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let (status, json) = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/workspaces/w1/secrets/JENKINS_TOKEN",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        let (status, json) = send(app.clone(), "DELETE", "/api/v1/workspaces/w1", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["deleted"]["identity"]["secret"], 1);
+        assert!(stack.recorder.secrets.lock().unwrap().is_empty());
+    }
+
+    fn workflow_run(repo: &str, workflow: &str, sha: &str, run_id: u64) -> Value {
+        json!({
+            "action": "completed",
+            "installation": {"id": 777},
+            "organization": {"login": "acme"},
+            "repository": {"full_name": repo, "default_branch": "main"},
+            "workflow_run": {
+                "id": run_id,
+                "name": workflow.trim_end_matches(".yml"),
+                "path": format!(".github/workflows/{workflow}"),
+                "head_branch": "main",
+                "head_sha": sha,
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        })
+    }
+
+    /// What the fake execution was asked to create for `marker` (a commit
+    /// SHA or tag only this test uses), with who asked.
+    fn created_releases(
+        marker: &str,
+    ) -> Vec<(String, sdi_proto::execution::v1::CreateReleaseRequest)> {
+        fakes::execution::RELEASES
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, request)| request.commit_sha == marker || request.tag == marker)
+            .cloned()
+            .collect()
+    }
+
+    /// A build workflow succeeding on the default branch cuts a release as
+    /// `system`: the workflow `.sdi.yml` names, else one the scan found to
+    /// build an image. Promoting it is the execution service's business.
+    #[tokio::test]
+    async fn webhook_build_success_creates_a_release_for_the_build_workflow_only() {
+        let sha = "1111111111111111111111111111111111111111";
+        let (status, json) = webhook(
+            app_with_every_fake().await,
+            "workflow_run",
+            &workflow_run("acme/repo", "ci.yml", sha, 8841),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["outcome"], "release_created");
+        let created = created_releases(sha);
+        assert_eq!(created.len(), 1);
+        let (user, request) = &created[0];
+        assert_eq!(user, "system");
+        assert_eq!(request.project_id, "p1");
+        assert_eq!(request.source, "pipeline");
+        assert_eq!(request.pipeline_run_id, "8841");
+        assert!(
+            request.tag.is_empty() && request.image.is_empty(),
+            "the service derives what the event does not say"
+        );
+
+        // The deploy workflow SDI dispatched itself builds nothing.
+        let other = "2222222222222222222222222222222222222222";
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "workflow_run",
+            &workflow_run("acme/repo", "deploy.yml", other, 8842),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        assert!(created_releases(other).is_empty());
+
+        // `.sdi.yml` names release.yml: ci.yml no longer counts, even
+        // though the scan saw it build an image.
+        let configured = "3333333333333333333333333333333333333333";
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "workflow_run",
+            &workflow_run("acme/configured", "ci.yml", configured, 8843),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "workflow_run",
+            &workflow_run("acme/configured", "release.yml", configured, 8844),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "release_created");
+        let created = created_releases(configured);
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].1.project_id, "p-configured");
+        assert_eq!(created[0].1.pipeline_run_id, "8844");
+
+        // Not the default branch, not a success, not a connected repository.
+        let mut feature = workflow_run("acme/repo", "ci.yml", sha, 1);
+        feature["workflow_run"]["head_branch"] = json!("feature/x");
+        let mut failed = workflow_run("acme/repo", "ci.yml", sha, 2);
+        failed["workflow_run"]["conclusion"] = json!("failure");
+        for body in [
+            feature,
+            failed,
+            workflow_run("acme/unknown", "ci.yml", sha, 3),
+        ] {
+            let (status, json) = webhook(
+                app_with_every_fake().await,
+                "workflow_run",
+                &body,
+                "hook-secret",
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+            assert_eq!(json["outcome"], "ignored", "{body}");
+        }
+        assert_eq!(created_releases(sha).len(), 1, "nothing more was created");
+    }
+
+    /// A container image published to the registry is a release with the
+    /// tag and digest the event carries.
+    #[tokio::test]
+    async fn webhook_published_package_creates_a_release_with_its_tag_and_digest() {
+        let digest = format!("sha256:{}", "c".repeat(64));
+        let tag = "pkg-7f3a9c1";
+        let event = |key: &str| {
+            json!({
+                "action": "published",
+                "installation": {"id": 777},
+                "organization": {"login": "acme"},
+                "repository": {"full_name": "acme/repo"},
+                key: {
+                    "name": "repo",
+                    "namespace": "acme",
+                    "package_type": "CONTAINER",
+                    "package_version": {
+                        "version": digest,
+                        "target_oid": "4444444444444444444444444444444444444444",
+                        "package_url": format!("ghcr.io/acme/repo:{tag}"),
+                        "container_metadata": {"tag": {"name": tag, "digest": digest}},
+                    }
+                }
+            })
+        };
+        let (status, json) = webhook(
+            app_with_every_fake().await,
+            "registry_package",
+            &event("registry_package"),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["outcome"], "release_created");
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "package",
+            &event("package"),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "release_created");
+        let created = created_releases(tag);
+        assert_eq!(
+            created.len(),
+            2,
+            "both events are forwarded; the service is idempotent"
+        );
+        for (user, request) in &created {
+            assert_eq!(user, "system");
+            assert_eq!(request.project_id, "p1");
+            assert_eq!(request.source, "package");
+            assert_eq!(request.image, "ghcr.io/acme/repo");
+            assert_eq!(request.tag, tag);
+            assert_eq!(request.digest, digest);
+            assert_eq!(
+                request.commit_sha,
+                "4444444444444444444444444444444444444444"
+            );
+        }
+
+        // An untagged manifest and an unknown repository are nothing.
+        let mut untagged = event("registry_package");
+        untagged["registry_package"]["package_version"]["container_metadata"]["tag"]["name"] =
+            json!("");
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "registry_package",
+            &untagged,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        let mut elsewhere = event("registry_package");
+        elsewhere["repository"]["full_name"] = json!("acme/unknown");
+        let (_, json) = webhook(
+            app_with_every_fake().await,
+            "registry_package",
+            &elsewhere,
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(json["outcome"], "ignored");
+        // The execution service down: accepted, the failure is recorded.
+        let knowledge = fakes::knowledge::serve().await;
+        let (status, json) = webhook(
+            stack(&format!("http://{knowledge}"), DEAD, DEAD).await,
+            "registry_package",
+            &event("registry_package"),
+            "hook-secret",
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["outcome"], "failed");
     }
 
     #[tokio::test]

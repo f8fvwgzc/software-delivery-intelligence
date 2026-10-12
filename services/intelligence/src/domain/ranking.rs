@@ -476,6 +476,44 @@ pub fn attach_artifacts(
     }
 }
 
+/// Adds the project's delivery setup files (CONTRACT.md §22) to the options
+/// that ship a container: the build-and-push workflow, the deploy workflow
+/// and the manifests of the environments' deployers. An option that
+/// publishes static files (GitHub Pages) has no image to release and keeps
+/// its own files, as does an option of a project without a Dockerfile of
+/// its own or from the pattern.
+pub fn attach_delivery(
+    options: &mut [RankedOption],
+    patterns: &[Pattern],
+    context: &ProjectContext,
+    setup: &generators::delivery::Setup,
+) {
+    let containerized = context.capabilities.iter().any(|c| c == "dockerfile");
+    for option in options.iter_mut() {
+        let has_dockerfile = option
+            .artifacts
+            .iter()
+            .any(|a| a.path == "Dockerfile" || a.path.ends_with("/Dockerfile"));
+        let static_pages = option
+            .artifacts
+            .iter()
+            .any(|a| a.content.contains("actions/deploy-pages"));
+        if static_pages || !(containerized || has_dockerfile) {
+            continue;
+        }
+        // The deploy step follows the option's own pattern where it names a
+        // target; otherwise what the repository shows decides.
+        let pattern = patterns
+            .iter()
+            .find(|p| p.id == option.pattern_id)
+            .and_then(|p| {
+                generators::deploy_target(&p.id, &p.cloud, &p.runtime)
+                    .map(|target| (target, p.name.as_str()))
+            });
+        generators::delivery::for_option(context, setup, pattern).merge_into(&mut option.artifacts);
+    }
+}
+
 /// With a budget, the cheapest option that fits it (or the cheapest overall
 /// when none does) is guaranteed a slot in the top five, even when its
 /// signals rank it lower: the user must always see what they can afford.
@@ -1163,6 +1201,99 @@ mod tests {
         assert_eq!(category_for(ProposalKind::Unspecified), None);
         assert!(carries_artifacts(ProposalKind::Modernization));
         assert!(!carries_artifacts(ProposalKind::Documentation));
+    }
+
+    /// CONTRACT.md §22: with environments configured, an option that ships
+    /// a container also ships the build and deploy setup; a static site
+    /// keeps its own files.
+    #[test]
+    fn delivery_setup_is_attached_to_the_options_that_ship_a_container() {
+        use sdi_proto::execution::v1::Environment;
+
+        let context = fixtures::context();
+        let patterns = fixtures::catalog();
+        let weights = Weights::default();
+        let input = RankingInput {
+            context: &context,
+            patterns: &patterns,
+            decisions: &[],
+            similar: &[],
+            constraints: &[],
+            weights: &weights,
+            now: Utc::now(),
+            kind: ProposalKind::Deployment,
+            cost_ceiling: DEFAULT_COST_CEILING,
+        };
+        let mut options = rank(&input);
+        let before: Vec<usize> = options.iter().map(|o| o.artifacts.len()).collect();
+        let environments = [Environment {
+            project_id: "proj-1".into(),
+            name: "production".into(),
+            kind: "github_actions".into(),
+            protected: true,
+            ..Default::default()
+        }];
+        let setup = generators::delivery::Setup {
+            registries: Vec::new(),
+            environments: environments.to_vec(),
+        };
+        // A GitHub Pages option publishes files, not an image.
+        let mut pages = options[0].clone();
+        pages.artifacts = vec![model::ArtifactData {
+            path: ".github/workflows/deploy.yml".into(),
+            content: "      - uses: actions/deploy-pages@v4\n".into(),
+            language: "yaml".into(),
+            purpose: "Publishes the site.".into(),
+            replaces_existing: false,
+        }];
+        options.push(pages);
+        attach_delivery(&mut options, &patterns, &context, &setup);
+
+        let pages = options.pop().unwrap();
+        assert_eq!(
+            pages.artifacts.len(),
+            1,
+            "a static site keeps its own files"
+        );
+        for (option, before) in options.iter().zip(before) {
+            let paths: Vec<&str> = option.artifacts.iter().map(|a| a.path.as_str()).collect();
+            assert!(paths.contains(&".github/workflows/build.yml"), "{paths:?}");
+            let deploy: Vec<_> = option
+                .artifacts
+                .iter()
+                .filter(|a| a.path == ".github/workflows/deploy.yml")
+                .collect();
+            assert_eq!(deploy.len(), 1, "{paths:?}");
+            assert!(deploy[0].content.contains("workflow_dispatch"));
+            assert!(option.artifacts.len() >= before, "nothing else is lost");
+            // The deploy step is the option's own target, not whatever the
+            // repository happens to show today.
+            let command = match option.pattern_id.as_str() {
+                "vm-docker-compose" => "docker compose -f docker-compose.yml",
+                "azure-container-apps" => "az containerapp update",
+                "aws-ecs-fargate" => "aws ecs update-service",
+                "kubernetes-helm" => {
+                    "helm upgrade --install \"$HELM_RELEASE\" \"./charts/view-engine\""
+                }
+                other => panic!("unexpected pattern {other}"),
+            };
+            assert!(
+                deploy[0].content.contains(command),
+                "{}: no `{command}` in\n{}",
+                option.pattern_id,
+                deploy[0].content
+            );
+        }
+        // A project that ships no container, with a pattern that adds none,
+        // has nothing to build.
+        let mut bare = context.clone();
+        bare.capabilities.retain(|c| c != "dockerfile");
+        let mut option = options[0].clone();
+        option.artifacts.retain(|a| a.path.ends_with(".md"));
+        let docs = option.artifacts.len();
+        let mut options = vec![option];
+        attach_delivery(&mut options, &patterns, &bare, &setup);
+        assert_eq!(options[0].artifacts.len(), docs);
     }
 
     /// Six catalog-like patterns whose signals are identical except cost,

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 /// `(entity name, table, order)`: parents before children so an import
 /// could replay the stream in order.
-pub const TABLES: [(&str, &str, &str); 7] = [
+pub const TABLES: [(&str, &str, &str); 11] = [
     ("policy", "policies", "action_type"),
     ("identity", "identities", "id"),
     ("grant", "grants", "identity_id, permission"),
@@ -19,6 +19,12 @@ pub const TABLES: [(&str, &str, &str); 7] = [
     ("step", "steps", "execution_id, position"),
     ("event", "events", "execution_id, seq"),
     ("approval", "approvals", "id"),
+    // Continuous delivery (CONTRACT.md §22). Registries and environments
+    // hold secret *names* only, so the export carries no secret value.
+    ("registry", "registries", "name"),
+    ("release", "releases", "created_at, id"),
+    ("environment", "environments", "project_id, position, name"),
+    ("deployment_run", "deployment_runs", "created_at, id"),
 ];
 
 const EXPORT_BUFFER: usize = 64;

@@ -1,6 +1,7 @@
 //! Platform-wide change notifications (CONTRACT.md §8 "Live events"). One
-//! broadcast channel for the whole service: every execution and approval
-//! change is published here and `WatchEvents` streams it to the gateway,
+//! broadcast channel for the whole service: every execution, approval,
+//! release, deployment and environment change is published here and
+//! `WatchEvents` streams it to the gateway,
 //! which merges the three services' feeds into one SSE stream. The per-step
 //! log stays on `WatchExecution`; this feed only says *what* changed. Every
 //! event carries `data["workspace_id"]` and a watch only sees its own
@@ -56,6 +57,31 @@ impl PlatformEvents {
         data.insert(WORKSPACE_KEY.to_owned(), workspace_id.to_string());
         self.publish(PlatformEvent {
             entity: "execution".to_owned(),
+            entity_id: id.to_owned(),
+            project_id: project_id.to_owned(),
+            action: action.to_owned(),
+            status: status.to_owned(),
+            at: Some(time::to_proto(Utc::now())),
+            data: data.into_iter().collect(),
+        });
+    }
+
+    /// A delivery entity changed (CONTRACT.md §22): `release`, `deployment`
+    /// or `environment`, with the status in that entity's own vocabulary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn delivery(
+        &self,
+        workspace_id: Uuid,
+        entity: &str,
+        id: &str,
+        project_id: &str,
+        action: &str,
+        status: &str,
+        mut data: BTreeMap<String, String>,
+    ) {
+        data.insert(WORKSPACE_KEY.to_owned(), workspace_id.to_string());
+        self.publish(PlatformEvent {
+            entity: entity.to_owned(),
             entity_id: id.to_owned(),
             project_id: project_id.to_owned(),
             action: action.to_owned(),

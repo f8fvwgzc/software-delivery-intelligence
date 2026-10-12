@@ -1,9 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
-type MotionLib = typeof import('./motion-lib')
-
-let loaded: MotionLib | null = null
-const loadMotion = () => import('./motion-lib').then((lib) => (loaded = lib))
+import { useMotionLib } from './use-motion-lib'
 
 const ENTER = { opacity: 0, y: 4 }
 const SHOWN = { opacity: 1, y: 0 }
@@ -17,20 +14,9 @@ const TRANSITION = { duration: 0.15, ease: [0.2, 0, 0, 1] as const }
  * is honoured through MotionConfig.
  */
 export function PageTransition({ children, routeKey }: { children: ReactNode; routeKey: string }) {
-  const [lib, setLib] = useState<MotionLib | null>(loaded)
+  const lib = useMotionLib()
   // The route the shell mounted on: it never animates, so the runtime landing does not remount it.
   const [firstKey] = useState(routeKey)
-
-  useEffect(() => {
-    if (lib) return
-    let active = true
-    void loadMotion().then((module) => {
-      if (active) setLib(module)
-    })
-    return () => {
-      active = false
-    }
-  }, [lib])
 
   if (!lib || routeKey === firstKey) {
     return (

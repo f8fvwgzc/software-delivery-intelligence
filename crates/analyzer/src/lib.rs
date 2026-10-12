@@ -121,7 +121,14 @@ fn technologies(facts: &[FactDraft]) -> Vec<String> {
                 }
                 FactCategory::Container if f.key == "container:nginx" => "nginx".to_string(),
                 FactCategory::Container => continue,
-                FactCategory::CiCd if f.key.starts_with("ci:workflow:") => continue,
+                // Per-workflow facts describe files, not tools.
+                FactCategory::CiCd
+                    if f.key.starts_with("ci:workflow:")
+                        || f.key.starts_with("ci:build:")
+                        || f.key.starts_with("ci:build_image:") =>
+                {
+                    continue;
+                }
                 FactCategory::Iac if f.key.starts_with("iac:terraform:") => continue,
                 FactCategory::Datastore => {
                     if f.key.starts_with("datastore:orm:")

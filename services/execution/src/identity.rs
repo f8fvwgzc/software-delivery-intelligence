@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use chrono::Utc;
 use sdi_common::{cache::TtlCache, grpc::MAX_MESSAGE_BYTES, principal::Principal};
 use sdi_proto::identity::v1::{
-    AuditEntry, GetInstallationTokenRequest, RecordAuditRequest,
-    identity_service_client::IdentityServiceClient,
+    AuditEntry, GetInstallationTokenRequest, GetWorkspaceRequest, ListSecretsRequest,
+    RecordAuditRequest, ResolveSecretRequest, identity_service_client::IdentityServiceClient,
 };
-use tonic::{Request, transport::Channel};
+use tonic::{Code, Request, Status, transport::Channel};
 use uuid::Uuid;
 
-use crate::adapters::GithubAccess;
+use crate::adapters::{GithubAccess, SecretError, SecretSource};
 
 /// Identity answers from memory or one row; a slower answer is an outage.
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -98,6 +98,18 @@ pub struct NoGithubAccess;
 impl GithubAccessSource for NoGithubAccess {
     async fn access(&self, _: Uuid) -> Option<GithubAccess> {
         None
+    }
+}
+
+/// Always the same access: a fake GitHub for every workspace (tests).
+#[cfg(test)]
+pub struct StaticGithubAccess(pub GithubAccess);
+
+#[cfg(test)]
+#[async_trait]
+impl GithubAccessSource for StaticGithubAccess {
+    async fn access(&self, _: Uuid) -> Option<GithubAccess> {
+        Some(self.0.clone())
     }
 }
 
@@ -185,6 +197,193 @@ impl GithubAccessSource for GrpcGithubAccess {
             },
         );
         Some(access)
+    }
+}
+
+/// What the delivery module asks identity about a workspace (CONTRACT.md
+/// §22): its GitHub login, which is the namespace of the seeded GHCR
+/// registry, and the names of its secrets, to validate what an environment
+/// or a registry references. Values are never listed.
+#[async_trait]
+pub trait WorkspaceDirectory: Send + Sync {
+    /// The GitHub login of the organisation or user behind the workspace.
+    async fn slug(&self, workspace_id: Uuid) -> Result<String, Status>;
+    /// The workspace's secret names, asked as `principal` (an admin, or the
+    /// workspace's system principal).
+    async fn secret_names(&self, principal: &Principal) -> Result<Vec<String>, Status>;
+}
+
+/// Identity over gRPC: the workspace directory and the secret resolver of
+/// deployment runs.
+pub struct GrpcIdentity {
+    client: IdentityServiceClient<Channel>,
+}
+
+impl GrpcIdentity {
+    pub fn new(url: &str) -> Result<Self> {
+        Ok(Self {
+            client: IdentityServiceClient::new(sdi_common::grpc::lazy_channel(url)?)
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES),
+        })
+    }
+}
+
+fn outgoing<T>(principal: &Principal, message: T) -> Request<T> {
+    let mut request = Request::new(message);
+    principal.apply(&mut request);
+    request.set_timeout(CALL_TIMEOUT);
+    request
+}
+
+#[async_trait]
+impl WorkspaceDirectory for GrpcIdentity {
+    async fn slug(&self, workspace_id: Uuid) -> Result<String, Status> {
+        let principal = Principal::system(workspace_id.to_string());
+        let workspace = self
+            .client
+            .clone()
+            .get_workspace(outgoing(
+                &principal,
+                GetWorkspaceRequest {
+                    id: workspace_id.to_string(),
+                },
+            ))
+            .await
+            .map_err(|status| match status.code() {
+                Code::NotFound => Status::failed_precondition(
+                    "the identity service does not know this workspace, so its registry namespace cannot be derived",
+                ),
+                _ => Status::unavailable(format!(
+                    "the identity service could not describe the workspace: {}",
+                    status.message()
+                )),
+            })?
+            .into_inner();
+        Ok(workspace.slug)
+    }
+
+    async fn secret_names(&self, principal: &Principal) -> Result<Vec<String>, Status> {
+        let listed = self
+            .client
+            .clone()
+            .list_secrets(outgoing(
+                principal,
+                ListSecretsRequest {
+                    workspace_id: principal.workspace_id.clone(),
+                },
+            ))
+            .await
+            .map_err(|status| match status.code() {
+                Code::PermissionDenied => status,
+                _ => Status::unavailable(format!(
+                    "the identity service could not list the workspace's secrets: {}",
+                    status.message()
+                )),
+            })?
+            .into_inner();
+        Ok(listed.secrets.into_iter().map(|s| s.name).collect())
+    }
+}
+
+/// `Identity.ResolveSecret` as the workspace's system principal: the one
+/// caller identity hands a value to. The value lives in the step that
+/// asked for it and nowhere else.
+#[async_trait]
+impl SecretSource for GrpcIdentity {
+    async fn resolve(&self, workspace_id: Uuid, name: &str) -> Result<String, SecretError> {
+        let principal = Principal::system(workspace_id.to_string());
+        let request = outgoing(
+            &principal,
+            ResolveSecretRequest {
+                workspace_id: workspace_id.to_string(),
+                name: name.to_owned(),
+            },
+        );
+        let mut client = self.client.clone();
+        match tokio::time::timeout(CALL_TIMEOUT, client.resolve_secret(request)).await {
+            Ok(Ok(resolved)) => Ok(resolved.into_inner().value),
+            Ok(Err(status)) if status.code() == Code::NotFound => {
+                Err(SecretError::NotFound(name.to_owned()))
+            }
+            Ok(Err(status)) => {
+                tracing::warn!(workspace = %workspace_id, secret = name, %status, "secret not resolved");
+                Err(SecretError::Unavailable(format!(
+                    "the identity service answered {:?}",
+                    status.code()
+                )))
+            }
+            Err(_) => Err(SecretError::Unavailable(
+                "the identity service did not answer in time".to_owned(),
+            )),
+        }
+    }
+}
+
+/// A workspace directory that knows nothing: a service without an identity
+/// service (tests of the pre-delivery RPCs).
+#[cfg(test)]
+pub struct NoWorkspaceDirectory;
+
+#[cfg(test)]
+#[async_trait]
+impl WorkspaceDirectory for NoWorkspaceDirectory {
+    async fn slug(&self, _: Uuid) -> Result<String, Status> {
+        Err(Status::unavailable(
+            "the identity service is not configured on this execution service",
+        ))
+    }
+
+    async fn secret_names(&self, _: &Principal) -> Result<Vec<String>, Status> {
+        Err(Status::unavailable(
+            "the identity service is not configured on this execution service",
+        ))
+    }
+}
+
+/// Test double: one slug for every workspace and a shared, editable set of
+/// secrets, which also serves as the runs' secret source.
+#[cfg(test)]
+#[derive(Clone)]
+pub struct StaticWorkspaces {
+    pub slug: String,
+    pub secrets: crate::adapters::StaticSecrets,
+    /// Principals that asked for the secret names.
+    pub listed_by: Arc<Mutex<Vec<Principal>>>,
+}
+
+#[cfg(test)]
+impl StaticWorkspaces {
+    pub fn new(slug: &str, secrets: &[(&str, &str)]) -> Self {
+        Self {
+            slug: slug.to_owned(),
+            secrets: crate::adapters::StaticSecrets::with(secrets),
+            listed_by: Arc::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl WorkspaceDirectory for StaticWorkspaces {
+    async fn slug(&self, _: Uuid) -> Result<String, Status> {
+        Ok(self.slug.clone())
+    }
+
+    async fn secret_names(&self, principal: &Principal) -> Result<Vec<String>, Status> {
+        principal.require(sdi_common::principal::Role::Admin)?;
+        self.listed_by
+            .lock()
+            .expect("listed lock")
+            .push(principal.clone());
+        Ok(self
+            .secrets
+            .0
+            .lock()
+            .expect("secrets lock")
+            .keys()
+            .cloned()
+            .collect())
     }
 }
 

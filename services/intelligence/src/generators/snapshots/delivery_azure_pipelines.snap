@@ -1,0 +1,87 @@
+# Deploys one released image of view-engine to one environment.
+# SDI queues this pipeline once a promotion has passed its policy gates and
+# follows the run to its end. The approvals and checks of the Azure DevOps
+# environment apply before the deployment job starts.
+
+trigger: none
+pr: none
+
+parameters:
+  - name: environment
+    displayName: Environment to deploy to
+    type: string
+    values:
+      - "staging"
+      - "production"
+  - name: image
+    displayName: Image repository without a tag
+    type: string
+    default: "ghcr.io/f8fvwgzc/view-engine"
+  - name: digest
+    displayName: Digest of the released image (sha256:...)
+    type: string
+    default: ""
+  - name: version
+    displayName: Release version, which is also the image tag
+    type: string
+    default: ""
+
+variables:
+  - name: KUBE_DEPLOYMENT
+    value: "view-engine"
+  - name: KUBE_CONTAINER
+    value: "view-engine"
+  - name: KUBE_NAMESPACE
+    value: ${{ parameters.environment }}
+  - group: view-engine-${{ parameters.environment }}
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: deploy
+    displayName: Deploy to ${{ parameters.environment }}
+    jobs:
+      - deployment: deploy
+        displayName: Deploy ${{ parameters.version }}
+        environment: ${{ parameters.environment }}
+        timeoutInMinutes: 30
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: none
+                - checkout: none
+                - bash: |
+                    set -eu
+                    if [ -z "$IMAGE" ]; then echo "An image is required" >&2; exit 1; fi
+                    if [ -z "$VERSION" ] && [ -z "$DIGEST" ]; then echo "A version or a digest is required" >&2; exit 1; fi
+                    if [ -n "$DIGEST" ]; then ref="$IMAGE@$DIGEST"; else ref="$IMAGE:$VERSION"; fi
+                    echo "##vso[task.setvariable variable=IMAGE_REF]$ref"
+                  displayName: Verify the release
+                  env:
+                    IMAGE: ${{ parameters.image }}
+                    DIGEST: ${{ parameters.digest }}
+                    VERSION: ${{ parameters.version }}
+                - bash: |
+                    set -eu
+                    mkdir -p "$HOME/.kube"
+                    echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+                    chmod 600 "$HOME/.kube/config"
+                    kubectl set image "deployment/$KUBE_DEPLOYMENT" "$KUBE_CONTAINER=$IMAGE_REF" --namespace "$KUBE_NAMESPACE"
+                    kubectl rollout status "deployment/$KUBE_DEPLOYMENT" --namespace "$KUBE_NAMESPACE" --timeout=300s
+                  displayName: Deploy to Kubernetes (kubectl)
+                  env:
+                    IMAGE: ${{ parameters.image }}
+                    KUBECONFIG_B64: $(KUBECONFIG_B64)
+                - bash: |
+                    set -eu
+                    case "$ENVIRONMENT" in
+                      "staging") url="https://staging.view-engine.dev/healthz" ;;
+                      "production") url="https://production.view-engine.dev/healthz" ;;
+                      *) echo "No URL is configured for $ENVIRONMENT; skipping the health check"; exit 0 ;;
+                    esac
+                    curl --retry 10 --retry-delay 6 --retry-all-errors -fsS "$url"
+                  displayName: Verify health
+                  env:
+                    ENVIRONMENT: ${{ parameters.environment }}

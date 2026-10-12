@@ -170,6 +170,32 @@ pub fn stream(scoped: Scoped, auth: Auth) -> Response {
             }
         }
         out.raw(",").await;
+        // Secrets are exported as names only (CONTRACT.md §22): what an
+        // importer has to set again, never what it was set to.
+        out.key("secrets").await;
+        match scoped
+            .identity_as_caller()
+            .list_secrets(identity::ListSecretsRequest {
+                workspace_id: workspace_id.clone(),
+            })
+            .await
+        {
+            Ok(r) => {
+                out.value(
+                    &r.into_inner()
+                        .secrets
+                        .into_iter()
+                        .map(|secret| secret.name)
+                        .collect::<Vec<_>>(),
+                )
+                .await
+            }
+            Err(status) => {
+                errors.insert("secrets".into(), status.message().to_owned());
+                out.raw("[]").await;
+            }
+        }
+        out.raw(",").await;
 
         let knowledge = record_stream(
             scoped

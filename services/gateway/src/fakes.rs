@@ -112,6 +112,78 @@ pub mod execution {
 
     pub struct Fake;
 
+    /// Every `CreateRelease` the fake answered, with the `x-sdi-user` that
+    /// asked: webhook tests read here what the gateway sent, and as whom.
+    pub static RELEASES: std::sync::Mutex<Vec<(String, proto::CreateReleaseRequest)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    pub fn registry(id: &str) -> proto::Registry {
+        proto::Registry {
+            id: id.to_owned(),
+            name: "ghcr".into(),
+            kind: "ghcr".into(),
+            host: "ghcr.io".into(),
+            namespace: "acme".into(),
+            auth: "github_token".into(),
+            is_default: true,
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
+    pub fn environment(id: &str, project_id: &str) -> proto::Environment {
+        proto::Environment {
+            id: id.to_owned(),
+            project_id: project_id.to_owned(),
+            name: "staging".into(),
+            position: 0,
+            kind: "github_actions".into(),
+            config: [("workflow".to_owned(), "deploy.yml".to_owned())].into(),
+            url: "https://staging.example.com".into(),
+            health_path: "/health".into(),
+            source: "ui".into(),
+            current_release_id: "rel1".into(),
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
+    pub fn release(id: &str, project_id: &str) -> proto::Release {
+        proto::Release {
+            id: id.to_owned(),
+            project_id: project_id.to_owned(),
+            version: "a1b2c3d".into(),
+            commit_sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".into(),
+            image: "ghcr.io/acme/repo".into(),
+            tag: "a1b2c3d".into(),
+            source: "manual".into(),
+            notes: "- Add health endpoint (a1b2c3d)".into(),
+            created_by: "u1".into(),
+            created_at: at(1_700_000_000),
+            deployed_to: vec!["staging".into()],
+            ..Default::default()
+        }
+    }
+
+    pub fn run(id: &str, kind: &str) -> proto::DeploymentRun {
+        proto::DeploymentRun {
+            id: id.to_owned(),
+            project_id: "p1".into(),
+            environment_id: "e1".into(),
+            environment_name: "staging".into(),
+            release_id: "rel1".into(),
+            release_version: "a1b2c3d".into(),
+            kind: kind.to_owned(),
+            status: proto::DeploymentStatus::AwaitingApproval as i32,
+            execution_id: "x1".into(),
+            started_by: "u1".into(),
+            created_at: at(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
     fn watch(
         request: proto::WatchExecutionRequest,
     ) -> Result<ServerStream<proto::ExecutionEvent>, Status> {
@@ -150,8 +222,10 @@ pub mod execution {
                 watch(request.into_inner()).map(Response::new)
             }
 
-            /// One event after a short delay, then open for ever: proves the
-            /// merged feed still delivers after another service dropped.
+            /// One event after a short delay, then the three delivery
+            /// entities of CONTRACT.md §22, then open for ever: proves the
+            /// merged feed still delivers after another service dropped,
+            /// and that it passes entities it has no special case for.
             async fn watch_events(
                 &self,
                 _: Request<common::WatchEventsRequest>,
@@ -160,7 +234,25 @@ pub mod execution {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     Ok(platform_event("execution", "e1", "updated"))
                 });
-                Ok(Response::new(late.chain(stream::pending()).boxed()))
+                let delivery = stream::iter(vec![
+                    Ok(common::PlatformEvent {
+                        status: "awaiting_approval".into(),
+                        ..platform_event("deployment", "d1", "updated")
+                    }),
+                    Ok(common::PlatformEvent {
+                        status: "pipeline".into(),
+                        ..platform_event("release", "rel1", "created")
+                    }),
+                    Ok(common::PlatformEvent {
+                        status: "deployed".into(),
+                        ..platform_event("environment", "env1", "updated")
+                    }),
+                    // Another workspace's deployment must not leak either.
+                    Ok(platform_event_in("w2", "deployment", "other", "updated")),
+                ]);
+                Ok(Response::new(
+                    late.chain(delivery).chain(stream::pending()).boxed(),
+                ))
             }
 
             async fn create_execution(
@@ -200,8 +292,298 @@ pub mod execution {
             ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
                 Err(Status::unimplemented("export_workspace_data"))
             }
+
+            // --- continuous delivery (CONTRACT.md §22) ----------------------
+
+            async fn list_registries(
+                &self,
+                request: Request<proto::ListRegistriesRequest>,
+            ) -> Result<Response<proto::ListRegistriesResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::ListRegistriesResponse {
+                    registries: vec![registry("r1")],
+                }))
+            }
+
+            /// Echoes what it was sent, with an id when it had none.
+            async fn upsert_registry(
+                &self,
+                request: Request<proto::UpsertRegistryRequest>,
+            ) -> Result<Response<proto::Registry>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Admin)?;
+                let mut registry = request.into_inner().registry.unwrap_or_default();
+                if registry.name == "taken" {
+                    return Err(Status::already_exists(
+                        "name: this workspace already has a registry named taken",
+                    ));
+                }
+                if registry.id.is_empty() {
+                    registry.id = "r-new".into();
+                }
+                registry.created_at = at(1_700_000_000);
+                registry.updated_at = at(1_700_000_100);
+                Ok(Response::new(registry))
+            }
+
+            async fn delete_registry(
+                &self,
+                request: Request<proto::DeleteRegistryRequest>,
+            ) -> Result<Response<proto::DeleteRegistryResponse>, Status> {
+                principal(&request)?;
+                if request.into_inner().id == "r1" {
+                    return Err(Status::failed_precondition(
+                        "the default registry cannot be deleted: make another registry the default first",
+                    ));
+                }
+                Ok(Response::new(proto::DeleteRegistryResponse {}))
+            }
+
+            async fn list_environments(
+                &self,
+                request: Request<proto::ListEnvironmentsRequest>,
+            ) -> Result<Response<proto::ListEnvironmentsResponse>, Status> {
+                principal(&request)?;
+                let project_id = request.into_inner().project_id;
+                Ok(Response::new(proto::ListEnvironmentsResponse {
+                    environments: vec![environment("e1", &project_id)],
+                }))
+            }
+
+            /// Echoes what it was sent (position included, so a test sees
+            /// what an omitted one travels as) and validates like the real
+            /// service where the tests look.
+            async fn upsert_environment(
+                &self,
+                request: Request<proto::UpsertEnvironmentRequest>,
+            ) -> Result<Response<proto::Environment>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Admin)?;
+                let mut environment = request.into_inner().environment.unwrap_or_default();
+                if environment.kind == "gitops_flux" && !environment.config.contains_key("path") {
+                    return Err(Status::invalid_argument(
+                        "config.path is required for gitops_flux environments",
+                    ));
+                }
+                if environment.id == "from-config" {
+                    return Err(Status::failed_precondition(
+                        "this environment comes from .sdi.yml and is read-only here: change the file and rescan",
+                    ));
+                }
+                if environment.id.is_empty() {
+                    environment.id = "e-new".into();
+                }
+                environment.source = "ui".into();
+                environment.created_at = at(1_700_000_000);
+                environment.updated_at = at(1_700_000_100);
+                Ok(Response::new(environment))
+            }
+
+            async fn delete_environment(
+                &self,
+                request: Request<proto::DeleteEnvironmentRequest>,
+            ) -> Result<Response<proto::DeleteEnvironmentResponse>, Status> {
+                principal(&request)?;
+                if request.into_inner().id == "missing" {
+                    return Err(Status::not_found("no such environment"));
+                }
+                Ok(Response::new(proto::DeleteEnvironmentResponse {}))
+            }
+
+            async fn get_pipeline(
+                &self,
+                request: Request<proto::GetPipelineRequest>,
+            ) -> Result<Response<proto::DeliveryPipeline>, Status> {
+                principal(&request)?;
+                let project_id = request.into_inner().project_id;
+                Ok(Response::new(proto::DeliveryPipeline {
+                    stages: vec![
+                        proto::PipelineStage {
+                            environment: Some(environment("e1", &project_id)),
+                            current: Some(release("rel1", &project_id)),
+                            last_run: Some(run("d1", "promote")),
+                            candidate: Some(release("rel2", &project_id)),
+                            health: "healthy".into(),
+                        },
+                        proto::PipelineStage {
+                            environment: Some(proto::Environment {
+                                id: "e2".into(),
+                                name: "production".into(),
+                                position: 1,
+                                kind: "webhook".into(),
+                                protected: true,
+                                source: "config".into(),
+                                current_release_id: String::new(),
+                                url: String::new(),
+                                health_path: String::new(),
+                                config: Default::default(),
+                                ..environment("e2", &project_id)
+                            }),
+                            health: "unknown".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    registry: Some(registry("r1")),
+                    success_rate: 0.75,
+                    deployments_30d: 8,
+                    lead_time_seconds: 5400,
+                    project_id,
+                }))
+            }
+
+            /// Two releases; `limit` and `before` are echoed in what comes back.
+            async fn list_releases(
+                &self,
+                request: Request<proto::ListReleasesRequest>,
+            ) -> Result<Response<proto::ListReleasesResponse>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                let mut releases = vec![
+                    release("rel2", &request.project_id),
+                    release("rel1", &request.project_id),
+                ];
+                if request.limit == 1 {
+                    releases.truncate(1);
+                }
+                if request.before.is_some() {
+                    releases.clear();
+                }
+                Ok(Response::new(proto::ListReleasesResponse { releases }))
+            }
+
+            /// Records who asked for what and echoes it as a release. Only
+            /// `system` may say a pipeline or a package made the release.
+            async fn create_release(
+                &self,
+                request: Request<proto::CreateReleaseRequest>,
+            ) -> Result<Response<proto::Release>, Status> {
+                let caller = principal(&request)?;
+                let request = request.into_inner();
+                if request.source != "manual"
+                    && caller.user_id != sdi_common::principal::SYSTEM_USER
+                {
+                    return Err(Status::permission_denied("only webhooks create such releases"));
+                }
+                if request.commit_sha == "0000000" {
+                    return Err(Status::invalid_argument(
+                        "commit_sha: acme/repo has no commit 0000000",
+                    ));
+                }
+                RELEASES
+                    .lock()
+                    .unwrap()
+                    .push((caller.user_id.clone(), request.clone()));
+                let mut created = release("rel-new", &request.project_id);
+                created.source = request.source;
+                created.created_by = caller.user_id;
+                created.pipeline_run_id = request.pipeline_run_id;
+                created.deployed_to.clear();
+                if !request.version.is_empty() {
+                    created.version = request.version;
+                }
+                if !request.commit_sha.is_empty() {
+                    created.commit_sha = request.commit_sha;
+                }
+                if !request.tag.is_empty() {
+                    created.tag = request.tag;
+                }
+                if !request.image.is_empty() {
+                    created.image = request.image;
+                }
+                created.digest = request.digest;
+                Ok(Response::new(created))
+            }
+
+            async fn get_release(
+                &self,
+                request: Request<proto::GetReleaseRequest>,
+            ) -> Result<Response<proto::Release>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                if id == "missing" {
+                    return Err(Status::not_found("no such release"));
+                }
+                Ok(Response::new(release(&id, "p1")))
+            }
+
+            async fn promote(
+                &self,
+                request: Request<proto::PromoteRequest>,
+            ) -> Result<Response<proto::DeploymentRun>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Approver)?;
+                let request = request.into_inner();
+                if request.environment_id == "busy" {
+                    return Err(Status::failed_precondition(
+                        "a deployment of a1b2c3d to staging is still open (deploying); finish, resolve or cancel it first",
+                    ));
+                }
+                let mut started = run("d-new", "promote");
+                started.environment_id = request.environment_id;
+                started.release_id = if request.release_id.is_empty() {
+                    "candidate".into()
+                } else {
+                    request.release_id
+                };
+                started.started_by = caller.user_id;
+                Ok(Response::new(started))
+            }
+
+            async fn rollback(
+                &self,
+                request: Request<proto::RollbackRequest>,
+            ) -> Result<Response<proto::DeploymentRun>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Approver)?;
+                let request = request.into_inner();
+                let mut started = run("d-back", "rollback");
+                started.environment_id = request.environment_id;
+                started.release_id = if request.release_id.is_empty() {
+                    "previous".into()
+                } else {
+                    request.release_id
+                };
+                // The reason, where a test can see it arrived.
+                started.external_url = request.reason;
+                started.previous_release_id = "rel2".into();
+                Ok(Response::new(started))
+            }
+
+            async fn list_deployment_runs(
+                &self,
+                request: Request<proto::ListDeploymentRunsRequest>,
+            ) -> Result<Response<proto::ListDeploymentRunsResponse>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                let mut runs = vec![run("d2", "rollback"), run("d1", "promote")];
+                if !request.environment_id.is_empty() {
+                    runs.retain(|r| r.environment_id == request.environment_id);
+                }
+                if request.limit == 1 {
+                    runs.truncate(1);
+                }
+                Ok(Response::new(proto::ListDeploymentRunsResponse { runs }))
+            }
+
+            async fn get_deployment_run(
+                &self,
+                request: Request<proto::GetDeploymentRunRequest>,
+            ) -> Result<Response<proto::DeploymentRun>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                if id == "missing" {
+                    return Err(Status::not_found("no such deployment run"));
+                }
+                let mut found = run(&id, "promote");
+                found.status = proto::DeploymentStatus::Succeeded as i32;
+                found.finished_at = at(1_700_000_090);
+                found.duration_seconds = 90;
+                found.external_url = "https://github.com/acme/repo/actions/runs/7".into();
+                Ok(Response::new(found))
+            }
         }
         unimplemented {
+            sync_environments: proto::SyncEnvironmentsRequest => proto::ListEnvironmentsResponse,
             list_executions: proto::ListExecutionsRequest => proto::ListExecutionsResponse,
             get_execution: proto::GetExecutionRequest => proto::Execution,
             start_execution: proto::StartExecutionRequest => proto::Execution,
@@ -318,12 +700,21 @@ pub mod knowledge {
             ) -> Result<Response<proto::ListProjectsResponse>, Status> {
                 principal(&request)?;
                 Ok(Response::new(proto::ListProjectsResponse {
-                    projects: vec![proto::Project {
-                        id: "p1".into(),
-                        name: "repo".into(),
-                        repo_full_name: "acme/repo".into(),
-                        ..Default::default()
-                    }],
+                    projects: vec![
+                        proto::Project {
+                            id: "p1".into(),
+                            name: "repo".into(),
+                            repo_full_name: "acme/repo".into(),
+                            ..Default::default()
+                        },
+                        // Its `.sdi.yml` names the build workflow.
+                        proto::Project {
+                            id: "p-configured".into(),
+                            name: "configured".into(),
+                            repo_full_name: "acme/configured".into(),
+                            ..Default::default()
+                        },
+                    ],
                 }))
             }
 
@@ -397,8 +788,34 @@ pub mod knowledge {
                     port: 8080,
                     ..Default::default()
                 });
+                // What the webhook worker reads to recognise a build
+                // workflow (CONTRACT.md §22): `p1` has no `.sdi.yml` and a
+                // scan that found `ci.yml` building an image;
+                // `p-configured` names `release.yml` in its file, which
+                // wins over what the scan found.
+                let builds_image = |path: &str| proto::Fact {
+                    id: format!("f-{path}"),
+                    project_id: project_id.clone(),
+                    key: format!("ci:build_image:{path}"),
+                    label: "CI builds a container image".into(),
+                    ..Default::default()
+                };
+                let (config, facts) = match project_id.as_str() {
+                    "p1" => (None, vec![builds_image(".github/workflows/ci.yml")]),
+                    "p-configured" => (
+                        Some(proto::ProjectConfig {
+                            present: true,
+                            path: ".sdi.yml".into(),
+                            delivery_json: r#"{"registry":{"kind":"ghcr"},"build_workflow":"release.yml","environments":[]}"#.into(),
+                            ..Default::default()
+                        }),
+                        vec![builds_image(".github/workflows/ci.yml")],
+                    ),
+                    _ => (config, Vec::new()),
+                };
                 Ok(Response::new(proto::ProjectContext {
                     config,
+                    facts,
                     ..Default::default()
                 }))
             }
@@ -895,6 +1312,9 @@ pub mod intelligence {
             }
         }
         unimplemented {
+            // The delivery setup files are another service's to generate:
+            // the gateway must say 501, not 500.
+            generate_delivery_artifacts: proto::GenerateDeliveryArtifactsRequest => proto::DeliveryArtifacts,
             generate_proposal: proto::GenerateProposalRequest => proto::Proposal,
             list_proposals: proto::ListProposalsRequest => proto::ListProposalsResponse,
             reject_proposal: proto::RejectProposalRequest => proto::Proposal,
@@ -987,11 +1407,39 @@ pub mod identity {
         ("t-viewer", proto::Role::Viewer),
     ];
 
-    /// Counts `RecordAudit` calls and remembers the last action.
+    /// Counts `RecordAudit` calls and remembers the last action, and holds
+    /// the workspace's secrets (name → description; never a value).
     #[derive(Default)]
     pub struct Recorder {
         pub audits: AtomicUsize,
         pub last_action: std::sync::Mutex<String>,
+        pub secrets: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+        /// Lengths of the values `SetSecret` was given: proof they arrived,
+        /// without the fake keeping them.
+        pub secret_value_lengths: std::sync::Mutex<Vec<usize>>,
+    }
+
+    /// The secrets RPCs are the part of identity that reads the caller: an
+    /// admin of the workspace named in the body, or the request is refused.
+    fn secrets_caller<T>(request: &Request<T>, workspace_id: &str) -> Result<Principal, Status> {
+        let caller = principal(request)?;
+        caller.require(sdi_common::principal::Role::Admin)?;
+        if workspace_id != caller.workspace_id {
+            return Err(Status::permission_denied(
+                "workspace_id does not match the caller's workspace",
+            ));
+        }
+        Ok(caller)
+    }
+
+    fn secret_info(name: &str, description: &str, updated_by: &str) -> proto::SecretInfo {
+        proto::SecretInfo {
+            name: name.to_owned(),
+            hint: "wxyz".into(),
+            description: description.to_owned(),
+            updated_by: updated_by.to_owned(),
+            updated_at: at(1_700_000_000),
+        }
     }
 
     pub struct Fake {
@@ -1239,8 +1687,67 @@ pub mod identity {
                     ..controls()
                 }))
             }
+
+            async fn list_secrets(
+                &self,
+                request: Request<proto::ListSecretsRequest>,
+            ) -> Result<Response<proto::ListSecretsResponse>, Status> {
+                secrets_caller(&request, &request.get_ref().workspace_id)?;
+                let secrets = self
+                    .recorder
+                    .secrets
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(name, description)| secret_info(name, description, "octo"))
+                    .collect();
+                Ok(Response::new(proto::ListSecretsResponse { secrets }))
+            }
+
+            async fn set_secret(
+                &self,
+                request: Request<proto::SetSecretRequest>,
+            ) -> Result<Response<proto::SecretInfo>, Status> {
+                secrets_caller(&request, &request.get_ref().workspace_id)?;
+                let request = request.into_inner();
+                if request.name != request.name.to_ascii_uppercase() || request.name.len() < 2 {
+                    return Err(Status::invalid_argument(
+                        "name must be upper snake case: a letter, then 1 to 63 letters, digits or underscores (e.g. JENKINS_TOKEN)",
+                    ));
+                }
+                if request.value.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "value must not be empty; delete the secret to remove it",
+                    ));
+                }
+                self.recorder
+                    .secret_value_lengths
+                    .lock()
+                    .unwrap()
+                    .push(request.value.len());
+                self.recorder
+                    .secrets
+                    .lock()
+                    .unwrap()
+                    .insert(request.name.clone(), request.description.clone());
+                Ok(Response::new(secret_info(&request.name, &request.description, "octo")))
+            }
+
+            async fn delete_secret(
+                &self,
+                request: Request<proto::DeleteSecretRequest>,
+            ) -> Result<Response<proto::DeleteSecretResponse>, Status> {
+                secrets_caller(&request, &request.get_ref().workspace_id)?;
+                let name = request.into_inner().name;
+                if self.recorder.secrets.lock().unwrap().remove(&name).is_none() {
+                    return Err(Status::not_found(format!("no secret named {name}")));
+                }
+                Ok(Response::new(proto::DeleteSecretResponse {}))
+            }
         }
         unimplemented {
+            // Service-to-service only: the gateway has no route that could reach it.
+            resolve_secret: proto::ResolveSecretRequest => proto::ResolvedSecret,
             get_session: proto::GetSessionRequest => proto::Session,
             get_workspace: proto::GetWorkspaceRequest => proto::Workspace,
             get_installation_token: proto::GetInstallationTokenRequest => proto::InstallationToken,

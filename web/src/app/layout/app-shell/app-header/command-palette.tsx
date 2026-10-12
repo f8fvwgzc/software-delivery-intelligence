@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router'
 
-import { visibleNavigation } from '@/app/layout/app-shell/app-sidebar/navigation'
+import { isNavSection, visibleNavigation } from '@/app/layout/app-shell/app-sidebar/navigation'
 import {
   CommandDialog,
   CommandEmpty,
@@ -34,12 +34,15 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         <CommandEmpty>No pages found.</CommandEmpty>
         {groups.map((group) => (
           <CommandGroup key={group.label} heading={group.label}>
-            {group.items.map((item) => (
-              <CommandItem key={item.to} value={`${group.label} ${item.label}`} onSelect={() => go(item.to)}>
-                <item.icon />
-                {item.label}
-              </CommandItem>
-            ))}
+            {/* A section folded away in the sidebar is flat here: every page is one keystroke away. */}
+            {group.items
+              .flatMap((entry) => (isNavSection(entry) ? entry.items : [entry]))
+              .map((item) => (
+                <CommandItem key={item.to} value={`${group.label} ${item.label}`} onSelect={() => go(item.to)}>
+                  <item.icon />
+                  {item.label}
+                </CommandItem>
+              ))}
           </CommandGroup>
         ))}
       </CommandList>

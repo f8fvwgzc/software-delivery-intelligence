@@ -7,17 +7,22 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use sdi_common::{cache::TtlCache, grpc::db_status, principal::Role};
+use sdi_common::{
+    cache::TtlCache,
+    grpc::db_status,
+    principal::{Principal as Caller, Role},
+};
 use sdi_proto::identity::v1::{
     AuthorizeRequest, BeginLoginRequest, BeginLoginResponse, CompleteLoginRequest, DataControls,
-    GetDataControlsRequest, GetInstallationTokenRequest, GetReasonerKeyRequest, GetSessionRequest,
-    GetWorkspaceRequest, InstallationToken, ListAuditRequest, ListAuditResponse,
-    ListMembersRequest, ListMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse, Member,
+    DeleteSecretRequest, DeleteSecretResponse, GetDataControlsRequest, GetInstallationTokenRequest,
+    GetReasonerKeyRequest, GetSessionRequest, GetWorkspaceRequest, InstallationToken,
+    ListAuditRequest, ListAuditResponse, ListMembersRequest, ListMembersResponse,
+    ListSecretsRequest, ListSecretsResponse, ListWorkspacesRequest, ListWorkspacesResponse, Member,
     Principal, ReasonerKey, RecordAuditRequest, RecordAuditResponse, RecordInstallationRequest,
-    RemoveInstallationRequest, RemoveInstallationResponse, RevokeSessionRequest,
-    RevokeSessionResponse, Session, SetMemberRoleRequest, SetReasonerKeyRequest,
-    SyncMembersRequest, UpdateDataControlsRequest, Workspace,
-    identity_service_server::IdentityService,
+    RemoveInstallationRequest, RemoveInstallationResponse, ResolveSecretRequest, ResolvedSecret,
+    RevokeSessionRequest, RevokeSessionResponse, SecretInfo, Session, SetMemberRoleRequest,
+    SetReasonerKeyRequest, SetSecretRequest, SyncMembersRequest, UpdateDataControlsRequest,
+    Workspace, identity_service_server::IdentityService,
 };
 use sqlx::PgPool;
 use tonic::{Request, Response, Status};
@@ -35,6 +40,7 @@ pub(crate) mod audit;
 pub(crate) mod authorize;
 pub(crate) mod controls;
 pub(crate) mod members;
+pub(crate) mod secrets;
 pub(crate) mod sessions;
 pub(crate) mod workspaces;
 
@@ -304,6 +310,46 @@ impl IdentityService for IdentityGrpc {
         request: Request<GetReasonerKeyRequest>,
     ) -> Result<Response<ReasonerKey>, Status> {
         controls::get_key(&self.state, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_secrets(
+        &self,
+        request: Request<ListSecretsRequest>,
+    ) -> Result<Response<ListSecretsResponse>, Status> {
+        let caller = Caller::from_request(&request)?;
+        secrets::list(&self.state, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn set_secret(
+        &self,
+        request: Request<SetSecretRequest>,
+    ) -> Result<Response<SecretInfo>, Status> {
+        let caller = Caller::from_request(&request)?;
+        secrets::set(&self.state, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn delete_secret(
+        &self,
+        request: Request<DeleteSecretRequest>,
+    ) -> Result<Response<DeleteSecretResponse>, Status> {
+        let caller = Caller::from_request(&request)?;
+        secrets::delete(&self.state, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn resolve_secret(
+        &self,
+        request: Request<ResolveSecretRequest>,
+    ) -> Result<Response<ResolvedSecret>, Status> {
+        let caller = Caller::from_request(&request)?;
+        secrets::resolve(&self.state, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

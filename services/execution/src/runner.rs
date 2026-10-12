@@ -25,7 +25,10 @@ use tonic::Status;
 use uuid::Uuid;
 
 use crate::{
-    adapters::{self, Fault, LogSink, Registry, RunContext, StepInput, StepOutcome},
+    adapters::{
+        self, Fault, LogSink, OutputSink, Redactor, Registry, RunContext, Secrets, StepInput,
+        StepOutcome,
+    },
     convert,
     db::{
         self, Tx,
@@ -33,6 +36,7 @@ use crate::{
         executions::ExecutionRow,
         steps::StepRow,
     },
+    delivery::{self, Delivery},
     domain::{
         dag,
         diagnosis::{self, FailedStep, FailureRecord, Resolution},
@@ -53,6 +57,8 @@ const LOG_WINDOW: Duration = Duration::from_millis(50);
 /// Lines buffered between the adapter and the runner; a faster producer
 /// loses lines here but keeps them in the failure's raw output.
 const LOG_CHANNEL: usize = 4096;
+/// Outputs a step may report while it runs before the oldest waits.
+const PROGRESS_CHANNEL: usize = 16;
 
 pub type Reply = oneshot::Sender<Result<(), Status>>;
 
@@ -68,6 +74,8 @@ pub enum Command {
     Resolve {
         option_id: String,
         instruction: String,
+        /// `x-sdi-user` of whoever chose the remediation.
+        by: String,
         reply: Reply,
     },
     Cancel {
@@ -136,6 +144,8 @@ pub struct Runtime {
     pub github_token: bool,
     /// Per-workspace GitHub access for the real adapters (CONTRACT.md §18).
     pub github_access: Arc<dyn GithubAccessSource>,
+    /// What continuous delivery needs from the other services (CONTRACT.md §22).
+    pub delivery: Delivery,
     runners: Mutex<HashMap<Uuid, mpsc::Sender<Command>>>,
     /// Workspaces whose policy and identity seed was checked this process.
     /// Bounded: past `SEEDED_MAX` entries the set is cleared, and the seed
@@ -147,6 +157,9 @@ pub struct Runtime {
 const SEEDED_MAX: usize = 10_000;
 
 impl Runtime {
+    /// A runtime without the delivery peers: the delivery RPCs that need
+    /// the identity or knowledge service answer UNAVAILABLE (tests).
+    #[cfg(test)]
     pub fn new(
         pool: PgPool,
         adapters: Registry,
@@ -155,6 +168,29 @@ impl Runtime {
         verify_delay: Duration,
         github_token: bool,
         github_access: Arc<dyn GithubAccessSource>,
+    ) -> Arc<Self> {
+        Self::with_delivery(
+            pool,
+            adapters,
+            outcomes,
+            audit,
+            verify_delay,
+            github_token,
+            github_access,
+            Delivery::disconnected(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_delivery(
+        pool: PgPool,
+        adapters: Registry,
+        outcomes: Arc<dyn PatternOutcomes>,
+        audit: Arc<dyn AuditSink>,
+        verify_delay: Duration,
+        github_token: bool,
+        github_access: Arc<dyn GithubAccessSource>,
+        delivery: Delivery,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
@@ -166,6 +202,7 @@ impl Runtime {
             verify_delay,
             github_token,
             github_access,
+            delivery,
             runners: Mutex::new(HashMap::new()),
             seeded: Mutex::new(HashSet::new()),
         })
@@ -268,7 +305,8 @@ impl Runtime {
                 convert::status_from_db(&row.status),
                 ExecutionStatus::Executing | ExecutionStatus::Verifying
             );
-            if mid_step && row.adapter != adapters::SIMULATED {
+            // A deployment run leaves nothing of its own on this host.
+            if mid_step && row.adapter != adapters::SIMULATED && row.adapter != adapters::DELIVERY {
                 let adapters = self.adapters.clone();
                 let id = row.id;
                 sdi_common::tasks::spawn("recovery-stop", async move {
@@ -289,6 +327,7 @@ impl Runtime {
             .lock()
             .expect("seeded lock")
             .remove(&workspace_id);
+        self.delivery.forget_workspace(workspace_id);
     }
 
     fn forget(&self, id: Uuid, terminal: bool) {
@@ -312,6 +351,9 @@ struct Batch {
     events: Vec<EventRow>,
     /// Status when the batch opened, to tell the platform feed what changed.
     initial_status: String,
+    /// The batch merged outputs into the execution (a deployment run reads
+    /// its link and the verified digest from them).
+    outputs_changed: bool,
 }
 
 impl Batch {
@@ -373,16 +415,42 @@ impl Batch {
         Ok(())
     }
 
+    /// Adds `outputs` to the execution's.
+    async fn merge_outputs(&mut self, outputs: &BTreeMap<String, String>) -> Result<(), Status> {
+        if outputs.is_empty() {
+            return Ok(());
+        }
+        db::executions::merge_outputs(&mut self.tx, self.exec.workspace_id, self.exec.id, outputs)
+            .await
+            .map_err(db_status)?;
+        self.outputs_changed = true;
+        Ok(())
+    }
+
     /// Commits, then fans the events out: the per-execution log to
     /// `WatchExecution` watchers and, when something other than adapter
     /// output happened, an `execution updated` (plus `approval created` for
     /// each approval requested) to the platform feed.
-    async fn commit(self, rt: &Runtime) -> Result<(), Status> {
-        self.tx.commit().await.map_err(db_status)?;
+    ///
+    /// A deployment run's status is brought in line with its execution
+    /// inside the same transaction (CONTRACT.md §22), so the two can never
+    /// disagree; what that changed is announced after the commit.
+    async fn commit(mut self, rt: &Arc<Runtime>) -> Result<(), Status> {
         let log_type = convert::event_type_to_db(EventType::Log);
         let requested_type = convert::event_type_to_db(EventType::ApprovalRequested);
         let notable = self.exec.status != self.initial_status
             || self.events.iter().any(|e| e.r#type != log_type);
+        let projected = if notable || self.outputs_changed {
+            delivery::projection::project(&mut self.tx, &self.exec)
+                .await
+                .map_err(db_status)?
+        } else {
+            None
+        };
+        self.tx.commit().await.map_err(db_status)?;
+        if let Some(projected) = projected {
+            delivery::projection::announce(rt, projected);
+        }
         let mut approvals = Vec::new();
         let mut step_key = String::new();
         for row in self.events {
@@ -510,6 +578,7 @@ impl Runner {
             initial_status: exec.status.clone(),
             exec,
             events: Vec::new(),
+            outputs_changed: false,
         })
     }
 
@@ -709,9 +778,10 @@ impl Runner {
                 Command::Resolve {
                     option_id,
                     instruction,
+                    by,
                     reply,
                 } => {
-                    let result = self.resolve(exec, &option_id, &instruction).await;
+                    let result = self.resolve(exec, &option_id, &instruction, &by).await;
                     let resolved = result.is_ok();
                     let _ = reply.send(result);
                     if resolved {
@@ -795,6 +865,7 @@ impl Runner {
         exec: &ExecutionRow,
         option_id: &str,
         instruction: &str,
+        by: &str,
     ) -> Result<(), Status> {
         let Some(failure) = exec.failure.as_ref().map(|json| json.0.clone()) else {
             return Err(Status::failed_precondition(
@@ -908,6 +979,44 @@ impl Runner {
                 return batch.commit(&self.rt).await;
             }
             Resolution::GiveUp => unreachable!("handled before replanning"),
+            Resolution::RollbackToPrevious => {
+                // This run ends here; the environment goes back to its last
+                // good release through a run of its own (same gates).
+                batch.transition(ExecutionStatus::Cancelled).await?;
+                db::steps::cancel_open(&mut batch.tx, self.workspace, self.id)
+                    .await
+                    .map_err(db_status)?;
+                db::approvals::expire_pending(&mut batch.tx, self.workspace, self.id)
+                    .await
+                    .map_err(db_status)?;
+                batch
+                    .event(
+                        EventType::StateChanged,
+                        &step.key,
+                        "execution cancelled; rolling the environment back to its previous release",
+                        data([("reason", diagnosis::ROLLBACK_TO_PREVIOUS.to_owned())]),
+                    )
+                    .await?;
+                batch.commit(&self.rt).await?;
+                let rollback = delivery::runs::rollback_after_failure(
+                    &self.rt,
+                    self.workspace,
+                    self.id,
+                    by,
+                )
+                .await
+                .map_err(|status| {
+                    Status::new(
+                        status.code(),
+                        format!(
+                            "the deployment was cancelled, but the rollback did not start: {}",
+                            status.message()
+                        ),
+                    )
+                })?;
+                tracing::info!(execution = %self.id, rollback = %rollback.id, "rollback run started by remediation");
+                return Ok(());
+            }
             Resolution::Skip => {
                 batch.step_status(&step, StepStatus::Skipped).await?;
                 format!("step '{}' skipped", step.title)
@@ -1279,7 +1388,7 @@ impl Runner {
         let adapter = self
             .rt
             .adapters
-            .for_step(&exec.adapter, &step.action_type)?;
+            .for_step(&exec.adapter, &step.action_type, &step.adapter)?;
 
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Executing).await?;
@@ -1317,6 +1426,7 @@ impl Runner {
             attempt: attempt.max(0) as u32,
         };
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_CHANNEL);
+        let (progress_tx, mut progress_rx) = mpsc::channel::<(String, String)>(PROGRESS_CHANNEL);
         // Real adapters read and write GitHub as the workspace, with the
         // token and API base identity mints for it (GHES included).
         let github = if exec.adapter == adapters::SIMULATED {
@@ -1324,15 +1434,34 @@ impl Runner {
         } else {
             self.rt.github_access.access(self.workspace).await
         };
+        // Whatever this step authenticates with, and every secret it
+        // resolves, is masked in its log lines, outputs and failure.
+        let redactor = Redactor::default();
+        if let Some(access) = &github {
+            redactor.protect(&access.token);
+        }
+        let secrets = match &self.rt.delivery.secrets {
+            Some(source) => Secrets::new(Arc::clone(source), self.workspace, redactor.clone()),
+            None => Secrets::default(),
+        };
+        // The outputs earlier steps of this run recorded, read fresh: a
+        // step that reported progress wrote to them after `exec` was loaded.
+        let outputs = db::executions::get(&self.rt.pool, self.workspace, self.id)
+            .await
+            .map_err(db_status)?
+            .outputs
+            .0;
         let ctx = RunContext {
             execution_id: self.id,
             execution_number: exec.number,
             proposal_id: exec.proposal_id.clone(),
             fault: exec.fault.as_ref().map(|json| json.0.clone()),
-            outputs: exec.outputs.0.clone(),
+            outputs,
             artifacts: exec.artifacts.0.clone(),
-            logs: LogSink::new(log_tx),
+            logs: LogSink::new(log_tx).with_redactor(redactor.clone()),
             github,
+            secrets,
+            progress: OutputSink::new(progress_tx),
         };
         let fault_targets_step = ctx.fault.as_ref().is_some_and(|f| f.step_key == step.key);
 
@@ -1364,6 +1493,11 @@ impl Runner {
                         next_flush = None;
                         self.log(&step.key, &mut pending).await?;
                     }
+                    Some((key, value)) = progress_rx.recv() => {
+                        // Something to follow while the step still runs
+                        // (the deployer's own page): record it now.
+                        self.record_progress(&key, &redactor.redact(&value)).await?;
+                    }
                     command = self.rx.recv() => match command {
                         Some(Command::Cancel { reason, reply }) => break StepLoop::Cancel { reason, reply },
                         Some(other) => other.reject("a step is running"),
@@ -1376,9 +1510,14 @@ impl Runner {
             pending.push(line);
         }
         self.log(&step.key, &mut pending).await?;
+        while let Ok((key, value)) = progress_rx.try_recv() {
+            self.record_progress(&key, &redactor.redact(&value)).await?;
+        }
 
         let outcome = match ended {
-            StepLoop::Done(outcome) => outcome,
+            // Whatever the tool said goes through the redactor once more:
+            // a deployer that echoes a credential must not get it stored.
+            StepLoop::Done(outcome) => outcome.redacted(&redactor),
             StepLoop::Cancel { reason, reply } => {
                 adapter.cleanup(self.id).await;
                 let _ = reply.send(self.cancel(&reason).await);
@@ -1426,6 +1565,15 @@ impl Runner {
                 Ok(Flow::Continue)
             }
         }
+    }
+
+    /// Merges one output a step reported while it is still running.
+    async fn record_progress(&self, key: &str, value: &str) -> Result<(), Status> {
+        let mut batch = self.begin().await?;
+        batch
+            .merge_outputs(&BTreeMap::from([(key.to_owned(), value.to_owned())]))
+            .await?;
+        batch.commit(&self.rt).await
     }
 
     async fn clear_fault(&self) -> Result<(), Status> {
@@ -1482,9 +1630,7 @@ impl Runner {
         db::executions::set_checkpoint(&mut batch.tx, self.workspace, self.id, &step.key)
             .await
             .map_err(db_status)?;
-        db::executions::merge_outputs(&mut batch.tx, self.workspace, self.id, &outputs)
-            .await
-            .map_err(db_status)?;
+        batch.merge_outputs(&outputs).await?;
         batch.transition(ExecutionStatus::Authorized).await?;
         let mut info = data([("attempt", step.attempts.to_string())]);
         info.extend(
@@ -1636,6 +1782,23 @@ impl Runner {
             });
         let empty = BTreeMap::new();
         let step = steps.iter().find(|s| s.key == record.step_key);
+        // A deployment whose deploy or health step failed may go back to
+        // the environment's last good release, when it has one.
+        let can_rollback = exec.adapter == adapters::DELIVERY
+            && step.is_some_and(|s| {
+                adapters::is_deploy_action(&s.action_type)
+                    || s.action_type == adapters::VERIFY_HEALTH
+            })
+            && delivery::runs::can_rollback(&self.rt, self.workspace, self.id).await;
+        let detail: String = record
+            .raw_output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect();
         let failed = FailedStep {
             title: step.map(|s| s.title.as_str()).unwrap_or(&record.step_key),
             action_type: step.map(|s| s.action_type.as_str()).unwrap_or(""),
@@ -1645,6 +1808,8 @@ impl Runner {
             // The pre-flight grant check writes no raw output; a tool does.
             refused_by_tool: record.code == diagnosis::PERMISSION_DENIED
                 && !record.raw_output.is_empty(),
+            detail: &detail,
+            can_rollback,
         };
         let (text, options) = diagnosis::diagnose(
             &record.code,
@@ -1764,7 +1929,10 @@ impl Runner {
     }
 
     async fn cleanup_real(&self, adapter: &str) {
-        if adapter != adapters::SIMULATED {
+        // A deployment run keeps nothing on this host under its execution
+        // id: a `docker_local` environment's container is named after the
+        // environment and has to outlive the run that started it.
+        if adapter != adapters::SIMULATED && adapter != adapters::DELIVERY {
             for adapter in self.rt.adapters.real() {
                 adapter.cleanup(self.id).await;
             }

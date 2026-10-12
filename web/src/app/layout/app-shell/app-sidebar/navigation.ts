@@ -2,11 +2,14 @@ import {
   ActivityIcon,
   BookOpenIcon,
   BoxesIcon,
+  Building2Icon,
   CheckSquareIcon,
+  ContainerIcon,
   DatabaseIcon,
   GitPullRequestIcon,
   HistoryIcon,
   FolderGitIcon,
+  KeyRoundIcon,
   LayoutDashboardIcon,
   LightbulbIcon,
   PlugIcon,
@@ -33,9 +36,28 @@ export interface NavItem {
   minRole?: Role
 }
 
+/**
+ * Several pages folded under one row of the sidebar: closed until it is
+ * opened or one of its pages is the current one. The command palette lists
+ * its pages like any others.
+ */
+export interface NavSection {
+  label: string
+  icon: LucideIcon
+  items: NavItem[]
+  /** Hidden below this role, with everything in it. */
+  minRole?: Role
+}
+
+export type NavEntry = NavItem | NavSection
+
 export interface NavGroup {
   label: string
-  items: NavItem[]
+  items: NavEntry[]
+}
+
+export function isNavSection(entry: NavEntry): entry is NavSection {
+  return 'items' in entry
 }
 
 export const navigation: NavGroup[] = [
@@ -71,16 +93,39 @@ export const navigation: NavGroup[] = [
       { label: 'Policies', to: routes.policies(), icon: ScaleIcon },
       { label: 'System', to: routes.system(), icon: ShieldCheckIcon },
       { label: 'Settings', to: routes.settings(), icon: SettingsIcon },
-      { label: 'Members', to: routes.members(), icon: UsersIcon, minRole: 'admin' },
-      { label: 'Audit', to: routes.audit(), icon: ScrollTextIcon, minRole: 'admin' },
-      { label: 'Data & privacy', to: routes.dataPrivacy(), icon: DatabaseIcon, minRole: 'admin' },
+      {
+        label: 'Workspace',
+        icon: Building2Icon,
+        minRole: 'admin',
+        items: [
+          { label: 'Members', to: routes.members(), icon: UsersIcon },
+          { label: 'Audit', to: routes.audit(), icon: ScrollTextIcon },
+          { label: 'Data & privacy', to: routes.dataPrivacy(), icon: DatabaseIcon },
+          { label: 'Registries', to: routes.registries(), icon: ContainerIcon },
+          { label: 'Secrets', to: routes.secrets(), icon: KeyRoundIcon },
+        ],
+      },
     ],
   },
 ]
 
-/** The groups a user of `role` may see; a group with nothing left is dropped. */
+const allowed = (role: Role, entry: { minRole?: Role }) => !entry.minRole || hasRole(role, entry.minRole)
+
+/** The groups a user of `role` may see; a section or a group with nothing left is dropped. */
 export function visibleNavigation(role: Role): NavGroup[] {
   return navigation
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.minRole || hasRole(role, item.minRole)) }))
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter((entry) => allowed(role, entry))
+        .map((entry) => (isNavSection(entry) ? { ...entry, items: entry.items.filter((item) => allowed(role, item)) } : entry))
+        .filter((entry) => !isNavSection(entry) || entry.items.length > 0),
+    }))
     .filter((group) => group.items.length > 0)
+}
+
+/** Whether `item` is the page at `pathname`: exact, or its subtree for `prefix` items. */
+export function isNavItemActive(item: NavItem, pathname: string) {
+  if (item.to === '/') return pathname === '/'
+  return item.prefix ? pathname.startsWith(item.to) : pathname === item.to
 }

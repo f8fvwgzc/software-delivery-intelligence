@@ -7,6 +7,7 @@ use prost_types::Timestamp;
 
 pub mod code;
 pub mod common;
+pub mod delivery;
 pub mod diagrams;
 pub mod execution;
 pub mod github;

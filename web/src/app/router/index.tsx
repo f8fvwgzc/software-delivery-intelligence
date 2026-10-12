@@ -23,6 +23,7 @@ const ArchitecturePage = lazy(() => import('@/features/graph/pages/architecture-
 const CodePage = lazy(() => import('@/features/code/pages/code-page'))
 const DependenciesPage = lazy(() => import('@/features/dependencies/pages/dependencies-page'))
 const DeliveryPage = lazy(() => import('@/features/delivery/pages/delivery-page'))
+const PipelinePage = lazy(() => import('@/features/delivery-cd/pages/pipeline-page'))
 const ProjectProposalsPage = lazy(() => import('@/features/proposals/pages/project-proposals-page'))
 const DocumentsPage = lazy(() => import('@/features/documents/pages/documents-page'))
 const DiagramsPage = lazy(() => import('@/features/diagrams/pages/diagrams-page'))
@@ -50,6 +51,8 @@ const SettingsPage = lazy(() => import('@/features/settings/pages/settings-page'
 const MembersPage = lazy(() => import('@/features/workspaces/pages/members-page'))
 const AuditPage = lazy(() => import('@/features/workspaces/pages/audit-page'))
 const DataPrivacyPage = lazy(() => import('@/features/workspaces/pages/data-privacy-page'))
+const RegistriesPage = lazy(() => import('@/features/workspaces/pages/registries-page'))
+const SecretsPage = lazy(() => import('@/features/workspaces/pages/secrets-page'))
 const TrustDocPage = lazy(() => import('@/features/auth/pages/trust-doc-page'))
 
 // Breadcrumbs that need data (a project name, an execution number) are
@@ -88,6 +91,7 @@ const shellRoutes: RouteObject[] = [
           { path: 'code/*', Component: CodePage, handle: crumb('Code') },
           { path: 'dependencies', Component: DependenciesPage, handle: crumb('Dependencies') },
           { path: 'delivery', Component: DeliveryPage, handle: crumb('Delivery') },
+          { path: 'pipeline', Component: PipelinePage, handle: crumb('Pipeline') },
           { path: 'proposals', Component: ProjectProposalsPage, handle: crumb('Proposals') },
           { path: 'documents', Component: DocumentsPage, handle: crumb('Documents') },
           { path: 'diagrams', Component: DiagramsPage, handle: crumb('Diagrams') },
@@ -144,6 +148,8 @@ const shellRoutes: RouteObject[] = [
       { path: 'members', Component: MembersPage, handle: crumb('Members') },
       { path: 'audit', Component: AuditPage, handle: crumb('Audit') },
       { path: 'data', Component: DataPrivacyPage, handle: crumb('Data & privacy') },
+      { path: 'registries', Component: RegistriesPage, handle: crumb('Registries') },
+      { path: 'secrets', Component: SecretsPage, handle: crumb('Secrets') },
     ],
   },
 

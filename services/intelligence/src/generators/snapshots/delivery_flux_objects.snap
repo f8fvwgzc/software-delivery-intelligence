@@ -1,0 +1,32 @@
+# Flux objects of the staging environment of view-engine.
+# Commit this file under the path Flux was bootstrapped with, or apply it once.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: view-engine-staging
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/f8fvwgzc/view-engine.git
+  ref:
+    branch: "main"
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: view-engine-staging
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  path: "./deploy/staging"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: view-engine-staging
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: view-engine
+      namespace: view-engine-staging

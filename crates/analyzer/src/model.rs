@@ -314,8 +314,98 @@ pub struct ProjectConfigDraft {
     /// The `review:` section (CONTRACT.md §12), applied by the code review.
     #[serde(default)]
     pub review: ReviewConfigDraft,
+    /// The `delivery:` section (CONTRACT.md §22) as canonical JSON: a
+    /// [`DeliveryConfigDraft`] with every key present, keys in declaration
+    /// order and `config` maps sorted. Empty when the section is absent.
+    #[serde(default)]
+    pub delivery_json: String,
     /// Parse problems, in plain words. The config is ignored when non-empty.
     pub errors: Vec<String>,
+}
+
+/// Registry kinds a `delivery.registry` may name (CONTRACT.md §22).
+pub const REGISTRY_KINDS: &[&str] = &["ghcr", "dockerhub", "acr", "ecr", "gar", "generic"];
+
+/// Deployer kinds a `delivery.environments[].kind` may name (CONTRACT.md §22).
+pub const DEPLOYER_KINDS: &[&str] = &[
+    "github_actions",
+    "gitops_flux",
+    "gitops_argocd",
+    "jenkins",
+    "azure_devops",
+    "webhook",
+    "docker_local",
+];
+
+/// `.sdi.yml` `delivery:` — where images go and which environments a
+/// release moves through. This is the shape of
+/// [`ProjectConfigDraft::delivery_json`]; the knowledge service turns the
+/// environments into `Execution.SyncEnvironments` and the generators read
+/// the registry and the build workflow.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeliveryConfigDraft {
+    /// `kind` is empty when the file declared no registry (the workspace
+    /// default applies).
+    pub registry: DeliveryRegistryDraft,
+    /// File name of the workflow whose success creates a release, e.g. `ci.yml`.
+    pub build_workflow: String,
+    /// In promotion order: the first is stage 0.
+    pub environments: Vec<DeliveryEnvironmentDraft>,
+}
+
+impl DeliveryConfigDraft {
+    /// Nothing declared: no registry, no build workflow, no environments.
+    pub fn is_empty(&self) -> bool {
+        self.registry.kind.is_empty()
+            && self.build_workflow.is_empty()
+            && self.environments.is_empty()
+    }
+
+    /// The canonical JSON stored in [`ProjectConfigDraft::delivery_json`].
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Reads [`ProjectConfigDraft::delivery_json`] back; `None` when it is
+    /// empty or not the canonical shape.
+    pub fn from_json(json: &str) -> Option<Self> {
+        if json.trim().is_empty() {
+            return None;
+        }
+        serde_json::from_str(json).ok()
+    }
+}
+
+/// `delivery.registry`: where the project's images live.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeliveryRegistryDraft {
+    /// One of [`REGISTRY_KINDS`]; empty when not declared.
+    pub kind: String,
+    /// Registry host without scheme, e.g. `ghcr.io`, `myorg.azurecr.io`.
+    pub host: String,
+    /// Org, user or project path images are pushed under; may be empty.
+    pub namespace: String,
+}
+
+/// One entry of `delivery.environments`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeliveryEnvironmentDraft {
+    pub name: String,
+    /// One of [`DEPLOYER_KINDS`].
+    pub kind: String,
+    pub url: String,
+    pub health_path: String,
+    pub protected: bool,
+    pub auto_promote: bool,
+    /// Name of the workspace registry this environment pulls from; empty
+    /// uses `delivery.registry`, then the workspace default.
+    pub registry: String,
+    /// Deployer settings, keys per kind (CONTRACT.md §22). Values are
+    /// strings; secrets are referenced by name, never by value.
+    pub config: BTreeMap<String, String>,
 }
 
 /// `.sdi.yml` `review:` — how the repository tunes its pull request reviews.

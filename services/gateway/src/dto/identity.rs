@@ -391,11 +391,13 @@ pub struct DataExport {
     pub members: Vec<Member>,
     /// Data controls at export time.
     pub data_controls: Option<DataControls>,
+    /// Names of the workspace's secrets. Values are never exported.
+    pub secrets: Vec<String>,
     /// Knowledge rows by entity (projects, facts, graph, ...).
     pub knowledge: BTreeMap<String, Vec<serde_json::Value>>,
     /// Intelligence rows by entity (proposals, decisions, documents, diagrams, ...).
     pub intelligence: BTreeMap<String, Vec<serde_json::Value>>,
-    /// Execution rows by entity (executions, steps, approvals, ...).
+    /// Execution rows by entity (executions, steps, approvals, registries, environments, releases, deployment runs, ...).
     pub execution: BTreeMap<String, Vec<serde_json::Value>>,
     /// Every audit entry.
     pub audit: Vec<AuditEntry>,

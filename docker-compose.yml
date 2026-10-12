@@ -220,6 +220,8 @@ services:
       # volume because the root filesystem is read-only. rust.Dockerfile
       # creates the path owned by uid 10001 so the volume inherits it.
       SDI_RUN_DIR: /var/lib/sdi/run
+      SDI_ALLOW_PRIVATE_DEPLOY_TARGETS: ${SDI_ALLOW_PRIVATE_DEPLOY_TARGETS:-}
+      AZURE_DEVOPS_URL: ${AZURE_DEVOPS_URL:-}
       # Unset by default: the Docker CLI then uses /var/run/docker.sock,
       # which only exists under the local-exec profile. Set on the host to
       # point the adapter at a remote daemon instead (passed through as-is).

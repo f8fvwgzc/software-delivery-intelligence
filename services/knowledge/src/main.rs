@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use sdi_common::grpc::MAX_MESSAGE_BYTES;
 use sdi_knowledge::{
@@ -5,6 +7,7 @@ use sdi_knowledge::{
     config::Settings,
     db,
     events::EventBus,
+    execution::GrpcExecution,
     github::{Github, TokenProvider},
     grpc::KnowledgeState,
     identity::Identity,
@@ -43,7 +46,11 @@ async fn main() -> Result<()> {
     if github.dev_token_configured() {
         tracing::info!("GITHUB_TOKEN set: used for every workspace while identity is unreachable");
     }
-    let state = KnowledgeState::new(pool.clone(), github, EventBus::new(), identity);
+    // Lazily connected: scans work without execution and report the
+    // `.sdi.yml` environments to it once it is up.
+    let execution = GrpcExecution::connect(&settings.execution_url)?;
+    let state = KnowledgeState::new(pool.clone(), github, EventBus::new(), identity)
+        .with_execution(Arc::new(execution));
 
     // Session code caches expire; reclaim them in the background.
     let _sweeper = sweeper::spawn(pool);
@@ -53,7 +60,7 @@ async fn main() -> Result<()> {
         .set_serving::<KnowledgeServiceServer<KnowledgeState>>()
         .await;
 
-    tracing::info!(listen = %settings.listen, identity = %settings.identity_url, "knowledge service listening");
+    tracing::info!(listen = %settings.listen, identity = %settings.identity_url, execution = %settings.execution_url, "knowledge service listening");
     Server::builder()
         .add_service(health)
         .add_service(tonic::service::interceptor::InterceptedService::new(

@@ -51,6 +51,8 @@ pub(crate) fn derive(
         .filter(|c| {
             !c.contains(':')
                 || c.starts_with("ci:")
+                || c.starts_with("cd:")
+                || c.starts_with("registry:")
                 || c.starts_with("iac:")
                 || c.starts_with("k8s:")
                 || c.starts_with("tests:")

@@ -10,6 +10,7 @@ pub mod approvals;
 pub mod auth;
 pub mod code;
 pub mod decisions;
+pub mod delivery;
 pub mod diagrams;
 pub mod documents;
 pub mod executions;
@@ -46,6 +47,7 @@ pub fn rest() -> OpenApiRouter<AppState> {
         .merge(diagrams::router())
         .merge(reviews::router())
         .merge(executions::router())
+        .merge(delivery::router())
         .merge(approvals::router())
         .merge(policies::router())
 }

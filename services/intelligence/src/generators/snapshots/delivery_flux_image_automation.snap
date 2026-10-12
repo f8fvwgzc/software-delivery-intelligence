@@ -1,0 +1,48 @@
+# Flux image automation of the production environment of view-engine.
+# Needs the image-reflector and image-automation controllers
+# (`flux bootstrap --components-extra=image-reflector-controller,image-automation-controller`).
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: view-engine-production
+  namespace: flux-system
+spec:
+  image: ghcr.io/f8fvwgzc/view-engine
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: view-engine-production
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: view-engine-production
+  policy:
+    semver:
+      range: ">=0.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageUpdateAutomation
+metadata:
+  name: view-engine-production
+  namespace: flux-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: view-engine-production
+  git:
+    checkout:
+      ref:
+        branch: "main"
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: "chore(production): update the view-engine image"
+    push:
+      branch: "flux/view-engine-production"
+  update:
+    path: "./apps/view-engine/production"
+    strategy: Setters

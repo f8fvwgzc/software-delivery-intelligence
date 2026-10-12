@@ -1288,6 +1288,117 @@
         }
       }
     },
+    "/api/v1/deployment-runs/{id}": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "One deployment run.",
+        "operationId": "get_deployment_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/diagrams/{id}": {
       "get": {
         "tags": [
@@ -1645,6 +1756,472 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Document"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/environments/{id}": {
+      "put": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Replaces an environment's settings (admin). Environments declared in\n`.sdi.yml` answer 412: they are edited in the file.",
+        "operationId": "update_environment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Environment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertEnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Environment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Deletes an environment (admin) unless a deployment to it is still open.",
+        "operationId": "delete_environment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Environment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/environments/{id}/promote": {
+      "post": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Deploys a release to an environment (approver): creates a gated\nexecution and starts it. Without `releaseId` the stage's candidate is\npromoted. Answers the run; `executionId` is where its steps, approvals\nand logs are.",
+        "operationId": "promote",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Environment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/environments/{id}/rollback": {
+      "post": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Redeploys an earlier release of an environment (approver): the same\nplan under the `deploy.rollback` policy. Without `releaseId` it is the\nprevious successful release.",
+        "operationId": "rollback",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Environment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRun"
                 }
               }
             }
@@ -4870,6 +5447,127 @@
         }
       }
     },
+    "/api/v1/projects/{id}/delivery/artifacts": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "The files that wire the project's CI to its registry and its\nenvironments' deployers (build and deploy workflows, Flux or Argo CD\nmanifests, `Jenkinsfile`, `azure-pipelines.yml`), generated from facts\nfor the deployer kinds the project uses. Answers 501 while the\nintelligence service does not generate them.",
+        "operationId": "delivery_artifacts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryArtifacts"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not generated by this deployment yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/dependencies": {
       "get": {
         "tags": [
@@ -4894,6 +5592,150 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DependenciesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/deployment-runs": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "A project's promotions and rollbacks, newest first, optionally of one\nenvironment. `before` pages backwards.",
+        "operationId": "list_deployment_runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environmentId",
+            "in": "query",
+            "description": "Only runs of this environment.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: runs started strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeploymentRun"
+                  }
                 }
               }
             }
@@ -5533,6 +6375,239 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Document"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/environments": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "A project's environments in promotion order.",
+        "operationId": "list_environments",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Environment"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Adds an environment to a project (admin). A refused setting is named\nin the message (`config.path is required for gitops_flux environments`).",
+        "operationId": "create_environment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertEnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Environment"
                 }
               }
             }
@@ -6346,6 +7421,117 @@
         }
       }
     },
+    "/api/v1/projects/{id}/pipeline": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "The pipeline of a project: its stages in order with the current\nrelease, the last run, live health and the promotable candidate, plus\nthe 30-day success rate, deployment count and median lead time.",
+        "operationId": "get_pipeline",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPipeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/pipeline-runs": {
       "get": {
         "tags": [
@@ -7011,6 +8197,260 @@
                   "items": {
                     "$ref": "#/components/schemas/Question"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/releases": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "A project's releases, newest first. `before` pages backwards.",
+        "operationId": "list_releases",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, newest first (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor: releases created strictly before this time.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Release"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Cuts a release by hand (member): by default the default branch head,\ntagged with its short SHA. Creating the same tag twice returns the\nrelease that exists.",
+        "operationId": "create_release",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Release"
                 }
               }
             }
@@ -8874,6 +10314,552 @@
         }
       }
     },
+    "/api/v1/registries": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "The workspace's image registries, the default first. A workspace that\nnever configured one has `ghcr.io/<its GitHub login>`.",
+        "operationId": "list_registries",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Registry"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Adds a registry (admin). Credentials are named workspace secrets.",
+        "operationId": "create_registry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertRegistryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/registries/{id}": {
+      "put": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Replaces a registry's settings (admin).",
+        "operationId": "update_registry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Registry id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertRegistryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Deletes a registry (admin). The default and registries in use stay.",
+        "operationId": "delete_registry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Registry id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/releases/{id}": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "One release with its notes.",
+        "operationId": "get_release",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Release id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Release"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/reviews": {
       "get": {
         "tags": [
@@ -10008,7 +11994,7 @@
         "tags": [
           "workspaces"
         ],
-        "summary": "Deletes everything the platform stores for the workspace (owner):\nevery knowledge, intelligence and execution row, then the GitHub App\ninstallation record. The deletion itself is audited.",
+        "summary": "Deletes everything the platform stores for the workspace (owner):\nevery knowledge, intelligence and execution row, the workspace's\nsecrets, then the GitHub App installation record. The deletion itself\nis audited.",
         "operationId": "delete_workspace",
         "parameters": [
           {
@@ -11183,6 +13169,362 @@
           }
         }
       }
+    },
+    "/api/v1/workspaces/{id}/secrets": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "The workspace's secrets (admin): names, a 4-character hint and a\ndescription. Values are write-only; no route returns one.",
+        "operationId": "list_secrets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SecretInfo"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/secrets/{name}": {
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Stores or replaces a workspace secret (admin). Deployers and registries\nreference it by `name` (upper snake case, e.g. `JENKINS_TOKEN`); the\nvalue is encrypted at rest and never returned.",
+        "operationId": "set_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret name, upper snake case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Deletes a workspace secret (admin). Deployers that name it fail with a\nmessage saying so until it is stored again.",
+        "operationId": "delete_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11728,6 +14070,47 @@
           }
         }
       },
+      "CreateReleaseRequest": {
+        "type": "object",
+        "description": "Body of `POST /projects/{id}/releases` (member). Every field is\noptional: an empty body releases the default branch head.",
+        "properties": {
+          "commitSha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Commit to release; defaults to the default branch head."
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`sha256:…`, when the build reported it."
+          },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`host/namespace/name`; defaults to the default registry and the repository name."
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Image tag; defaults to the short commit SHA."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Version shown to people; defaults to the tag."
+          }
+        }
+      },
       "DataControls": {
         "type": "object",
         "description": "Per-workspace data handling (CONTRACT.md §19). Defaults are the most private.",
@@ -11790,6 +14173,7 @@
           "workspace",
           "exportedAt",
           "members",
+          "secrets",
           "knowledge",
           "intelligence",
           "execution",
@@ -11827,7 +14211,7 @@
           },
           "execution": {
             "type": "object",
-            "description": "Execution rows by entity (executions, steps, approvals, ...).",
+            "description": "Execution rows by entity (executions, steps, approvals, registries, environments, releases, deployment runs, ...).",
             "additionalProperties": {
               "type": "array",
               "items": {}
@@ -11869,6 +14253,13 @@
               "$ref": "#/components/schemas/Member"
             },
             "description": "Members at export time."
+          },
+          "secrets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the workspace's secrets. Values are never exported."
           },
           "workspace": {
             "$ref": "#/components/schemas/Workspace",
@@ -12047,6 +14438,90 @@
           "active",
           "superseded"
         ]
+      },
+      "DeliveryArtifacts": {
+        "type": "object",
+        "description": "The files that wire a project's CI to its registry and its\nenvironments' deployers, generated from facts (CONTRACT.md §14, §22).",
+        "required": [
+          "artifacts",
+          "notes",
+          "requiredSecrets"
+        ],
+        "properties": {
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Artifact"
+            },
+            "description": "The files, complete and ready to commit."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Plain sentences: what each file does and what must be configured."
+          },
+          "requiredSecrets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Secret names the generated files reference."
+          }
+        }
+      },
+      "DeliveryPipeline": {
+        "type": "object",
+        "description": "Environments in order, what runs in each, and what could be promoted next.",
+        "required": [
+          "projectId",
+          "stages",
+          "successRate",
+          "deployments30d",
+          "leadTimeSeconds"
+        ],
+        "properties": {
+          "deployments30d": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deployment runs started in the last 30 days.",
+            "minimum": 0
+          },
+          "leadTimeSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Median seconds from a release being created to the last stage succeeding (0 when nothing got there).",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project."
+          },
+          "registry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Registry",
+                "description": "The workspace's default registry."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineStage"
+            },
+            "description": "Stages in promotion order."
+          },
+          "successRate": {
+            "type": "number",
+            "format": "double",
+            "description": "0.0 – 1.0 over deployment runs that finished in the last 30 days."
+          }
+        }
       },
       "DeliveryStats": {
         "type": "object",
@@ -12299,6 +14774,115 @@
             "description": "Environment or log URL."
           }
         }
+      },
+      "DeploymentRun": {
+        "type": "object",
+        "description": "A release going to an environment, backed by a gated execution.",
+        "required": [
+          "id",
+          "projectId",
+          "environmentId",
+          "environmentName",
+          "releaseId",
+          "releaseVersion",
+          "kind",
+          "status",
+          "executionId",
+          "createdAt",
+          "durationSeconds"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it started."
+          },
+          "durationSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds from start to end (to now while it is open).",
+            "minimum": 0
+          },
+          "environmentId": {
+            "type": "string",
+            "description": "Environment it deploys to."
+          },
+          "environmentName": {
+            "type": "string",
+            "description": "Environment name when the run started."
+          },
+          "executionId": {
+            "type": "string",
+            "description": "The execution that carries the steps, approvals and logs."
+          },
+          "externalUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Workflow run, pull request or build URL at the deployer; null until the deployer reported one."
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it ended; null while it is open."
+          },
+          "id": {
+            "type": "string",
+            "description": "Run id."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`promote` or `rollback`."
+          },
+          "previousReleaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the environment ran when the run started."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to."
+          },
+          "releaseId": {
+            "type": "string",
+            "description": "Release it deploys."
+          },
+          "releaseVersion": {
+            "type": "string",
+            "description": "Release version when the run started."
+          },
+          "startedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who started it (`system` for automatic promotions)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeploymentRunStatus",
+            "description": "Status."
+          }
+        }
+      },
+      "DeploymentRunStatus": {
+        "type": "string",
+        "description": "Where a deployment run stands. Derived from the execution that\ncarries it: `failed` with `finishedAt: null` is a run paused on a\nfailure that still waits for a remediation.",
+        "enum": [
+          "unspecified",
+          "pending",
+          "awaiting_approval",
+          "deploying",
+          "verifying",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
       },
       "DeploymentStats": {
         "type": "object",
@@ -12733,6 +15317,107 @@
           "ecosystem": {
             "type": "string",
             "description": "Ecosystem name."
+          }
+        }
+      },
+      "Environment": {
+        "type": "object",
+        "description": "A place a release runs, and how it gets there.",
+        "required": [
+          "id",
+          "projectId",
+          "name",
+          "position",
+          "kind",
+          "config",
+          "protected",
+          "autoPromote",
+          "source",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "autoPromote": {
+            "type": "boolean",
+            "description": "Promote here automatically when the previous stage succeeds (still gated)."
+          },
+          "config": {
+            "type": "object",
+            "description": "Deployer settings; keys per kind in CONTRACT.md §22. Secrets are named, never held.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "currentReleaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The release that runs there now; null before the first successful deployment."
+          },
+          "healthPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path polled on `url` after a deploy; null when not configured."
+          },
+          "id": {
+            "type": "string",
+            "description": "Environment id."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Deployer: `github_actions`, `gitops_flux`, `gitops_argocd`, `jenkins`, `azure_devops`, `webhook` or `docker_local`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, unique within the project."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Promotion order, 0 first.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to."
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Production semantics: `deploy.production` policy (approval always required)."
+          },
+          "registryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Registry its images come from; null uses the workspace default."
+          },
+          "source": {
+            "type": "string",
+            "description": "`ui`, or `config` when declared in `.sdi.yml` (read-only here)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the environment is reachable; null when not configured."
           }
         }
       },
@@ -15060,6 +17745,57 @@
           }
         }
       },
+      "PipelineStage": {
+        "type": "object",
+        "description": "One stage of a project's pipeline.",
+        "required": [
+          "environment",
+          "health"
+        ],
+        "properties": {
+          "candidate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Release",
+                "description": "Newest release ahead of `current` that already succeeded in the previous stage (any release for the first stage)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Release",
+                "description": "What runs there now."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "$ref": "#/components/schemas/Environment",
+            "description": "The environment."
+          },
+          "health": {
+            "type": "string",
+            "description": "`healthy`, `unhealthy` or `unknown` (no URL configured): a live check, cached for 30 seconds."
+          },
+          "lastRun": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeploymentRun",
+                "description": "The latest deployment to it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "PipelineStats": {
         "type": "object",
         "description": "Aggregate over the listed pipeline runs.",
@@ -15200,7 +17936,7 @@
           },
           "entity": {
             "type": "string",
-            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval` or `pattern`."
+            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,\nor, for continuous delivery, `release`, `deployment` or `environment`."
           },
           "entityId": {
             "type": "string",
@@ -15495,6 +18231,19 @@
           "ready",
           "failed"
         ]
+      },
+      "PromoteRequest": {
+        "type": "object",
+        "description": "Body of `POST /environments/{id}/promote` (approver).",
+        "properties": {
+          "releaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Release to deploy; null promotes the stage's candidate."
+          }
+        }
       },
       "Proposal": {
         "type": "object",
@@ -16018,6 +18767,75 @@
           }
         }
       },
+      "Registry": {
+        "type": "object",
+        "description": "Where images live. One per workspace is the default; GHCR needs no secret.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "host",
+          "namespace",
+          "auth",
+          "isDefault",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "auth": {
+            "type": "string",
+            "description": "`github_token` (GHCR), `oidc` (cloud registries, reachable from CI only) or `secret`."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "host": {
+            "type": "string",
+            "description": "e.g. `ghcr.io`, `myorg.azurecr.io`."
+          },
+          "id": {
+            "type": "string",
+            "description": "Registry id."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "True for the registry releases use when their environment names none."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`ghcr`, `dockerhub`, `acr`, `ecr`, `gar` or `generic`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name shown in the workspace."
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Org, user or project path images are pushed under."
+          },
+          "passwordSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the workspace secret holding the password or token; null unless `auth` is `secret`."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          },
+          "usernameSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the workspace secret holding the user name (never the value); null unless `auth` is `secret`."
+          }
+        }
+      },
       "RejectProposalRequest": {
         "type": "object",
         "description": "Body of `POST /proposals/{id}/reject`.",
@@ -16045,6 +18863,94 @@
           "governance",
           "outcome"
         ]
+      },
+      "Release": {
+        "type": "object",
+        "description": "One immutable image at one commit.",
+        "required": [
+          "id",
+          "projectId",
+          "version",
+          "commitSha",
+          "image",
+          "tag",
+          "source",
+          "notes",
+          "verified",
+          "createdAt",
+          "deployedTo"
+        ],
+        "properties": {
+          "commitSha": {
+            "type": "string",
+            "description": "Commit the image was built from."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who created it (`system` for webhooks)."
+          },
+          "deployedTo": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the environments this release currently runs in, in promotion order."
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`sha256:…` once known; null before the registry or the build reported it."
+          },
+          "id": {
+            "type": "string",
+            "description": "Release id."
+          },
+          "image": {
+            "type": "string",
+            "description": "`host/namespace/name`, without tag."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Commit subjects since the previous release, Markdown."
+          },
+          "pipelineRunId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CI run that built it, when a webhook created the release."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to."
+          },
+          "source": {
+            "type": "string",
+            "description": "`pipeline`, `package` or `manual`."
+          },
+          "tag": {
+            "type": "string",
+            "description": "Image tag."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "The registry confirmed the manifest exists."
+          },
+          "version": {
+            "type": "string",
+            "description": "Tag shown to people, e.g. `v1.4.2` or the short SHA."
+          }
+        }
       },
       "RemediationOption": {
         "type": "object",
@@ -16479,6 +19385,26 @@
           "owner"
         ]
       },
+      "RollbackRequest": {
+        "type": "object",
+        "description": "Body of `POST /environments/{id}/rollback` (approver).",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, for the audit trail."
+          },
+          "releaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Release to go back to; null picks the previous successful one."
+          }
+        }
+      },
       "RunFailure": {
         "type": "object",
         "description": "Root cause of a failed run.",
@@ -16759,6 +19685,46 @@
           }
         }
       },
+      "SecretInfo": {
+        "type": "object",
+        "description": "A workspace secret as the API shows it: the value never leaves the\nidentity service.",
+        "required": [
+          "name",
+          "updatedAt"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it is for."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last 4 characters of the value, for recognition only; null for short values."
+          },
+          "name": {
+            "type": "string",
+            "description": "Upper snake case, e.g. `JENKINS_TOKEN`."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was stored last."
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Login of whoever stored it last."
+          }
+        }
+      },
       "ServiceHealth": {
         "type": "object",
         "description": "Health of one backing service.",
@@ -16828,6 +19794,26 @@
           "apiKey": {
             "type": "string",
             "description": "The workspace's own model API key; empty removes it. Never returned."
+          }
+        }
+      },
+      "SetSecretRequest": {
+        "type": "object",
+        "description": "Body of `PUT /workspaces/{id}/secrets/{name}` (admin). The value is\nwrite-only.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it is for."
+          },
+          "value": {
+            "type": "string",
+            "description": "The secret value; stored encrypted, never returned."
           }
         }
       },
@@ -17395,6 +20381,141 @@
           }
         }
       },
+      "UpsertEnvironmentRequest": {
+        "type": "object",
+        "description": "Body of `POST /projects/{id}/environments` and `PUT /environments/{id}` (admin).",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "autoPromote": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Promote here automatically when the previous stage succeeds."
+          },
+          "config": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Deployer settings; unknown keys are refused by name.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "healthPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path polled on `url` after a deploy."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Deployer kind."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, unique within the project."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Promotion order, 0 first. Omitted: a new environment goes last, an edited one stays where it is.",
+            "minimum": 0
+          },
+          "protected": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Production semantics."
+          },
+          "registryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Registry its images come from; null uses the workspace default."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the environment is reachable."
+          }
+        }
+      },
+      "UpsertRegistryRequest": {
+        "type": "object",
+        "description": "Body of `POST /registries` and `PUT /registries/{id}` (admin).",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "auth": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`github_token`, `oidc` or `secret`; `ghcr` defaults to `github_token`."
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Registry host; `ghcr` and `dockerhub` have a default."
+          },
+          "isDefault": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Make it the workspace default (the previous default loses the flag)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`ghcr`, `dockerhub`, `acr`, `ecr`, `gar` or `generic`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name shown in the workspace."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Org, user or project path images are pushed under."
+          },
+          "passwordSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of a workspace secret (for `auth: secret`)."
+          },
+          "usernameSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of a workspace secret (for `auth: secret`)."
+          }
+        }
+      },
       "User": {
         "type": "object",
         "description": "A signed-in GitHub account.",
@@ -17630,7 +20751,7 @@
     },
     {
       "name": "delivery",
-      "description": "Observed pipelines and deployments"
+      "description": "Observed pipelines and deployments, and continuous delivery: registries, environments, releases, promotions and rollbacks (§22)"
     },
     {
       "name": "knowledge",

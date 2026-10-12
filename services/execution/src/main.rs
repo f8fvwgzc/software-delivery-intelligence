@@ -4,6 +4,7 @@ mod adapters;
 mod config;
 mod convert;
 mod db;
+mod delivery;
 mod domain;
 mod events;
 mod grpc;
@@ -20,10 +21,14 @@ use sdi_proto::execution::v1::execution_service_server::ExecutionServiceServer;
 use tonic::transport::Server;
 
 use crate::{
-    adapters::{DockerAdapter, GithubAdapter, Registry, SimulatedAdapter},
+    adapters::{
+        DeliveryTools, DockerAdapter, GithubAccess, GithubAdapter, Registry, SimulatedAdapter,
+        net::NetPolicy,
+    },
     config::{SCHEMA, Settings},
+    delivery::Delivery,
     grpc::ExecutionGrpc,
-    identity::{GrpcAudit, GrpcGithubAccess},
+    identity::{GrpcAudit, GrpcGithubAccess, GrpcIdentity},
     knowledge::GrpcPatternOutcomes,
     runner::Runtime,
 };
@@ -44,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not seed the github-token identity")?;
 
+    let net_policy = NetPolicy::from_env();
     let adapters = Registry::new(
         Arc::new(SimulatedAdapter::new(settings.sim_delay_ms)),
         Arc::new(
@@ -58,11 +64,30 @@ async fn main() -> anyhow::Result<()> {
             settings.github_token.clone(),
             &settings.github_api_url,
         )),
-    );
+    )
+    // The deployers of CONTRACT.md §22. Hosts a workspace types (registries,
+    // Jenkins, webhooks, health URLs) go through the SSRF guard.
+    .with_delivery(DeliveryTools::new(
+        net_policy,
+        settings.github_token.clone(),
+        &settings.github_api_url,
+        &settings.azure_devops_url,
+    ));
     let outcomes = Arc::new(GrpcPatternOutcomes::new(&settings.knowledge_url)?);
     let audit = Arc::new(GrpcAudit::new(&settings.identity_url)?);
     let github_access = Arc::new(GrpcGithubAccess::new(&settings.identity_url)?);
-    let rt = Runtime::new(
+    let identity = Arc::new(GrpcIdentity::new(&settings.identity_url)?);
+    let delivery = Delivery::new(
+        outcomes.clone(),
+        identity.clone(),
+        Some(identity),
+        settings.github_token.clone().map(|token| GithubAccess {
+            token,
+            api_base_url: settings.github_api_url.trim_end_matches('/').to_owned(),
+        }),
+        net_policy,
+    );
+    let rt = Runtime::with_delivery(
         pool,
         adapters,
         outcomes,
@@ -70,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_millis(settings.sim_delay_ms / 2),
         settings.github_token.is_some(),
         github_access,
+        delivery,
     );
     let resumed = rt.recover().await.context("could not resume executions")?;
 
@@ -83,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         resumed,
         run_dir = %settings.run_dir.display(),
         github_token = settings.github_token.is_some(),
+        private_deploy_targets = net_policy.allow_private,
         "execution service listening"
     );
     Server::builder()

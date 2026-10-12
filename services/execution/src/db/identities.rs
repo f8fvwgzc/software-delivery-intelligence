@@ -153,10 +153,20 @@ const LOCAL_DOCKER: (&str, &str, &str, [&str; 4]) = (
     ],
 );
 
+/// The identity deployment runs execute as (CONTRACT.md §22). It may look
+/// an image up and trigger a pipeline; every `deploy:*` permission, and
+/// `repository:write` for a GitOps commit, needs a timed grant (§5.3).
+const DELIVERY: (&str, &str, &str, [&str; 3]) = (
+    "delivery",
+    "delivery",
+    "Promotes releases through environments. Holds registry read and pipeline trigger scopes; every deploy permission needs a timed grant.",
+    ["repository:read", "registry:read", "pipeline:trigger"],
+);
+
 /// Name of the identity that stands for the connected token.
 pub const GITHUB_TOKEN_IDENTITY: &str = "github-token";
 const GITHUB_TOKEN_DESCRIPTION: &str = "The connected GITHUB_TOKEN. Reads and writes the repositories the token can reach; present only while the token is configured.";
-const GITHUB_TOKEN_SCOPES: [&str; 2] = ["repository:read", "repository:write"];
+const GITHUB_TOKEN_SCOPES: [&str; 3] = ["repository:read", "repository:write", "pipeline:trigger"];
 
 /// Upserts one seeded identity with its base grants. Existing rows keep
 /// their id and description; a base grant that exists stays untouched.
@@ -195,12 +205,14 @@ async fn upsert(
 }
 
 /// Creates the workspace's seeded identities when they are missing:
-/// `simulated` and `local-docker` always, `github-token` only while a
-/// token is configured. Idempotent.
+/// `simulated`, `local-docker` and `delivery` always, `github-token` only
+/// while a token is configured. Idempotent.
 pub async fn seed(tx: &mut Tx, workspace_id: Uuid, github_configured: bool) -> sqlx::Result<()> {
     let (name, kind, description, scopes) = SIMULATED;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
     let (name, kind, description, scopes) = LOCAL_DOCKER;
+    upsert(tx, workspace_id, name, kind, description, &scopes).await?;
+    let (name, kind, description, scopes) = DELIVERY;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
     if github_configured {
         upsert(

@@ -101,10 +101,38 @@ pub struct Auth {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebhookJob {
     RecordInstallation,
-    RemoveInstallation { installation_id: i64 },
+    RemoveInstallation {
+        installation_id: i64,
+    },
     SyncMembers,
-    Rescan { full_name: String },
-    AutoReview { full_name: String, number: u64 },
+    Rescan {
+        full_name: String,
+    },
+    AutoReview {
+        full_name: String,
+        number: u64,
+    },
+    /// A workflow run succeeded on the default branch: a release, when the
+    /// workflow is the project's build workflow (CONTRACT.md §22).
+    BuildSucceeded {
+        full_name: String,
+        /// `.github/workflows/ci.yml`.
+        workflow_path: String,
+        workflow_name: String,
+        head_sha: String,
+        run_id: String,
+    },
+    /// A container image was published to the registry: a release with the
+    /// tag and digest the event carries.
+    PackagePublished {
+        full_name: String,
+        /// `host/namespace/name`, without tag.
+        image: String,
+        tag: String,
+        digest: String,
+        /// The commit the package was built from, when the event says.
+        commit_sha: String,
+    },
 }
 
 /// A delivery waiting for the worker: the job plus what it needs from the
@@ -345,6 +373,7 @@ impl tonic::service::Interceptor for Forward {
 }
 
 pub type KnowledgeClient = KnowledgeServiceClient<InterceptedService<Channel, Forward>>;
+pub type IdentityCallerClient = IdentityServiceClient<InterceptedService<Channel, Forward>>;
 pub type IntelligenceClient = IntelligenceServiceClient<InterceptedService<Channel, Forward>>;
 pub type ExecutionClient = ExecutionServiceClient<InterceptedService<Channel, Forward>>;
 
@@ -385,6 +414,18 @@ impl Scoped {
 
     pub fn identity(&self) -> IdentityServiceClient<Channel> {
         self.state.identity()
+    }
+
+    /// Identity with the caller's principal attached. Workspace secrets
+    /// (CONTRACT.md §22) are the one part of identity that checks the role
+    /// itself: an admin of the workspace manages them, whoever asks.
+    pub fn identity_as_caller(&self) -> IdentityCallerClient {
+        IdentityServiceClient::with_interceptor(
+            self.state.services[3].channel.clone(),
+            Forward(self.principal.clone()),
+        )
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES)
     }
 
     pub fn workspace_id(&self) -> &str {

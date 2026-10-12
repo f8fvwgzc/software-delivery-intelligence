@@ -387,6 +387,7 @@ pub fn project_config(row: Option<ConfigRow>) -> ProjectConfig {
         port: draft.port,
         scan_exclude: draft.scan_exclude,
         errors: draft.errors,
+        delivery_json: draft.delivery_json,
     }
 }
 

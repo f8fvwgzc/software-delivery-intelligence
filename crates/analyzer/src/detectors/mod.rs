@@ -4,6 +4,7 @@
 //! found (frameworks need dependencies, questions need deploy evidence).
 //! Each one only appends; nothing is removed until the graph pass.
 
+pub(crate) mod cd;
 pub(crate) mod ci;
 pub(crate) mod cloud;
 pub(crate) mod containers;
@@ -352,7 +353,8 @@ impl<'a> Ctx<'a> {
 
 /// Runs every detector in dependency order. The configuration goes first so
 /// its facts exist for everything else; runtime reads base images, so it
-/// follows the container and IaC passes that collect them.
+/// follows the container and IaC passes that collect them. Delivery tooling
+/// follows the pipelines it complements.
 pub(crate) fn run_all(ctx: &mut Ctx<'_>) {
     crate::config::detect(ctx);
     dependencies::detect(ctx);
@@ -362,6 +364,7 @@ pub(crate) fn run_all(ctx: &mut Ctx<'_>) {
     containers::detect(ctx);
     iac::detect(ctx);
     ci::detect(ctx);
+    cd::detect(ctx);
     runtime::detect(ctx);
     datastores::detect(ctx);
     cloud::detect(ctx);

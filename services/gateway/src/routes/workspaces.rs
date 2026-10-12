@@ -1,7 +1,7 @@
-//! Workspaces: membership, audit, data controls, export, purge and deletion
-//! (CONTRACT.md §18, §19). The workspace in the path is the one the request
-//! was authorised for (the auth middleware resolves `/workspaces/{id}`), so
-//! `{id}` and the principal's workspace always agree.
+//! Workspaces: membership, audit, data controls, secrets, export, purge and
+//! deletion (CONTRACT.md §18, §19, §22). The workspace in the path is the
+//! one the request was authorised for (the auth middleware resolves
+//! `/workspaces/{id}`), so `{id}` and the principal's workspace always agree.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -14,10 +14,13 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::map_all;
 use crate::{
-    dto::identity::{
-        AuditEntry, AuditQuery, DataControls, DataExport, Member, MembersResponse, PurgeResult,
-        SetReasonerKeyRequest, UpdateDataControlsRequest, UpdateMemberRoleRequest, Workspace,
-        WorkspaceDeleted,
+    dto::{
+        delivery::{SecretInfo, SetSecretRequest},
+        identity::{
+            AuditEntry, AuditQuery, DataControls, DataExport, Member, MembersResponse, PurgeResult,
+            SetReasonerKeyRequest, UpdateDataControlsRequest, UpdateMemberRoleRequest, Workspace,
+            WorkspaceDeleted,
+        },
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
     state::{AppState, Auth, Scoped},
@@ -33,6 +36,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_audit))
         .routes(routes!(get_data_controls, update_data_controls))
         .routes(routes!(set_reasoner_key))
+        .routes(routes!(list_secrets))
+        .routes(routes!(set_secret, delete_secret))
         .routes(routes!(export_data))
         .routes(routes!(purge_code_cache))
 }
@@ -324,6 +329,120 @@ async fn set_reasoner_key(
     Ok(Json(controls.into()))
 }
 
+/// The workspace's secrets (admin): names, a 4-character hint and a
+/// description. Values are write-only; no route returns one.
+#[utoipa::path(
+    get,
+    path = "/workspaces/{id}/secrets",
+    tag = "workspaces",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses((status = 200, body = Vec<SecretInfo>), ErrorResponses),
+)]
+async fn list_secrets(
+    scoped: Scoped,
+    auth: Auth,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult<Json<Vec<SecretInfo>>> {
+    ensure_current(&auth, &id)?;
+    let response = scoped
+        .identity_as_caller()
+        .list_secrets(identity::ListSecretsRequest { workspace_id: id })
+        .await?
+        .into_inner();
+    Ok(Json(map_all(response.secrets)))
+}
+
+/// Stores or replaces a workspace secret (admin). Deployers and registries
+/// reference it by `name` (upper snake case, e.g. `JENKINS_TOKEN`); the
+/// value is encrypted at rest and never returned.
+#[utoipa::path(
+    put,
+    path = "/workspaces/{id}/secrets/{name}",
+    tag = "workspaces",
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("name" = String, Path, description = "Secret name, upper snake case"),
+    ),
+    request_body = SetSecretRequest,
+    responses((status = 200, body = SecretInfo), ErrorResponses),
+)]
+async fn set_secret(
+    scoped: Scoped,
+    auth: Auth,
+    ApiPath((id, name)): ApiPath<(String, String)>,
+    ApiJson(body): ApiJson<SetSecretRequest>,
+) -> ApiResult<Json<SecretInfo>> {
+    ensure_current(&auth, &id)?;
+    let secret = scoped
+        .identity_as_caller()
+        .set_secret(identity::SetSecretRequest {
+            workspace_id: id,
+            name,
+            value: body.value,
+            description: body.description.unwrap_or_default(),
+        })
+        .await?
+        .into_inner();
+    Ok(Json(secret.into()))
+}
+
+/// Deletes a workspace secret (admin). Deployers that name it fail with a
+/// message saying so until it is stored again.
+#[utoipa::path(
+    delete,
+    path = "/workspaces/{id}/secrets/{name}",
+    tag = "workspaces",
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    responses((status = 200, description = "Deleted"), ErrorResponses),
+)]
+async fn delete_secret(
+    scoped: Scoped,
+    auth: Auth,
+    ApiPath((id, name)): ApiPath<(String, String)>,
+) -> ApiResult<axum::http::StatusCode> {
+    ensure_current(&auth, &id)?;
+    scoped
+        .identity_as_caller()
+        .delete_secret(identity::DeleteSecretRequest {
+            workspace_id: id,
+            name,
+        })
+        .await?;
+    Ok(axum::http::StatusCode::OK)
+}
+
+/// Removes every secret of the workspace, one by one through the same RPC
+/// an admin uses. Returns how many went.
+async fn delete_all_secrets(scoped: &Scoped, workspace_id: &str) -> Result<u64, tonic::Status> {
+    let mut client = scoped.identity_as_caller();
+    let secrets = client
+        .list_secrets(identity::ListSecretsRequest {
+            workspace_id: workspace_id.to_owned(),
+        })
+        .await?
+        .into_inner()
+        .secrets;
+    let mut removed = 0;
+    for secret in secrets {
+        match client
+            .delete_secret(identity::DeleteSecretRequest {
+                workspace_id: workspace_id.to_owned(),
+                name: secret.name,
+            })
+            .await
+        {
+            Ok(_) => removed += 1,
+            // Deleted by someone else in the meantime: gone is gone.
+            Err(status) if status.code() == tonic::Code::NotFound => {}
+            Err(status) => return Err(status),
+        }
+    }
+    Ok(removed)
+}
+
 /// Everything stored for the workspace as one JSON document (admin),
 /// streamed: workspace, members, data controls, every knowledge,
 /// intelligence and execution row by entity, and the audit trail.
@@ -375,8 +494,9 @@ async fn purge_code_cache(
 }
 
 /// Deletes everything the platform stores for the workspace (owner):
-/// every knowledge, intelligence and execution row, then the GitHub App
-/// installation record. The deletion itself is audited.
+/// every knowledge, intelligence and execution row, the workspace's
+/// secrets, then the GitHub App installation record. The deletion itself
+/// is audited.
 #[utoipa::path(
     delete,
     path = "/workspaces/{id}",
@@ -424,6 +544,8 @@ async fn delete_workspace(
                 })
         },
     )?;
+    // The secrets go with the rows that named them (CONTRACT.md §22).
+    let secrets = delete_all_secrets(&scoped, &id).await?;
     if let Some(installation_id) = auth.workspace.installation_id {
         scoped
             .identity()
@@ -439,6 +561,10 @@ async fn delete_workspace(
     ] {
         deleted.insert(name.to_owned(), rows.into_iter().collect());
     }
+    deleted.insert(
+        "identity".to_owned(),
+        BTreeMap::from([("secret".to_owned(), secrets)]),
+    );
     Ok(Json(WorkspaceDeleted {
         workspace_id: id,
         deleted,

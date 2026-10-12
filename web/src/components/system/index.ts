@@ -1,4 +1,6 @@
 export { Code, InlineCode } from './code'
+export { CrossFade } from './cross-fade'
+export { FileViewer, FileViewerSkeleton, type ViewerFile } from './file-viewer'
 export { Frame, FrameDivider, FrameFooter, FrameHeader, type FrameProps } from './frame'
 export { Inline, Stack } from './layout'
 export { PageTransition } from './page-transition'

@@ -14,6 +14,7 @@ export const routes = {
       : `/projects/${projectId}/code`,
   projectDependencies: (projectId: string) => `/projects/${projectId}/dependencies`,
   projectDelivery: (projectId: string) => `/projects/${projectId}/delivery`,
+  projectPipeline: (projectId: string) => `/projects/${projectId}/pipeline`,
   projectProposals: (projectId: string) => `/projects/${projectId}/proposals`,
   projectDocuments: (projectId: string) => `/projects/${projectId}/documents`,
   projectExecutions: (projectId: string) => `/projects/${projectId}/executions`,
@@ -40,6 +41,8 @@ export const routes = {
   members: () => '/workspace/members',
   audit: () => '/workspace/audit',
   dataPrivacy: () => '/workspace/data',
+  registries: () => '/workspace/registries',
+  secrets: () => '/workspace/secrets',
 
   policies: () => '/policies',
   system: () => '/system',

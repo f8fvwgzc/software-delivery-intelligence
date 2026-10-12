@@ -9,14 +9,22 @@
 //! (the branch is `sdi/<proposal>` for every execution of a proposal). A
 //! 403 is reported as PERMISSION_DENIED with the token scope the remediation
 //! has to explain.
+//!
+//! Deployment runs (CONTRACT.md §22) use two more operations, named by the
+//! step's `params.operation`: `workflow.dispatch` triggers the environment's
+//! deploy workflow with the release as inputs and follows the run it
+//! started to its conclusion, and `deployment.record` creates a GitHub
+//! Deployment with a `success` status so the repository shows what runs in
+//! which environment.
 
 use std::{collections::BTreeMap, time::Duration};
 
 use async_trait::async_trait;
+use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
-use super::{Adapter, GITHUB, RunContext, StepInput, StepOutcome};
+use super::{Adapter, GITHUB, RunContext, StepInput, StepOutcome, jenkins::step_limit};
 use crate::domain::diagnosis;
 
 pub const DEFAULT_API: &str = "https://api.github.com";
@@ -30,13 +38,33 @@ const SCOPE_HINT: &str = "GITHUB_TOKEN needs write access to the repository: the
 /// reads like a missing repository.
 const WORKFLOW_SCOPE_HINT: &str = "GitHub refuses to write files under .github/workflows/ with this token: a classic token needs the `workflow` scope (`gh auth refresh -s workflow`), a fine-grained token needs Workflows \"Read and write\"";
 
+/// `params.operation` of the deploy step of a `github_actions` environment.
+pub const OP_WORKFLOW_DISPATCH: &str = "workflow.dispatch";
+/// `params.operation` of the record step.
+pub const OP_DEPLOYMENT_RECORD: &str = "deployment.record";
+pub const DEFAULT_WORKFLOW: &str = "deploy.yml";
+/// How long a dispatched workflow may run before the step gives up on it.
+pub const DISPATCH_TIMEOUT_SECONDS: u64 = 30 * 60;
+pub const MAX_DISPATCH_TIMEOUT_SECONDS: u64 = 6 * 60 * 60;
+/// How long GitHub gets to create the run after accepting a dispatch.
+const RUN_APPEARS_WITHIN: Duration = Duration::from_secs(90);
+const DISPATCH_POLL: Duration = Duration::from_secs(5);
+/// Clock skew allowed between the dispatch and the run's `created_at`.
+const DISPATCH_SKEW: chrono::Duration = chrono::Duration::seconds(5);
+const ACTIONS_HINT: &str = "the GitHub token needs Actions \"Read and write\" on the repository (the `workflow` scope on a classic token; `actions: write` for a GitHub App installation)";
+const DEPLOYMENTS_HINT: &str = "the GitHub token needs Deployments \"Read and write\" on the repository (the `repo` scope on a classic token; `deployments: write` for a GitHub App installation)";
+
 pub struct GithubAdapter {
     token: Option<String>,
     api: String,
     http: reqwest::Client,
+    /// Pause between polls of a dispatched workflow run.
+    poll: Duration,
+    /// How long a dispatched run may take to appear.
+    appears_within: Duration,
 }
 
-enum ApiError {
+pub(super) enum ApiError {
     Status {
         method: Method,
         path: String,
@@ -47,6 +75,45 @@ enum ApiError {
 }
 
 impl ApiError {
+    /// `GET /repos/o/r -> 404 Not Found: Not Found`, or the transport error.
+    pub(super) fn describe(&self) -> String {
+        match self {
+            ApiError::Status {
+                method,
+                path,
+                status,
+                message,
+            } => format!("{method} {path} -> {status}: {message}"),
+            ApiError::Transport(message) => message.clone(),
+        }
+    }
+
+    pub(super) fn status(&self) -> Option<StatusCode> {
+        match self {
+            ApiError::Status { status, .. } => Some(*status),
+            ApiError::Transport(_) => None,
+        }
+    }
+
+    /// The outcome of a deployment step GitHub refused or failed: a refusal
+    /// names the permission the identity would need and what the token
+    /// lacks; everything else is the deployer failing.
+    pub(super) fn into_deploy_outcome(self, permission: &str, hint: &str) -> StepOutcome {
+        let raw = self.describe();
+        match self.status() {
+            Some(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => StepOutcome::Failed {
+                code: diagnosis::PERMISSION_DENIED.to_owned(),
+                raw_output: format!("{raw}\n{hint}"),
+                missing_permissions: vec![permission.to_owned()],
+            },
+            Some(StatusCode::TOO_MANY_REQUESTS) => {
+                StepOutcome::failed(diagnosis::QUOTA_EXCEEDED, raw)
+            }
+            None if raw.contains("timed out") => StepOutcome::failed(diagnosis::TIMEOUT, raw),
+            _ => StepOutcome::failed(diagnosis::DEPLOYER_FAILED, raw),
+        }
+    }
+
     fn into_outcome(self) -> StepOutcome {
         match self {
             ApiError::Status {
@@ -90,13 +157,23 @@ impl GithubAdapter {
             token,
             api: api.trim_end_matches('/').to_owned(),
             http,
+            poll: DISPATCH_POLL,
+            appears_within: RUN_APPEARS_WITHIN,
         }
+    }
+
+    /// Shorter waits between polls and for a dispatched run to appear (tests).
+    #[cfg(test)]
+    pub fn with_poll(mut self, poll: Duration, appears_within: Duration) -> Self {
+        self.poll = poll;
+        self.appears_within = appears_within;
+        self
     }
 
     /// One API call. Returns the status with the JSON body (`Null` when the
     /// body is empty); non-2xx statuses other than those in `allow` are
     /// errors so the caller can treat "404 on a ref" as "create it".
-    async fn call(
+    pub(super) async fn call(
         &self,
         ctx: &RunContext,
         method: Method,
@@ -150,10 +227,379 @@ impl GithubAdapter {
     /// The token and API base a step writes with: the workspace's
     /// (identity-minted, GHES-aware) when the context carries them, else
     /// the process-wide `GITHUB_TOKEN` / `GITHUB_API_URL`.
-    fn github_for<'a>(&'a self, ctx: &'a RunContext) -> (Option<&'a str>, &'a str) {
+    pub(super) fn github_for<'a>(&'a self, ctx: &'a RunContext) -> (Option<&'a str>, &'a str) {
         match &ctx.github {
             Some(access) => (Some(access.token.as_str()), access.api_base_url.as_str()),
             None => (self.token.as_deref(), self.api.as_str()),
+        }
+    }
+
+    /// The default branch of `repo`.
+    pub(super) async fn default_branch(
+        &self,
+        ctx: &RunContext,
+        repo: &str,
+    ) -> Result<String, ApiError> {
+        let (_, repository) = self
+            .call(ctx, Method::GET, &format!("/repos/{repo}"), None, &[])
+            .await?;
+        let branch = str_field(&repository, "default_branch");
+        Ok(if branch.is_empty() {
+            "main".to_owned()
+        } else {
+            branch
+        })
+    }
+
+    // --- deployment runs (CONTRACT.md §22) ----------------------------------
+
+    /// Dispatches the environment's deploy workflow with the release as
+    /// inputs, finds the run that dispatch created and follows it until it
+    /// completes. The run's page is reported as `external_url` as soon as
+    /// the run exists.
+    async fn workflow_dispatch(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
+        if self.github_for(ctx).0.is_none() {
+            return StepOutcome::Failed {
+                code: diagnosis::PERMISSION_DENIED.to_owned(),
+                raw_output: format!(
+                    "no GitHub token is available for this workspace; {ACTIONS_HINT}"
+                ),
+                missing_permissions: vec!["pipeline:trigger".to_owned()],
+            };
+        }
+        let param = |key: &str| step.params.get(key).map(|v| v.trim()).unwrap_or_default();
+        let Some(repo) = repo_param(step) else {
+            return StepOutcome::failed(
+                diagnosis::DEPLOYER_FAILED,
+                "params.repo (owner/name) is required to dispatch a workflow",
+            );
+        };
+        let workflow = match param("workflow") {
+            "" => DEFAULT_WORKFLOW,
+            workflow => workflow,
+        };
+        let limit = step_limit(step, DISPATCH_TIMEOUT_SECONDS, MAX_DISPATCH_TIMEOUT_SECONDS);
+        let deadline = tokio::time::Instant::now() + limit;
+        let fail = |error: ApiError| error.into_deploy_outcome("pipeline:trigger", ACTIONS_HINT);
+
+        let git_ref = match param("ref") {
+            "" => match self.default_branch(ctx, &repo).await {
+                Ok(branch) => branch,
+                Err(error) => return fail(error),
+            },
+            git_ref => git_ref.to_owned(),
+        };
+        // The digest the registry confirmed in this run wins over the recorded one.
+        let digest = ctx
+            .outputs
+            .get("digest")
+            .map(String::as_str)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(param("digest"));
+        let workflow_path = format!("/repos/{repo}/actions/workflows/{workflow}");
+        let dispatched_at = Utc::now() - DISPATCH_SKEW;
+        if let Err(error) = self
+            .call(
+                ctx,
+                Method::POST,
+                &format!("{workflow_path}/dispatches"),
+                Some(json!({
+                    "ref": git_ref,
+                    "inputs": {
+                        "environment": param("environment"),
+                        "image": param("image"),
+                        "digest": digest,
+                        "version": param("version"),
+                    }
+                })),
+                &[],
+            )
+            .await
+        {
+            return match error.status() {
+                Some(StatusCode::NOT_FOUND) => StepOutcome::failed(
+                    diagnosis::DEPLOYER_FAILED,
+                    format!(
+                        "{}\nGitHub has no workflow {workflow} on {repo}@{git_ref} that this token can dispatch: the file must exist under .github/workflows/ on that ref, and {ACTIONS_HINT}",
+                        error.describe()
+                    ),
+                ),
+                Some(StatusCode::UNPROCESSABLE_ENTITY) => StepOutcome::failed(
+                    diagnosis::DEPLOYER_FAILED,
+                    format!(
+                        "{}\nThe workflow must declare `on: workflow_dispatch` with the inputs environment, image, digest and version",
+                        error.describe()
+                    ),
+                ),
+                _ => fail(error),
+            };
+        }
+        ctx.logs.line(format!(
+            "dispatched {workflow} on {repo}@{git_ref} for {}",
+            param("environment")
+        ));
+
+        // The dispatch answers 204 without saying which run it started: the
+        // run is the oldest `workflow_dispatch` run of this workflow created
+        // since.
+        let created = dispatched_at.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let runs_path = format!(
+            "{workflow_path}/runs?event=workflow_dispatch&created=%3E%3D{created}&per_page=20"
+        );
+        let appears_by = tokio::time::Instant::now() + self.appears_within;
+        let run = loop {
+            let listed = match self.call(ctx, Method::GET, &runs_path, None, &[]).await {
+                Ok((_, listed)) => listed,
+                Err(error) => return fail(error),
+            };
+            let found = listed
+                .get("workflow_runs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|run| {
+                    DateTime::parse_from_rfc3339(&str_field(run, "created_at"))
+                        .map(|at| at.with_timezone(&Utc) >= dispatched_at)
+                        .unwrap_or(false)
+                })
+                .min_by_key(|run| str_field(run, "created_at"))
+                .cloned();
+            if let Some(run) = found {
+                break run;
+            }
+            if tokio::time::Instant::now() + self.poll >= appears_by.min(deadline) {
+                return StepOutcome::failed(
+                    diagnosis::DEPLOYER_FAILED,
+                    format!(
+                        "GitHub accepted the dispatch of {workflow} on {repo}@{git_ref} but no run appeared within {}s",
+                        self.appears_within.as_secs()
+                    ),
+                );
+            }
+            tokio::time::sleep(self.poll).await;
+        };
+        let run_id = run.get("id").and_then(Value::as_u64).unwrap_or(0);
+        let html_url = str_field(&run, "html_url");
+        ctx.logs
+            .line(format!("workflow run {run_id} started: {html_url}"));
+        ctx.progress.emit("external_url", html_url.clone());
+        let outputs = BTreeMap::from([
+            ("external_url".to_owned(), html_url.clone()),
+            ("workflow_run_id".to_owned(), run_id.to_string()),
+        ]);
+
+        let run_path = format!("/repos/{repo}/actions/runs/{run_id}");
+        let mut current = run;
+        loop {
+            if str_field(&current, "status") == "completed" {
+                let conclusion = str_field(&current, "conclusion");
+                ctx.logs
+                    .line(format!("workflow run {run_id} concluded {conclusion}"));
+                if conclusion == "success" {
+                    return StepOutcome::Succeeded {
+                        output: format!("{workflow} run {run_id} succeeded: {html_url}"),
+                        outputs,
+                    };
+                }
+                let culprit = self.failing_step(ctx, &run_path).await;
+                return StepOutcome::failed(
+                    diagnosis::DEPLOYER_FAILED,
+                    format!(
+                        "workflow run {html_url} concluded {}{culprit}",
+                        if conclusion.is_empty() {
+                            "without a conclusion"
+                        } else {
+                            conclusion.as_str()
+                        }
+                    ),
+                );
+            }
+            if tokio::time::Instant::now() + self.poll >= deadline {
+                return StepOutcome::failed(
+                    diagnosis::DEPLOYER_TIMEOUT,
+                    format!(
+                        "workflow run {html_url} was still {} after {}s",
+                        str_field(&current, "status"),
+                        limit.as_secs()
+                    ),
+                );
+            }
+            tokio::time::sleep(self.poll).await;
+            current = match self.call(ctx, Method::GET, &run_path, None, &[]).await {
+                Ok((_, run)) => run,
+                Err(error) => return fail(error),
+            };
+        }
+    }
+
+    /// `: job 'deploy', step 'Apply manifests'` for the first job of a run
+    /// that did not succeed; empty when GitHub cannot say.
+    async fn failing_step(&self, ctx: &RunContext, run_path: &str) -> String {
+        let Ok((_, listed)) = self
+            .call(
+                ctx,
+                Method::GET,
+                &format!("{run_path}/jobs?per_page=100"),
+                None,
+                &[],
+            )
+            .await
+        else {
+            return String::new();
+        };
+        let failed = |value: &&Value| {
+            !matches!(
+                str_field(value, "conclusion").as_str(),
+                "success" | "skipped" | "neutral" | ""
+            )
+        };
+        let Some(job) = listed
+            .get("jobs")
+            .and_then(Value::as_array)
+            .and_then(|jobs| jobs.iter().find(failed))
+        else {
+            return String::new();
+        };
+        let step = job
+            .get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| steps.iter().find(failed))
+            .map(|step| format!(", step '{}'", str_field(step, "name")))
+            .unwrap_or_default();
+        format!(": job '{}'{step}", str_field(job, "name"))
+    }
+
+    /// Creates a GitHub Deployment for the release's commit and marks it
+    /// successful, so the repository's Environments page shows it.
+    async fn record_deployment(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
+        if self.github_for(ctx).0.is_none() {
+            return StepOutcome::Failed {
+                code: diagnosis::PERMISSION_DENIED.to_owned(),
+                raw_output: format!(
+                    "no GitHub token is available for this workspace; {DEPLOYMENTS_HINT}"
+                ),
+                missing_permissions: vec!["repository:write".to_owned()],
+            };
+        }
+        let param = |key: &str| step.params.get(key).map(|v| v.trim()).unwrap_or_default();
+        let Some(repo) = repo_param(step) else {
+            return StepOutcome::failed(
+                diagnosis::UNKNOWN,
+                "params.repo (owner/name) is required to record a deployment",
+            );
+        };
+        let commit = param("commit_sha");
+        if commit.is_empty() {
+            return StepOutcome::failed(
+                diagnosis::UNKNOWN,
+                "the release has no commit to attach the deployment to",
+            );
+        }
+        let environment = param("environment");
+        let verb = if param("run_kind") == "rollback" {
+            "Rolled back to"
+        } else {
+            "Deployed"
+        };
+        let description = format!(
+            "{verb} {} by Software Delivery Intelligence #{}",
+            param("version"),
+            ctx.execution_number
+        );
+        let digest = ctx
+            .outputs
+            .get("digest")
+            .map(String::as_str)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(param("digest"));
+        let fail = |error: ApiError| match error.status() {
+            Some(StatusCode::NOT_FOUND) => StepOutcome::Failed {
+                code: diagnosis::PERMISSION_DENIED.to_owned(),
+                raw_output: format!(
+                    "{}\nGitHub answers 404 when the token may not create deployments: {DEPLOYMENTS_HINT}",
+                    error.describe()
+                ),
+                missing_permissions: vec!["repository:write".to_owned()],
+            },
+            _ => error.into_deploy_outcome("repository:write", DEPLOYMENTS_HINT),
+        };
+
+        let created = self
+            .call(
+                ctx,
+                Method::POST,
+                &format!("/repos/{repo}/deployments"),
+                Some(json!({
+                    "ref": commit,
+                    "environment": environment,
+                    "description": truncate_chars(&description, 140),
+                    // The image is already deployed: nothing to merge, no checks to wait for.
+                    "auto_merge": false,
+                    "required_contexts": [],
+                    "production_environment": param("protected") == "true",
+                    "transient_environment": false,
+                    "payload": {
+                        "image": param("image"),
+                        "tag": param("tag"),
+                        "digest": digest,
+                        "version": param("version"),
+                        "kind": param("run_kind"),
+                    },
+                })),
+                &[],
+            )
+            .await;
+        let deployment = match created {
+            Ok((_, deployment)) => deployment,
+            Err(error) => return fail(error),
+        };
+        let Some(id) = deployment.get("id").and_then(Value::as_u64) else {
+            return StepOutcome::failed(
+                diagnosis::UNKNOWN,
+                "GitHub created a deployment without an id",
+            );
+        };
+        let mut status = json!({
+            "state": "success",
+            "environment": environment,
+            "description": truncate_chars(&description, 140),
+            "auto_inactive": true,
+        });
+        let environment_url = match param("url") {
+            "" => ctx.outputs.get("container_url").map_or("", |u| u.trim()),
+            url => url,
+        };
+        if environment_url.starts_with("https://") || environment_url.starts_with("http://") {
+            status["environment_url"] = json!(environment_url);
+        }
+        if let Some(log_url) = ctx
+            .outputs
+            .get("external_url")
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+        {
+            status["log_url"] = json!(log_url);
+        }
+        if let Err(error) = self
+            .call(
+                ctx,
+                Method::POST,
+                &format!("/repos/{repo}/deployments/{id}/statuses"),
+                Some(status),
+                &[],
+            )
+            .await
+        {
+            return fail(error);
+        }
+        ctx.logs.line(format!(
+            "recorded deployment {id} of {commit} to {environment} on {repo}"
+        ));
+        StepOutcome::Succeeded {
+            output: format!(
+                "GitHub deployment {id} recorded: {repo} runs {} in {environment}",
+                param("version")
+            ),
+            outputs: BTreeMap::from([("github_deployment_id".to_owned(), id.to_string())]),
         }
     }
 
@@ -539,12 +985,25 @@ impl GithubAdapter {
     }
 }
 
-fn str_field(value: &Value, key: &str) -> String {
+pub(super) fn str_field(value: &Value, key: &str) -> String {
     value
         .get(key)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// `params.repo` as `owner/name`.
+pub(super) fn repo_param(step: &StepInput) -> Option<String> {
+    step.params
+        .get("repo")
+        .or_else(|| step.params.get("repository"))
+        .map(|s| s.trim().trim_matches('/').to_owned())
+        .filter(|s| s.split('/').count() == 2 && !s.starts_with('/') && !s.ends_with('/'))
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
 }
 
 #[async_trait]
@@ -554,9 +1013,14 @@ impl Adapter for GithubAdapter {
     }
 
     async fn run(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
-        match step.action_type.as_str() {
-            "repo.open_pull_request" => self.open_pull_request(step, ctx).await,
-            other => StepOutcome::failed(
+        let operation = step.params.get("operation").map_or("", |op| op.trim());
+        match (step.action_type.as_str(), operation) {
+            ("repo.open_pull_request", _) => self.open_pull_request(step, ctx).await,
+            (action, OP_WORKFLOW_DISPATCH) if super::is_deploy_action(action) => {
+                self.workflow_dispatch(step, ctx).await
+            }
+            (super::DEPLOY_RECORD, _) => self.record_deployment(step, ctx).await,
+            (other, _) => StepOutcome::failed(
                 diagnosis::UNKNOWN,
                 format!("the github adapter cannot run {other}"),
             ),
@@ -1088,5 +1552,349 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+}
+
+/// `workflow.dispatch` and `deployment.record` against the fake GitHub.
+#[cfg(test)]
+mod delivery_tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        adapters::{GithubAccess, LogSink, OutputSink, Redactor},
+        tests::fakes::github::{self as fake, FakeGithub},
+    };
+
+    const COMMIT: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+
+    fn adapter() -> GithubAdapter {
+        // The process-wide token is deliberately wrong: only the workspace's
+        // access may reach GitHub.
+        GithubAdapter::new(Some("process-wide-token".into()), "http://unused.invalid")
+            .with_poll(Duration::from_millis(10), Duration::from_millis(400))
+    }
+
+    struct Run {
+        ctx: RunContext,
+        logs: tokio::sync::mpsc::Receiver<String>,
+        progress: tokio::sync::mpsc::Receiver<(String, String)>,
+    }
+
+    fn context(api: &str) -> Run {
+        let (tx, logs) = tokio::sync::mpsc::channel(256);
+        let (ptx, progress) = tokio::sync::mpsc::channel(16);
+        let redactor = Redactor::default();
+        redactor.protect(fake::TOKEN);
+        let ctx = RunContext {
+            execution_number: 12,
+            outputs: BTreeMap::from([("digest".to_owned(), format!("sha256:{}", "d".repeat(64)))]),
+            github: Some(GithubAccess {
+                token: fake::TOKEN.into(),
+                api_base_url: api.to_owned(),
+            }),
+            logs: LogSink::new(tx).with_redactor(redactor),
+            progress: OutputSink::new(ptx),
+            ..Default::default()
+        };
+        Run {
+            ctx,
+            logs,
+            progress,
+        }
+    }
+
+    fn dispatch_step(extra: &[(&str, &str)]) -> StepInput {
+        let mut params: BTreeMap<String, String> = [
+            ("deployer", "github_actions"),
+            ("operation", OP_WORKFLOW_DISPATCH),
+            ("repo", "acme/api"),
+            ("workflow", "deploy.yml"),
+            ("environment", "staging"),
+            ("image", "ghcr.io/acme/api"),
+            ("tag", "a1b2c3d"),
+            ("digest", ""),
+            ("version", "a1b2c3d"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+        for (key, value) in extra {
+            params.insert((*key).to_owned(), (*value).to_owned());
+        }
+        StepInput {
+            key: "deploy".into(),
+            title: "Deploy a1b2c3d to staging".into(),
+            action_type: "deploy.staging".into(),
+            adapter: "github".into(),
+            params,
+            attempt: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_follows_the_run_it_started_to_success() {
+        let (github, api) = FakeGithub::default()
+            .with_workflow("acme/api", "deploy.yml")
+            .run_appears_after(2)
+            .serve()
+            .await;
+        let mut run = context(&api);
+        let outcome = adapter().run(&dispatch_step(&[]), &run.ctx).await;
+        let StepOutcome::Succeeded { output, outputs } = outcome else {
+            panic!("expected success: {outcome:?}");
+        };
+        // The release went in as the four inputs of the contract, on the
+        // default branch GitHub reported, with the verified digest.
+        let dispatches = github.dispatches.lock().unwrap().clone();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0]["ref"], "main");
+        assert_eq!(
+            dispatches[0]["inputs"],
+            json!({
+                "environment": "staging",
+                "image": "ghcr.io/acme/api",
+                "digest": format!("sha256:{}", "d".repeat(64)),
+                "version": "a1b2c3d",
+            })
+        );
+        // The run found is the one this dispatch created, not the old one.
+        let run_id = dispatches[0]["run_id"].as_u64().unwrap();
+        let url = format!("https://github.com/acme/api/actions/runs/{run_id}");
+        assert_eq!(outputs["external_url"], url);
+        assert_eq!(outputs["workflow_run_id"], run_id.to_string());
+        assert!(output.contains("succeeded"), "{output}");
+        // The link was reported while the workflow was still running.
+        assert_eq!(
+            run.progress.try_recv().unwrap(),
+            ("external_url".to_owned(), url)
+        );
+        let mut lines = Vec::new();
+        while let Ok(line) = run.logs.try_recv() {
+            lines.push(line);
+        }
+        let lines = lines.join("\n");
+        assert!(lines.contains("dispatched deploy.yml on acme/api@main for staging"));
+        assert!(lines.contains("concluded success"), "{lines}");
+        assert!(!lines.contains(fake::TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_failed_workflow_names_the_job_and_the_step() {
+        let (github, api) = FakeGithub::default()
+            .with_workflow("acme/api", "release.yml")
+            .serve()
+            .await;
+        github.conclude("failure");
+        let run = context(&api);
+        let outcome = adapter()
+            .run(
+                &dispatch_step(&[("workflow", "release.yml"), ("ref", "release/1.x")]),
+                &run.ctx,
+            )
+            .await;
+        let StepOutcome::Failed {
+            code, raw_output, ..
+        } = outcome
+        else {
+            panic!("expected a failure");
+        };
+        assert_eq!(code, diagnosis::DEPLOYER_FAILED);
+        assert!(
+            raw_output.contains("concluded failure: job 'deploy', step 'Apply manifests'"),
+            "{raw_output}"
+        );
+        assert!(raw_output.contains("https://github.com/acme/api/actions/runs/"));
+        assert_eq!(github.dispatches.lock().unwrap()[0]["ref"], "release/1.x");
+    }
+
+    #[tokio::test]
+    async fn missing_workflows_refusals_timeouts_and_lost_runs_have_their_own_answers() {
+        // No such workflow file.
+        let (_, api) = FakeGithub::default().serve().await;
+        let run = context(&api);
+        let outcome = adapter().run(&dispatch_step(&[]), &run.ctx).await;
+        let StepOutcome::Failed {
+            code, raw_output, ..
+        } = outcome
+        else {
+            panic!("expected a failure");
+        };
+        assert_eq!(code, diagnosis::DEPLOYER_FAILED);
+        assert!(
+            raw_output.contains("GitHub has no workflow deploy.yml on acme/api@main"),
+            "{raw_output}"
+        );
+
+        // A token that may not dispatch.
+        let (_, api) = FakeGithub::default()
+            .with_workflow("acme/api", "deploy.yml")
+            .forbid_writes()
+            .serve()
+            .await;
+        let run = context(&api);
+        let outcome = adapter().run(&dispatch_step(&[]), &run.ctx).await;
+        let StepOutcome::Failed {
+            code,
+            missing_permissions,
+            raw_output,
+        } = outcome
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(code, diagnosis::PERMISSION_DENIED);
+        assert_eq!(missing_permissions, ["pipeline:trigger"]);
+        assert!(
+            raw_output.contains("Actions \"Read and write\""),
+            "{raw_output}"
+        );
+
+        // The dispatch is accepted but the run never shows up.
+        let (_, api) = FakeGithub::default()
+            .with_workflow("acme/api", "deploy.yml")
+            .run_appears_after(usize::MAX)
+            .serve()
+            .await;
+        let run = context(&api);
+        let outcome = adapter().run(&dispatch_step(&[]), &run.ctx).await;
+        let StepOutcome::Failed {
+            code, raw_output, ..
+        } = outcome
+        else {
+            panic!("expected a failure");
+        };
+        assert_eq!(code, diagnosis::DEPLOYER_FAILED);
+        assert!(raw_output.contains("no run appeared"), "{raw_output}");
+
+        // Without a token nothing is attempted.
+        let outcome = GithubAdapter::new(None, "http://unused.invalid")
+            .run(&dispatch_step(&[]), &RunContext::default())
+            .await;
+        let StepOutcome::Failed { code, .. } = outcome else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(code, diagnosis::PERMISSION_DENIED);
+    }
+
+    fn record_step(run_kind: &str) -> StepInput {
+        StepInput {
+            key: "record".into(),
+            title: "Record deployment".into(),
+            action_type: "deploy.record".into(),
+            adapter: "github".into(),
+            params: [
+                ("operation", OP_DEPLOYMENT_RECORD),
+                ("run_kind", run_kind),
+                ("repo", "acme/api"),
+                ("commit_sha", COMMIT),
+                ("environment", "production"),
+                ("url", "https://api.example.com"),
+                ("protected", "true"),
+                ("version", "a1b2c3d"),
+                ("image", "ghcr.io/acme/api"),
+                ("tag", "a1b2c3d"),
+                ("digest", ""),
+            ]
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+            attempt: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_creates_a_deployment_and_marks_it_successful() {
+        let (github, api) = FakeGithub::default().serve().await;
+        let mut run = context(&api);
+        run.ctx.outputs.insert(
+            "external_url".into(),
+            "https://github.com/acme/api/actions/runs/101".into(),
+        );
+        let outcome = adapter().run(&record_step("promote"), &run.ctx).await;
+        let StepOutcome::Succeeded { outputs, .. } = outcome else {
+            panic!("expected success: {outcome:?}");
+        };
+        let deployments = github.deployments.lock().unwrap().clone();
+        assert_eq!(deployments.len(), 1);
+        let deployment = &deployments[0];
+        assert_eq!(deployment["repo"], "acme/api");
+        assert_eq!(deployment["ref"], COMMIT);
+        assert_eq!(deployment["environment"], "production");
+        assert_eq!(deployment["production_environment"], true);
+        // Nothing to merge and no checks to wait for: the image already runs.
+        assert_eq!(deployment["auto_merge"], false);
+        assert_eq!(deployment["required_contexts"], json!([]));
+        assert_eq!(deployment["payload"]["image"], "ghcr.io/acme/api");
+        assert_eq!(
+            deployment["payload"]["digest"],
+            format!("sha256:{}", "d".repeat(64))
+        );
+        assert_eq!(
+            deployment["description"],
+            "Deployed a1b2c3d by Software Delivery Intelligence #12"
+        );
+        assert_eq!(
+            outputs["github_deployment_id"],
+            deployment["id"].to_string()
+        );
+        let statuses = github.deployment_statuses.lock().unwrap().clone();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["deployment_id"], deployment["id"]);
+        assert_eq!(statuses[0]["state"], "success");
+        assert_eq!(statuses[0]["environment_url"], "https://api.example.com");
+        assert_eq!(
+            statuses[0]["log_url"],
+            "https://github.com/acme/api/actions/runs/101"
+        );
+
+        let outcome = adapter().run(&record_step("rollback"), &run.ctx).await;
+        assert!(matches!(outcome, StepOutcome::Succeeded { .. }));
+        assert_eq!(
+            github.deployments.lock().unwrap()[1]["description"],
+            "Rolled back to a1b2c3d by Software Delivery Intelligence #12"
+        );
+
+        // A token without the deployments permission.
+        let (_, api) = FakeGithub::default().forbid_writes().serve().await;
+        let run = context(&api);
+        let outcome = adapter().run(&record_step("promote"), &run.ctx).await;
+        let StepOutcome::Failed {
+            code,
+            missing_permissions,
+            raw_output,
+        } = outcome
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(code, diagnosis::PERMISSION_DENIED);
+        assert_eq!(missing_permissions, ["repository:write"]);
+        assert!(
+            raw_output.contains("Deployments \"Read and write\""),
+            "{raw_output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_deploy_steps_with_an_operation_reach_the_delivery_paths() {
+        let adapter = adapter();
+        let ctx = RunContext::default();
+        let mut step = dispatch_step(&[]);
+        step.params.remove("operation");
+        let StepOutcome::Failed { raw_output, .. } = adapter.run(&step, &ctx).await else {
+            panic!("a deploy step without an operation is not GitHub's");
+        };
+        assert!(
+            raw_output.contains("cannot run deploy.staging"),
+            "{raw_output}"
+        );
+        let mut step = dispatch_step(&[]);
+        step.action_type = "container.build".into();
+        let StepOutcome::Failed { raw_output, .. } = adapter.run(&step, &ctx).await else {
+            panic!("the operation alone does not make a step a deployment");
+        };
+        assert!(
+            raw_output.contains("cannot run container.build"),
+            "{raw_output}"
+        );
     }
 }

@@ -75,6 +75,8 @@ Shared crates:
 | `LOG_FORMAT` | text (`json` in containers) | all |
 | `RUST_LOG` | `info,sqlx=warn` | all |
 | `SDI_RUN_DIR` | `.run` | execution (`docker` adapter workdirs) |
+| `SDI_ALLOW_PRIVATE_DEPLOY_TARGETS` | unset | execution: set to `1` to let deployers and health checks reach loopback and private addresses (self-hosted networks, local development); by default those are refused as an SSRF guard |
+| `AZURE_DEVOPS_URL` | `https://dev.azure.com` | execution (`azure_devops` deployer; Azure DevOps Server) |
 | `GITHUB_API_URL` | `https://api.github.com` | execution (`docker` tarball downloads and the `github` adapter; GHES or a test server) |
 | `DOCKER_HOST` | Docker default | execution (`docker` adapter; the compose `local-exec` profile mounts the socket) |
 | `GITHUB_TOKEN` | — | execution (`github` adapter; same token as knowledge, needs `repo` write) |
@@ -137,6 +139,13 @@ Relations (upper snake case verbs on `Edge.relation`): `CONTAINS`,
 container_image), `APPLIES_TO` (migration → datastore), `DOCUMENTED_BY`,
 `OWNED_BY`. Consumers key on the verb, not on `RelationCategory`.
 
+Delivery evidence adds the capabilities `cd:flux`, `cd:argocd` and
+`registry:<ghcr|acr|ecr|gar|dockerhub>`, from the fact prefixes `cd:flux`,
+`cd:argocd`, `cd:jenkins`, `cd:azure_pipelines`,
+`cd:github_environment:<name>`, `registry:<kind>` and
+`ci:build_image:<path>` (value `push` when the workflow publishes the image,
+`build` when it only builds it).
+
 ### 5.2 Policy action types (`Policy.action_type`, `PlanStep.action_type`)
 
 Seeded by the execution service; the defaults follow the risk table from the
@@ -166,6 +175,11 @@ design conversation. `editable=false` rows can never be relaxed.
 | `repo.checkout` | Download the repository at a commit | safe | auto | no |
 | `env.destroy_temporary` | Remove a temporary environment | safe | auto | yes |
 | `repo.open_pull_request` | Open a pull request with generated files | medium | approval | yes |
+| `registry.verify_image` | Verify the image exists in the registry | safe | auto | no |
+| `deploy.development` | Deploy to development | medium | auto | yes |
+| `deploy.verify_health` | Verify the deployment is healthy | safe | auto | no |
+| `deploy.record` | Record the deployment on GitHub | safe | auto | yes |
+| `deploy.rollback` | Roll back an environment | high | approval | yes |
 
 ### 5.3 Permissions (`PlanStep.required_permissions`, identity grants)
 
@@ -205,7 +219,8 @@ approval → run → verify → checkpoint. The `docker` adapter requires the
 
 `PERMISSION_DENIED`, `POLICY_BLOCKED`, `SKU_UNAVAILABLE`, `QUOTA_EXCEEDED`,
 `TIMEOUT`, `HEALTH_CHECK_FAILED`, `BUILD_FAILED`, `TESTS_FAILED`,
-`DEPENDENCY_CONFLICT`, `UNKNOWN`. Each has at least two remediation options
+`DEPENDENCY_CONFLICT`, `IMAGE_NOT_FOUND`, `DEPLOYER_FAILED`,
+`DEPLOYER_TIMEOUT`, `GITOPS_CONFLICT`, `UNKNOWN`. Each has at least two remediation options
 plus the free-text instruction path.
 
 ### 5.6 Pattern catalog (seeded by knowledge, `source=catalog`, scope `public_template`)
@@ -771,6 +786,11 @@ directory and no way to grant someone more than GitHub already grants them.
 - **Organisations**: install the **SDI GitHub App** (permissions:
   `contents:read`, `metadata:read`, `actions:read`, `deployments:read`,
   `pull_requests:write` (only used by the `github` adapter), `members:read`;
+  for continuous delivery (§22) also `actions:write` (workflow dispatch),
+  `deployments:write` (record), `packages:read` (GHCR verify) and
+  `contents:write` (GitOps commits and setup-file pull requests) — a step
+  whose permission is missing pauses with `PERMISSION_DENIED`, it never
+  falls back to anything broader;
   events `installation`, `installation_repositories`, `push`,
   `pull_request`, `member`, `team`). One installation = one workspace of
   kind `organization`. GitHub Enterprise Server works through a
@@ -1116,6 +1136,25 @@ checkpoint, and stops on failure.
   release, last run, health and the promotable `candidate`, plus 30-day
   success rate, deployment count and median lead time.
 
+Operational notes: a deployment run's execution uses the adapter name
+`delivery` (refused on `POST /executions`; only Promote/Rollback create
+it) and runs as the seeded `delivery` identity (`repository:read`,
+`registry:read`, `pipeline:trigger`). Every `deploy:*` permission needs a
+timed grant (§5.3), so the first promote of a workspace pauses with
+`PERMISSION_DENIED` → `request_access`; that is intended. Every
+environment kind also accepts `timeout_seconds` and
+`health_timeout_seconds` in `config`. `github_token` registry auth is
+only allowed for `ghcr.io` (or a GHES `containers.*` host) and the token
+is only sent to a token realm on the registry's own host, so a registry
+definition can never be used to exfiltrate the workspace token. Outbound
+deployer and health URLs must be `https` and must not resolve to
+loopback, link-local, private or metadata addresses unless
+`SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1`. A workflow dispatch is matched to
+its run by creation time, so two simultaneous dispatches of the same
+workflow cannot be told apart: runs to one environment are serialised. A
+paused run reads `failed` with `finishedAt: null` and stays open until
+resolved; the REST status enum is `DeploymentRunStatus`.
+
 **Workspace secrets** (identity): `SetSecret`/`ListSecrets`/`DeleteSecret`
 store values encrypted with `SDI_SESSION_SECRET`; only names and a 4-char
 hint are ever returned; `ResolveSecret` is service-to-service and audited
@@ -1141,6 +1180,31 @@ delivery:
 
 The analyzer parses it into `ProjectConfig.delivery_json`; after each scan
 the knowledge service calls `Execution.SyncEnvironments`.
+
+Config validation is strict and identical in the analyzer (`.sdi.yml`)
+and the execution service (API), so a file that parses cleanly cannot
+fail the sync: a registry of kind `acr`/`ecr`/`gar`/`generic` needs a
+`host`; `gitops_flux`/`gitops_argocd` need `path` (`strategy` defaults to
+`kustomize_image`; `yaml_path` is required for strategy `yaml_path` and
+defaults to `image.tag` for `helm_values`; `gitops_flux` also accepts
+`image_automation: true|false`); `jenkins` needs `url`, `job`,
+`user_secret`, `token_secret`; `azure_devops` needs `organization`,
+`project`, `pipeline_id`, `pat_secret`; `webhook` needs `url` and
+`secret`. Secret names match `^[A-Z][A-Z0-9_]{1,63}$`; timeouts are
+1–21600 s (webhook 1–600, health 1–3600); at most 50 environments per
+project, names up to 63 characters. Errors name the key as
+`config.<key>`. Unknown `config` keys for a kind are dropped with a
+warning. A config with errors changes nothing; removing
+`delivery.environments` from a usable config clears the config-managed
+environments at the next scan. `delivery.registry` is matched to an
+existing workspace registry by name, id or kind and never creates one.
+Generated files never overwrite by guesswork: the build lands in
+`build.yml` unless `build_workflow` names a file that does not exist yet,
+an existing `Jenkinsfile` / `azure-pipelines.yml` gets a `.deploy`
+sibling, and files for an external GitOps repository are placed under
+`gitops/<repo>/`. Deployers pass the parameters `IMAGE`, `DIGEST`,
+`VERSION`, `ENVIRONMENT` (Jenkins) and `image`, `digest`, `version`,
+`environment` (Azure Pipelines, GitHub Actions inputs).
 
 **Setup files** (`Intelligence.GenerateDeliveryArtifacts`, generators in
 §14): `.github/workflows/build.yml` (login per registry kind — GHCR with

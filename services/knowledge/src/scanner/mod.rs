@@ -14,6 +14,7 @@
 //! controls so the scan itself never talks to identity.
 
 pub mod delivery;
+pub mod environments;
 pub mod tarball;
 
 use std::{
@@ -45,6 +46,7 @@ use crate::{
         settings::SettingsRow,
     },
     events::EventBus,
+    execution::DeliveryGateway,
     github::{GithubClient, split_full_name},
 };
 use sdi_proto::knowledge::v1::StageStatus;
@@ -125,6 +127,9 @@ pub struct ScanInputs {
     pub settings: SettingsRow,
     pub controls: Controls,
     pub limits: ScanLimits,
+    /// The execution service the `.sdi.yml` environments are synced to
+    /// (CONTRACT.md §22); `None` skips that step.
+    pub delivery: Option<Arc<dyn DeliveryGateway>>,
 }
 
 /// Creates the scan row and spawns the worker. The caller has already
@@ -409,6 +414,7 @@ async fn pipeline(
         settings,
         controls,
         limits,
+        delivery: execution,
     } = inputs;
     let budget = limits.stage_timeout;
     let ws = project.workspace_id;
@@ -535,6 +541,12 @@ async fn pipeline(
 
     // graph: everything SQL-shaped, in one transaction
     tracker.start("graph").await?;
+    // Read before this scan replaces the stored config: a `delivery:`
+    // section that disappeared must clear what it used to manage.
+    let environments_declared_before = match execution {
+        Some(_) => environments::declared_before(pool, ws, project.id).await,
+        None => false,
+    };
     let dependabot_prs = match github.open_pulls(owner, name).await {
         Ok(pulls) => pulls
             .iter()
@@ -587,7 +599,7 @@ async fn pipeline(
         Ok((runs, deployments))
     })
     .await?;
-    let detail = match (runs, deployments) {
+    let mut detail = match (runs, deployments) {
         (Ok(runs), Ok(deployments)) => format!("{runs} runs, {deployments} deployments"),
         (runs, deployments) => {
             // Delivery data is observational; a missing Actions permission must not fail the scan.
@@ -600,6 +612,39 @@ async fn pipeline(
             format!("partial: {}", problems.join("; "))
         }
     };
+    // The knowledge model is stored: what `.sdi.yml` declares about delivery
+    // now goes to execution (CONTRACT.md §22). An outage there is reported
+    // here and logged, never a failed scan.
+    let synced = match execution {
+        Some(execution) => {
+            environments::sync(
+                execution.as_ref(),
+                ws,
+                project.id,
+                &analysis.config,
+                environments_declared_before,
+            )
+            .await
+        }
+        None => environments::Outcome::Skipped,
+    };
+    match &synced {
+        environments::Outcome::Skipped => {}
+        environments::Outcome::Synced {
+            environments,
+            notes,
+        } => tracing::info!(environments, notes = ?notes, "configured environments synced"),
+        environments::Outcome::Failed(reason) => {
+            tracing::warn!(
+                reason,
+                "could not sync the configured environments to execution"
+            )
+        }
+    }
+    if let Some(note) = synced.detail() {
+        detail.push_str(", ");
+        detail.push_str(&note);
+    }
     tracker.done(detail).await?;
 
     db::projects::finish_scan(

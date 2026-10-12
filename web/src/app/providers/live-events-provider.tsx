@@ -30,6 +30,10 @@ const FAMILIES_BY_ENTITY: Record<string, readonly Family[]> = {
   diagram: [['diagrams']],
   review: [['reviews'], ['pull-requests'], ['activity']],
   finding: [['reviews'], ['activity']],
+  // Continuous delivery (CONTRACT.md §22): the board, the releases and the deployment history.
+  deployment: [['delivery-cd', 'pipeline'], ['delivery-cd', 'runs'], ['delivery-cd', 'releases']],
+  release: [['delivery-cd', 'pipeline'], ['delivery-cd', 'releases']],
+  environment: [['delivery-cd', 'pipeline']],
 }
 
 /** Every family the stream can touch; refetched when the stream comes up or drops. */
@@ -46,6 +50,7 @@ const ALL_FAMILIES: readonly Family[] = [
   ['reviews'],
   ['pull-requests'],
   ['activity'],
+  ['delivery-cd'],
 ]
 
 const isHidden = () => typeof document !== 'undefined' && document.hidden

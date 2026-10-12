@@ -1,12 +1,14 @@
 //! Rows -> proto messages.
 
 use sdi_common::{principal::Role, time};
-use sdi_proto::identity::v1::{AuditEntry, DataControls, Member, User, Workspace, WorkspaceKind};
+use sdi_proto::identity::v1::{
+    AuditEntry, DataControls, Member, SecretInfo, User, Workspace, WorkspaceKind,
+};
 
 use crate::{
     db::{
-        audit::AuditRow, controls::ControlsRow, memberships::MemberRow, users::UserRow,
-        workspaces::WorkspaceRow,
+        audit::AuditRow, controls::ControlsRow, memberships::MemberRow, secrets::SecretRow,
+        users::UserRow, workspaces::WorkspaceRow,
     },
     roles,
 };
@@ -113,6 +115,17 @@ pub fn controls_to_proto(row: ControlsRow) -> DataControls {
         reasoner_key_configured: !hint.is_empty(),
         reasoner_key_hint: hint,
         audit_retention_days: u32::try_from(row.audit_retention_days.max(0)).unwrap_or(0),
+        updated_at: Some(time::to_proto(row.updated_at)),
+    }
+}
+
+/// A secret as the API shows it: never the value.
+pub fn secret_to_proto(row: SecretRow) -> SecretInfo {
+    SecretInfo {
+        name: row.name,
+        hint: row.hint,
+        description: row.description,
+        updated_by: row.updated_by,
         updated_at: Some(time::to_proto(row.updated_at)),
     }
 }

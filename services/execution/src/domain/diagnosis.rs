@@ -16,9 +16,17 @@ pub const HEALTH_CHECK_FAILED: &str = "HEALTH_CHECK_FAILED";
 pub const BUILD_FAILED: &str = "BUILD_FAILED";
 pub const TESTS_FAILED: &str = "TESTS_FAILED";
 pub const DEPENDENCY_CONFLICT: &str = "DEPENDENCY_CONFLICT";
+/// The registry has no manifest for the release's image (CONTRACT.md §22).
+pub const IMAGE_NOT_FOUND: &str = "IMAGE_NOT_FOUND";
+/// The environment's deployer ran and reported a failure.
+pub const DEPLOYER_FAILED: &str = "DEPLOYER_FAILED";
+/// The deployer did not reach a terminal state in time.
+pub const DEPLOYER_TIMEOUT: &str = "DEPLOYER_TIMEOUT";
+/// The GitOps repository changed underneath the commit.
+pub const GITOPS_CONFLICT: &str = "GITOPS_CONFLICT";
 pub const UNKNOWN: &str = "UNKNOWN";
 
-pub const CODES: [&str; 10] = [
+pub const CODES: [&str; 14] = [
     PERMISSION_DENIED,
     POLICY_BLOCKED,
     SKU_UNAVAILABLE,
@@ -28,8 +36,16 @@ pub const CODES: [&str; 10] = [
     BUILD_FAILED,
     TESTS_FAILED,
     DEPENDENCY_CONFLICT,
+    IMAGE_NOT_FOUND,
+    DEPLOYER_FAILED,
+    DEPLOYER_TIMEOUT,
+    GITOPS_CONFLICT,
     UNKNOWN,
 ];
+
+/// Remediation that ends a deployment run and starts a rollback run for
+/// its environment (CONTRACT.md §22).
+pub const ROLLBACK_TO_PREVIOUS: &str = "rollback_to_previous";
 
 /// Normalises a user-supplied code; anything unknown becomes `UNKNOWN`.
 pub fn normalize_code(code: &str) -> &'static str {
@@ -80,6 +96,22 @@ pub struct FailedStep<'a> {
     /// PERMISSION_DENIED raised by the tool itself (GitHub answering 403)
     /// rather than by the pre-flight grant check, which never runs a thing.
     pub refused_by_tool: bool,
+    /// First line of what the tool said, when it said anything: the
+    /// sentence a diagnosis can quote instead of pointing at the raw output.
+    pub detail: &'a str,
+    /// The step belongs to a deployment run whose environment has an
+    /// earlier successful release to go back to.
+    pub can_rollback: bool,
+}
+
+/// Whether a step is part of a deployment run's plan (CONTRACT.md §22).
+fn is_delivery_action(action_type: &str) -> bool {
+    action_type.starts_with("deploy.") || action_type.starts_with("registry.")
+}
+
+/// A sentence ending without a period, for embedding in another one.
+fn clause(text: &str) -> &str {
+    text.trim().trim_end_matches('.')
 }
 
 fn option(
@@ -176,9 +208,25 @@ pub fn diagnose(
     };
 
     let refused_by_tool = step.refused_by_tool;
+    let delivery = is_delivery_action(step.action_type);
+    let rollback = |recommended: bool| {
+        option(
+            ROLLBACK_TO_PREVIOUS,
+            "Roll back to the previous release",
+            "Stop this deployment and redeploy the last release that ran successfully in this environment.",
+            "This run ends as CANCELLED and a rollback run starts for the environment (it passes the same gates).",
+            recommended,
+        )
+    };
     let (diagnosis, mut options) = match code {
         PERMISSION_DENIED => (
-            if refused_by_tool {
+            if refused_by_tool && delivery {
+                format!(
+                    "The tool behind '{}' refused the credentials it was given ({}). See the raw output for what it needs.",
+                    step.title,
+                    missing_permissions.join(", ")
+                )
+            } else if refused_by_tool {
                 format!(
                     "The tool behind '{}' refused the connected credentials ({}). The configured token lacks the scope for this write; see the raw output for what it needs.",
                     step.title,
@@ -195,7 +243,9 @@ pub fn diagnose(
                 option(
                     "request_access",
                     "Request access",
-                    if refused_by_tool {
+                    if refused_by_tool && delivery {
+                        "Fix the credentials the raw output names (a token scope or a workspace secret), then retry."
+                    } else if refused_by_tool {
                         "Re-issue GITHUB_TOKEN with write access to the repository (the `repo` scope, or Contents + Pull requests read and write on a fine-grained token), restart the service, then retry."
                     } else {
                         "Grant the missing permissions to the identity for 30 minutes and retry."
@@ -305,6 +355,106 @@ pub fn diagnose(
                 ),
             ],
         ),
+        HEALTH_CHECK_FAILED if delivery => (
+            format!(
+                "The release was deployed but '{}' never saw a healthy answer{}.",
+                step.title,
+                if step.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", clause(step.detail))
+                }
+            ),
+            if step.can_rollback {
+                vec![rollback(true), retry(false)]
+            } else {
+                vec![retry(true)]
+            },
+        ),
+        IMAGE_NOT_FOUND => (
+            format!(
+                "The registry has no image for this release{}. Nothing was deployed.",
+                if step.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", clause(step.detail))
+                }
+            ),
+            vec![option(
+                "retry",
+                "Check the registry again",
+                "Look the image up again once the build has pushed it under this name and tag.",
+                "The step returns to PENDING and asks the registry again.",
+                true,
+            )],
+        ),
+        DEPLOYER_FAILED => (
+            format!(
+                "The deployer behind '{}' reported a failure{}.",
+                step.title,
+                if step.detail.is_empty() {
+                    "; see the raw output for the failing job and step".to_owned()
+                } else {
+                    format!(": {}", clause(step.detail))
+                }
+            ),
+            if step.can_rollback {
+                vec![retry(true), rollback(false)]
+            } else {
+                vec![retry(true)]
+            },
+        ),
+        DEPLOYER_TIMEOUT => (
+            format!(
+                "The deployer behind '{}' did not finish in time{}. It may still be running on its side.",
+                step.title,
+                if step.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", clause(step.detail))
+                }
+            ),
+            {
+                let mut options = vec![
+                    retry(true),
+                    option(
+                        "increase_timeout",
+                        "Increase the timeout",
+                        "Double the time limit and retry.",
+                        "Doubles params.timeout_seconds and retries the step.",
+                        false,
+                    ),
+                ];
+                if step.can_rollback {
+                    options.push(rollback(false));
+                }
+                options
+            },
+        ),
+        GITOPS_CONFLICT => (
+            format!(
+                "The GitOps repository changed while '{}' was writing to it{}. Nothing was overwritten.",
+                step.title,
+                if step.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", clause(step.detail))
+                }
+            ),
+            {
+                let mut options = vec![option(
+                    "retry",
+                    "Retry on the new state",
+                    "Read the file again and apply the image change on top of what is there now.",
+                    "The step returns to PENDING and starts from the repository's current state.",
+                    true,
+                )];
+                if step.can_rollback {
+                    options.push(rollback(false));
+                }
+                options
+            },
+        ),
         HEALTH_CHECK_FAILED => (
             format!(
                 "'{}' completed but its health check never turned green.",
@@ -364,7 +514,9 @@ pub fn diagnose(
             ],
         ),
         _ => (
-            if step.message.is_empty() {
+            if delivery && !step.detail.is_empty() {
+                format!("'{}' failed: {}.", step.title, clause(step.detail))
+            } else if step.message.is_empty() {
                 format!(
                     "'{}' failed for an unclassified reason. The raw output is attached.",
                     step.title
@@ -412,6 +564,9 @@ pub enum Resolution {
     Cancel,
     /// End the run as FAILED and record the outcome against the pattern.
     GiveUp,
+    /// End the deployment run as CANCELLED and start a rollback run for its
+    /// environment.
+    RollbackToPrevious,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -459,6 +614,7 @@ pub fn resolve(
         "give_up" => Resolution::GiveUp,
         "skip_step" => Resolution::Skip,
         "skip_branch" => Resolution::SkipBranch,
+        ROLLBACK_TO_PREVIOUS => Resolution::RollbackToPrevious,
         "request_access" => Resolution::RequestAccess,
         "use_another_identity" => Resolution::UseAnotherIdentity,
         "change_region" => {
@@ -515,6 +671,8 @@ mod tests {
             message: "",
             attempts: 1,
             refused_by_tool: false,
+            detail: "",
+            can_rollback: false,
         }
     }
 
@@ -552,6 +710,117 @@ mod tests {
                 "{code} offers skip with dependents"
             );
         }
+    }
+
+    /// CONTRACT.md §22: a failed deploy or health check offers `retry`,
+    /// `rollback_to_previous` and `cancel`; the rollback only when the
+    /// environment has something to go back to.
+    #[test]
+    fn delivery_failures_offer_retry_rollback_and_cancel() {
+        let params = BTreeMap::new();
+        let deploy = |can_rollback: bool| FailedStep {
+            title: "Deploy to staging",
+            action_type: "deploy.staging",
+            detail: "workflow run concluded failure: job deploy, step Apply manifests.",
+            can_rollback,
+            ..step(&params)
+        };
+        let blocked = ["verify_health".to_owned(), "record".to_owned()];
+        for code in [DEPLOYER_FAILED, DEPLOYER_TIMEOUT, GITOPS_CONFLICT] {
+            let (diagnosis, options) = diagnose(code, &deploy(true), &blocked, &[]);
+            let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+            for wanted in ["retry", ROLLBACK_TO_PREVIOUS, "cancel", "give_up"] {
+                assert!(ids.contains(&wanted), "{code} lacks {wanted}: {ids:?}");
+            }
+            assert!(!ids.contains(&"skip_step"), "{code}: {ids:?}");
+            assert_eq!(
+                options.iter().filter(|o| o.recommended).count(),
+                1,
+                "{code}"
+            );
+            assert!(
+                options
+                    .iter()
+                    .find(|o| o.id == "retry")
+                    .unwrap()
+                    .recommended,
+                "{code}"
+            );
+            assert!(diagnosis.contains("Apply manifests"), "{code}: {diagnosis}");
+            assert!(!diagnosis.contains(".."), "{code}: {diagnosis}");
+            let failure = record(code, options, &["verify_health", "record"]);
+            assert_eq!(
+                resolve(ROLLBACK_TO_PREVIOUS, "", &failure, &params),
+                Ok(Resolution::RollbackToPrevious)
+            );
+            assert!(matches!(
+                resolve("retry", "", &failure, &params),
+                Ok(Resolution::Retry { .. })
+            ));
+
+            // A first deployment has nothing to go back to.
+            let (_, options) = diagnose(code, &deploy(false), &blocked, &[]);
+            assert!(
+                !options.iter().any(|o| o.id == ROLLBACK_TO_PREVIOUS),
+                "{code}"
+            );
+            let failure = record(code, options, &[]);
+            assert_eq!(
+                resolve(ROLLBACK_TO_PREVIOUS, "", &failure, &params),
+                Err(ResolveError::UnknownOption(ROLLBACK_TO_PREVIOUS.into()))
+            );
+        }
+        let (_, options) = diagnose(DEPLOYER_TIMEOUT, &deploy(true), &blocked, &[]);
+        assert!(options.iter().any(|o| o.id == "increase_timeout"));
+
+        // A failed health check after a deploy recommends going back.
+        let health = FailedStep {
+            title: "Verify health",
+            action_type: "deploy.verify_health",
+            detail: "GET https://staging.example.com/health -> 503 after 40 polls",
+            can_rollback: true,
+            ..step(&params)
+        };
+        let (diagnosis, options) = diagnose(HEALTH_CHECK_FAILED, &health, &["record".into()], &[]);
+        assert!(diagnosis.contains("503 after 40 polls"), "{diagnosis}");
+        let recommended = options.iter().find(|o| o.recommended).unwrap();
+        assert_eq!(recommended.id, ROLLBACK_TO_PREVIOUS);
+        assert!(options.iter().any(|o| o.id == "retry"));
+        assert!(!options.iter().any(|o| o.id == "rollback_to_checkpoint"));
+        // The same code outside a deployment keeps its generic options.
+        let (_, options) = diagnose(HEALTH_CHECK_FAILED, &step(&params), &[], &[]);
+        assert!(options.iter().any(|o| o.id == "rollback_to_checkpoint"));
+
+        // An image that is not there: nothing changed, so nothing to roll back.
+        let image = FailedStep {
+            title: "Verify image",
+            action_type: "registry.verify_image",
+            detail: "ghcr.io/acme/api:a1b2c3d is not in the registry: HEAD /v2/acme/api/manifests/a1b2c3d -> 404 Not Found",
+            can_rollback: true,
+            ..step(&params)
+        };
+        let (diagnosis, options) = diagnose(IMAGE_NOT_FOUND, &image, &["deploy".into()], &[]);
+        assert!(
+            diagnosis.contains("a1b2c3d is not in the registry"),
+            "{diagnosis}"
+        );
+        assert!(diagnosis.contains("Nothing was deployed"), "{diagnosis}");
+        let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["retry", "give_up", "cancel"]);
+
+        // The record step has no dependents: it may be skipped.
+        let record_step = FailedStep {
+            title: "Record deployment",
+            action_type: "deploy.record",
+            detail: "POST /repos/acme/api/deployments -> 403 Forbidden",
+            ..step(&params)
+        };
+        let (diagnosis, options) = diagnose(UNKNOWN, &record_step, &[], &[]);
+        assert_eq!(
+            diagnosis,
+            "'Record deployment' failed: POST /repos/acme/api/deployments -> 403 Forbidden."
+        );
+        assert!(options.iter().any(|o| o.id == "skip_step"));
     }
 
     #[test]

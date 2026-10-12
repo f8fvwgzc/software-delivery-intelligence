@@ -11,6 +11,7 @@ pub mod convert;
 pub mod db;
 pub mod domain;
 pub mod events;
+pub mod execution;
 pub mod github;
 pub mod grpc;
 pub mod identity;

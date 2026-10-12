@@ -3,12 +3,22 @@
 //! deploys, and where. Publishing an image, a package or a GitHub release
 //! is a *release*, recorded with target `release`, so a repository that
 //! ships artifacts but never deploys them is described truthfully.
+//!
+//! Workflows also say where images go (CONTRACT.md §22): the registry a
+//! job logs in to or tags for becomes `registry:<kind>`, a workflow that
+//! builds an image is marked `ci:build_image:<path>`, and every GitHub
+//! environment a job names becomes `cd:github_environment:<name>`.
+
+use std::collections::BTreeMap;
+
+use regex::Regex;
+use serde_yaml_ng::Value;
 
 use crate::detectors::iac::{add_environment, record_cloud};
 use crate::detectors::{Ctx, attrs};
 use crate::files::is_workflow;
 use crate::model::*;
-use crate::util::{basename, line_with, short_path};
+use crate::util::{basename, display, line_with, short_path};
 use crate::yaml;
 
 /// What a job is for, read off its steps.
@@ -16,6 +26,8 @@ use crate::yaml;
 struct Intent {
     builds: bool,
     builds_image: bool,
+    /// The image leaves the runner: `push: true` or a `docker push`.
+    pushes_image: bool,
     tests: bool,
     deploys: bool,
     /// Publishes an artifact (image, package, GitHub release) without deploying it.
@@ -23,6 +35,109 @@ struct Intent {
     /// `azure` | `aws` | `gcp` | `kubernetes` | `github_pages` | `fly` | `vercel` | `netlify` | `heroku` | `registry`
     targets: Vec<String>,
     evidence: Vec<String>,
+    /// Registries the steps log in to or tag for.
+    registries: Vec<RegistryUse>,
+}
+
+/// One registry seen in a step: its kind, the host when one was named, and
+/// the line that shows it.
+#[derive(Debug, Clone)]
+struct RegistryUse {
+    kind: &'static str,
+    host: String,
+    evidence: String,
+}
+
+impl Intent {
+    /// One entry per kind; a later step may supply the host the first one
+    /// (an `az acr login`, say) did not name.
+    fn registry(&mut self, kind: &'static str, host: &str, evidence: String) {
+        match self.registries.iter_mut().find(|r| r.kind == kind) {
+            Some(known) => {
+                if known.host.is_empty() {
+                    known.host = host.to_string();
+                }
+            }
+            None => self.registries.push(RegistryUse {
+                kind,
+                host: host.to_string(),
+                evidence,
+            }),
+        }
+    }
+}
+
+/// Host part of a registry address or image reference, lowercased:
+/// `ghcr.io/acme/api:1` → `ghcr.io`.
+fn registry_host(reference: &str) -> String {
+    reference
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Registry kind (CONTRACT.md §22) of a registry host or image reference.
+/// `None` for a bare image name (`acme/api`) and for a host that is still
+/// an unresolved expression: a guess here would name the wrong registry.
+pub(crate) fn registry_kind(reference: &str) -> Option<&'static str> {
+    let host = registry_host(reference);
+    if host.is_empty() || host.contains('$') || host.contains(char::is_whitespace) {
+        return None;
+    }
+    let bare = host.split(':').next().unwrap_or(&host);
+    Some(if bare == "ghcr.io" {
+        "ghcr"
+    } else if bare.ends_with(".azurecr.io") {
+        "acr"
+    } else if (bare.ends_with(".amazonaws.com") && bare.contains(".ecr."))
+        || bare == "public.ecr.aws"
+    {
+        "ecr"
+    } else if bare.ends_with("-docker.pkg.dev") || bare == "gcr.io" || bare.ends_with(".gcr.io") {
+        "gar"
+    } else if matches!(
+        bare,
+        "docker.io" | "index.docker.io" | "registry-1.docker.io" | "registry.hub.docker.com"
+    ) {
+        "dockerhub"
+    } else if bare.contains('.') || host.contains(':') {
+        "generic"
+    } else {
+        return None;
+    })
+}
+
+/// `with.push` of `docker/build-push-action`: the action only pushes when
+/// asked to, and an expression means it pushes on some runs.
+fn pushes(with: Option<&Value>) -> bool {
+    let Some(with) = with else {
+        return false;
+    };
+    let push = match yaml::get(with, "push") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            !s.is_empty() && !s.eq_ignore_ascii_case("false")
+        }
+        _ => false,
+    };
+    push || yaml::get_str(with, "outputs")
+        .is_some_and(|o| o.contains("type=registry") || o.contains("push=true"))
+}
+
+/// Image references of a `tags:` / `images:` input: one per line or comma.
+fn image_refs(value: Option<&Value>) -> Vec<String> {
+    yaml::str_list(value)
+        .iter()
+        .flat_map(|v| v.split(['\n', ',']))
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .collect()
 }
 
 /// Targets that are a place something runs, as opposed to a registry.
@@ -30,8 +145,51 @@ fn is_runtime_target(t: &str) -> bool {
     !matches!(t, "registry" | "iac")
 }
 
-fn classify_uses(uses: &str, intent: &mut Intent) {
+/// `with` is the step's inputs; `resolve` substitutes the `${{ env.X }}`
+/// values the workflow defines, so `registry: ${{ env.REGISTRY }}` reads as
+/// the host it stands for.
+fn classify_uses(
+    uses: &str,
+    with: Option<&Value>,
+    resolve: &dyn Fn(&str) -> String,
+    intent: &mut Intent,
+) {
     let u = uses.to_ascii_lowercase();
+    if u.starts_with("docker/login-action") {
+        let registry = with
+            .and_then(|w| yaml::get_str(w, "registry"))
+            .map(resolve)
+            .unwrap_or_default();
+        if registry.trim().is_empty() {
+            // The action's default registry.
+            intent.registry("dockerhub", "docker.io", format!("uses: {uses}"));
+        } else if let Some(kind) = registry_kind(&registry) {
+            intent.registry(
+                kind,
+                &registry_host(&registry),
+                format!("registry: {}", registry.trim()),
+            );
+        }
+    } else if u.starts_with("azure/docker-login") {
+        let server = with
+            .and_then(|w| yaml::get_str(w, "login-server"))
+            .map(resolve)
+            .unwrap_or_default();
+        let host = match registry_kind(&server) {
+            Some("acr") => registry_host(&server),
+            _ => String::new(),
+        };
+        intent.registry("acr", &host, format!("uses: {uses}"));
+    } else if u.starts_with("aws-actions/amazon-ecr-login") {
+        intent.registry("ecr", "", format!("uses: {uses}"));
+    } else if u.starts_with("docker/metadata-action") {
+        for image in image_refs(with.and_then(|w| yaml::get(w, "images"))) {
+            let image = resolve(&image);
+            if let Some(kind) = registry_kind(&image) {
+                intent.registry(kind, &registry_host(&image), format!("images: {image}"));
+            }
+        }
+    }
     let mut target = |t: &str| {
         intent.deploys = true;
         if !intent.targets.iter().any(|x| x == t) {
@@ -72,9 +230,16 @@ fn classify_uses(uses: &str, intent: &mut Intent) {
         intent.builds = true;
         intent.builds_image = true;
         intent.evidence.push(format!("uses: {uses}"));
-        if !u.contains("push: false") {
+        if pushes(with) {
+            intent.pushes_image = true;
             intent.targets.push("registry".into());
             intent.releases = true;
+        }
+        for tag in image_refs(with.and_then(|w| yaml::get(w, "tags"))) {
+            let tag = resolve(&tag);
+            if let Some(kind) = registry_kind(&tag) {
+                intent.registry(kind, &registry_host(&tag), format!("tags: {tag}"));
+            }
         }
     } else if u.starts_with("softprops/action-gh-release")
         || u.starts_with("actions/create-release")
@@ -157,8 +322,27 @@ fn classify_run(run: &str, intent: &mut Intent) {
         intent.builds_image = true;
     }
     if r.contains("docker push") {
+        intent.pushes_image = true;
         intent.targets.push("registry".into());
         intent.releases = true;
+    }
+    for (needle, kind) in [
+        ("az acr login", "acr"),
+        ("aws ecr get-login-password", "ecr"),
+        ("aws ecr-public get-login-password", "ecr"),
+        ("gcloud auth configure-docker", "gar"),
+    ] {
+        if r.contains(needle) {
+            intent.registry(kind, "", format!("run: {first}"));
+        }
+    }
+    if r.contains("docker login") || r.contains("docker push") {
+        // Only hosts we know: a shell line is full of dotted words.
+        for word in run.split_whitespace() {
+            if let Some(kind) = registry_kind(word).filter(|k| *k != "generic") {
+                intent.registry(kind, &registry_host(word), format!("run: {first}"));
+            }
+        }
     }
     let release_cmds = [
         "npm publish",
@@ -184,6 +368,7 @@ fn classify_run(run: &str, intent: &mut Intent) {
     }
     let deploy_cmds: &[(&str, &str)] = &[
         ("kubectl apply", "kubernetes"),
+        ("kubectl set image", "kubernetes"),
         ("kubectl rollout", "kubernetes"),
         ("helm upgrade", "kubernetes"),
         ("helm install", "kubernetes"),
@@ -281,11 +466,29 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
     let mut jobs = Vec::new();
     let mut workflow_intent = Intent::default();
     let mut job_envs: Vec<(String, String)> = Vec::new();
+    let mut github_environments: Vec<String> = Vec::new();
+    let env_ref =
+        Regex::new(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}").expect("static regex");
+    let workflow_env = env_map(yaml::get(&doc, "env"));
+    let mut packages_write = grants_packages_write(yaml::get(&doc, "permissions"));
     for (job_key, job) in yaml::entries(yaml::get(&doc, "jobs")) {
         let mut intent = Intent::default();
         let job_name = yaml::get_str(job, "name").unwrap_or(&job_key).to_string();
         let runs_on = yaml::str_list(yaml::get(job, "runs-on")).join(", ");
         let needs = yaml::str_list(yaml::get(job, "needs"));
+        packages_write |= grants_packages_write(yaml::get(job, "permissions"));
+        let job_env = env_map(yaml::get(job, "env"));
+        let resolve = |raw: &str| -> String {
+            env_ref
+                .replace_all(raw, |c: &regex::Captures<'_>| {
+                    job_env
+                        .get(&c[1])
+                        .or_else(|| workflow_env.get(&c[1]))
+                        .cloned()
+                        .unwrap_or_else(|| c[0].to_string())
+                })
+                .into_owned()
+        };
         let mut steps = Vec::new();
         if let Some(serde_yaml_ng::Value::Sequence(seq)) = yaml::get(job, "steps") {
             for step in seq {
@@ -300,34 +503,43 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
                     steps.push(label);
                 }
                 if let Some(u) = uses {
-                    classify_uses(u, &mut intent);
+                    classify_uses(u, yaml::get(step, "with"), &resolve, &mut intent);
                 }
                 if let Some(r) = run {
-                    classify_run(r, &mut intent);
+                    classify_run(&resolve(r), &mut intent);
                 }
             }
         }
         if let Some(w) = yaml::get_str(job, "uses") {
             steps.push(format!("reusable workflow {w}"));
         }
-        let env_name = match yaml::get(job, "environment") {
-            Some(serde_yaml_ng::Value::String(s)) => Some(s.clone()),
-            Some(v) => yaml::get_str(v, "name").map(String::from),
+        let declared_env = match yaml::get(job, "environment") {
+            Some(serde_yaml_ng::Value::String(s)) => Some(s.trim().to_string()),
+            Some(v) => yaml::get_str(v, "name").map(|n| n.trim().to_string()),
             None => None,
-        };
+        }
+        .filter(|e| !e.is_empty());
+        // `environment: ${{ inputs.environment }}` is chosen per run: the job
+        // deploys, but it names no environment of its own.
+        let dynamic_env = declared_env.as_deref().is_some_and(|e| e.contains("${{"));
+        let env_name = declared_env.filter(|_| !dynamic_env);
+        if let Some(env) = &env_name
+            && !github_environments.contains(env)
+        {
+            github_environments.push(env.clone());
+        }
+        let has_environment = env_name.is_some() || dynamic_env;
         let lower_job = format!("{job_key} {job_name}").to_ascii_lowercase();
         let named_release = lower_job.contains("release") || lower_job.contains("publish");
         if named_release && !intent.targets.iter().any(|t| is_runtime_target(t)) {
             // "publish" without a cloud step ships an artifact, it does not deploy.
-            intent.releases = intent.releases || intent.builds || env_name.is_some();
+            intent.releases = intent.releases || intent.builds || has_environment;
         }
         if lower_job.contains("deploy") || named_release {
-            intent.deploys = intent.deploys
-                || !intent.targets.is_empty()
-                || env_name.is_some()
-                || intent.releases;
+            intent.deploys =
+                intent.deploys || !intent.targets.is_empty() || has_environment || intent.releases;
         }
-        if intent.deploys || env_name.is_some() {
+        if (intent.deploys || env_name.is_some()) && !dynamic_env {
             let env = env_name
                 .clone()
                 .unwrap_or_else(|| guess_env(&lower_job, &triggers));
@@ -362,6 +574,7 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
             ("provider", "github_actions"),
             ("triggers", &triggers.join(",")),
             ("jobs", &jobs.len().to_string()),
+            ("image", image_mode(&workflow_intent)),
         ]),
     );
     let repo = ctx.repo_key.clone();
@@ -371,6 +584,39 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
         "CONTAINS",
         RelationCategory::Structure,
     );
+    if packages_write {
+        // `packages: write` is what a push to GHCR needs. Next to an image
+        // build it is the registry; on its own it may be any GitHub package.
+        let evidence = line_with(content, "packages:").unwrap_or("packages: write");
+        if workflow_intent.builds_image {
+            workflow_intent.registry("ghcr", "ghcr.io", evidence.to_string());
+        } else if !ctx.has_fact("registry:ghcr") {
+            ctx.inferred(
+                FactCategory::Container,
+                "registry:ghcr",
+                &display("ghcr"),
+                "ghcr.io",
+                0.6,
+                &format!(
+                    "{} grants `packages: write` but builds no image",
+                    short_path(path, 1)
+                ),
+            );
+        }
+    }
+    for env in &github_environments {
+        let key = format!("cd:github_environment:{env}");
+        if !ctx.has_fact(&key) {
+            ctx.detected(
+                FactCategory::Deployment,
+                &key,
+                "GitHub environment",
+                env,
+                path,
+                &format!("environment: {env}"),
+            );
+        }
+    }
     wire_intent(ctx, &pipeline_key, path, &workflow_intent, &job_envs);
     ctx.out.pipelines.push(PipelineDraft {
         provider: "github_actions".into(),
@@ -387,9 +633,44 @@ fn github_workflow(ctx: &mut Ctx<'_>, path: &str, content: &str) {
     );
 }
 
+/// `env:` of a workflow or job as plain strings.
+fn env_map(v: Option<&Value>) -> BTreeMap<String, String> {
+    yaml::entries(v)
+        .into_iter()
+        .filter_map(|(k, v)| match v {
+            Value::String(s) => Some((k, s.clone())),
+            Value::Number(n) => Some((k, n.to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `permissions:` of a workflow or job grants `packages: write`.
+fn grants_packages_write(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::String(s)) => s.trim() == "write-all",
+        Some(m @ Value::Mapping(_)) => yaml::get_str(m, "packages") == Some("write"),
+        _ => false,
+    }
+}
+
+/// `push` when the pipeline publishes the image it builds, `build` when it
+/// only builds it, empty when it builds none.
+fn image_mode(intent: &Intent) -> &'static str {
+    match (intent.builds_image, intent.pushes_image) {
+        (true, true) => "push",
+        (true, false) => "build",
+        _ => "",
+    }
+}
+
 fn merge(into: &mut Intent, from: &Intent) {
     into.builds |= from.builds;
     into.builds_image |= from.builds_image;
+    into.pushes_image |= from.pushes_image;
+    for r in &from.registries {
+        into.registry(r.kind, &r.host, r.evidence.clone());
+    }
     into.tests |= from.tests;
     into.deploys |= from.deploys;
     into.releases |= from.releases;
@@ -454,6 +735,42 @@ fn wire_intent(
                 .find(|e| e.contains("build") || e.contains("docker/build-push-action"))
                 .map(String::as_str)
                 .unwrap_or("build step"),
+        );
+    }
+    if intent.builds_image {
+        // What a release is cut from: the workflow whose success means a
+        // new image exists (`push`) or could be built (`build`).
+        ctx.detected(
+            FactCategory::CiCd,
+            &format!("ci:build_image:{path}"),
+            "CI builds a container image",
+            image_mode(intent),
+            path,
+            intent
+                .evidence
+                .iter()
+                .find(|e| e.contains("docker"))
+                .map(String::as_str)
+                .unwrap_or("image build step"),
+        );
+    }
+    for registry in &intent.registries {
+        let key = format!("registry:{}", registry.kind);
+        if ctx.fact(&key).is_some_and(|f| f.kind == FactKind::Detected) {
+            continue;
+        }
+        let value = if registry.host.is_empty() {
+            format!("used by {}", short_path(path, 1))
+        } else {
+            registry.host.clone()
+        };
+        ctx.detected(
+            FactCategory::Container,
+            &key,
+            &display(registry.kind),
+            &value,
+            path,
+            &registry.evidence,
         );
     }
     if intent.tests {
@@ -622,7 +939,11 @@ fn gitlab(ctx: &mut Ctx<'_>, path: &str, content: &str) {
         "GitLab CI",
         &format!("GitLab CI pipeline with {} jobs", jobs.len()),
         path,
-        attrs(&[("provider", "gitlab_ci"), ("jobs", &jobs.len().to_string())]),
+        attrs(&[
+            ("provider", "gitlab_ci"),
+            ("jobs", &jobs.len().to_string()),
+            ("image", image_mode(&intent)),
+        ]),
     );
     let repo = ctx.repo_key.clone();
     ctx.edge(

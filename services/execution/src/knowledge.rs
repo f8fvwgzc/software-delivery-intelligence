@@ -15,7 +15,39 @@ use sdi_proto::knowledge::v1::{
     GetProjectRequest, RecordPatternOutcomeRequest,
     knowledge_service_client::KnowledgeServiceClient,
 };
-use tonic::{Request, transport::Channel};
+use tonic::{Request, Status, transport::Channel};
+
+/// What a release needs to know about the project it is cut from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectInfo {
+    pub id: String,
+    pub name: String,
+    /// `owner/name` on GitHub.
+    pub repo_full_name: String,
+    pub default_branch: String,
+}
+
+/// The project behind a `project_id` (`Knowledge.GetProject`), asked as the
+/// caller: a project of another workspace is NOT_FOUND there too.
+#[async_trait]
+pub trait ProjectSource: Send + Sync {
+    async fn project(&self, principal: &Principal, project_id: &str)
+    -> Result<ProjectInfo, Status>;
+}
+
+/// No knowledge service: every lookup is UNAVAILABLE (tests).
+#[cfg(test)]
+pub struct NoProjects;
+
+#[cfg(test)]
+#[async_trait]
+impl ProjectSource for NoProjects {
+    async fn project(&self, _: &Principal, _: &str) -> Result<ProjectInfo, Status> {
+        Err(Status::unavailable(
+            "the knowledge service is not configured on this execution service",
+        ))
+    }
+}
 
 #[async_trait]
 pub trait PatternOutcomes: Send + Sync {
@@ -95,6 +127,76 @@ impl PatternOutcomes for GrpcPatternOutcomes {
                 String::new()
             }
         }
+    }
+}
+
+#[async_trait]
+impl ProjectSource for GrpcPatternOutcomes {
+    async fn project(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<ProjectInfo, Status> {
+        let mut client = KnowledgeServiceClient::new(self.channel.clone());
+        let project = client
+            .get_project(outgoing(
+                principal,
+                GetProjectRequest {
+                    id: project_id.to_owned(),
+                },
+            ))
+            .await
+            .map_err(|status| match status.code() {
+                tonic::Code::NotFound
+                | tonic::Code::InvalidArgument
+                | tonic::Code::PermissionDenied => status,
+                _ => Status::unavailable(format!(
+                    "the knowledge service could not describe the project: {}",
+                    status.message()
+                )),
+            })?
+            .into_inner();
+        Ok(ProjectInfo {
+            id: project.id,
+            name: project.name,
+            repo_full_name: project.repo_full_name,
+            default_branch: project.default_branch,
+        })
+    }
+}
+
+/// Test double: the projects it was given, per workspace.
+#[cfg(test)]
+#[derive(Default, Clone)]
+pub struct StaticProjects(pub Arc<Mutex<Vec<(String, ProjectInfo)>>>);
+
+#[cfg(test)]
+impl StaticProjects {
+    pub fn add(&self, workspace_id: &str, project: ProjectInfo) {
+        self.0
+            .lock()
+            .expect("projects lock")
+            .push((workspace_id.to_owned(), project));
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl ProjectSource for StaticProjects {
+    async fn project(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<ProjectInfo, Status> {
+        self.0
+            .lock()
+            .expect("projects lock")
+            .iter()
+            .find(|(workspace, project)| {
+                *workspace == principal.workspace_id && project.id == project_id
+            })
+            .map(|(_, project)| project.clone())
+            .ok_or_else(|| Status::not_found("no such project"))
     }
 }
 

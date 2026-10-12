@@ -16,14 +16,10 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
 
 import { ApprovalsBadge } from './approvals-badge'
-import { visibleNavigation, type NavItem } from './navigation'
+import { NavSection } from './nav-section'
+import { isNavItemActive, isNavSection, visibleNavigation } from './navigation'
 import { SidebarStatus } from './sidebar-status'
 import { WorkspaceSwitcher } from './workspace-switcher'
-
-function isActive(item: NavItem, pathname: string) {
-  if (item.to === '/') return pathname === '/'
-  return item.prefix ? pathname.startsWith(item.to) : pathname === item.to
-}
 
 /** 36px rows; the active one is a brand-tinted pill, the rest are plain text. */
 const ROW_CLASS =
@@ -31,8 +27,10 @@ const ROW_CLASS =
 
 /**
  * Permanent sidebar: the workspace switcher, then one calm list of pages
- * with 11px section labels between the groups, then the health line. Below
- * `md` it becomes an off-canvas sheet opened from the header.
+ * with 11px section labels between the groups, then the health line. The
+ * workspace administration pages sit folded under one row, so the list
+ * fits a laptop viewport. Below `md` it becomes an off-canvas sheet opened
+ * from the header.
  */
 export function AppSidebar() {
   const { pathname } = useLocation()
@@ -63,21 +61,25 @@ export function AppSidebar() {
                   {group.label}
                 </span>
                 <ul className="flex flex-col gap-0.5" aria-label={group.label}>
-                  {group.items.map((item) => (
-                    <SidebarMenuItem key={item.to}>
-                      <SidebarMenuButton asChild isActive={isActive(item, pathname)} tooltip={item.label} className={ROW_CLASS}>
-                        <Link to={item.to}>
-                          <item.icon />
-                          <span>{item.label}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                      {item.to === routes.approvals() && (
-                        <Suspense fallback={null}>
-                          <ApprovalsBadge />
-                        </Suspense>
-                      )}
-                    </SidebarMenuItem>
-                  ))}
+                  {group.items.map((item) =>
+                    isNavSection(item) ? (
+                      <NavSection key={item.label} section={item} pathname={pathname} rowClassName={ROW_CLASS} />
+                    ) : (
+                      <SidebarMenuItem key={item.to}>
+                        <SidebarMenuButton asChild isActive={isNavItemActive(item, pathname)} tooltip={item.label} className={ROW_CLASS}>
+                          <Link to={item.to}>
+                            <item.icon />
+                            <span>{item.label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                        {item.to === routes.approvals() && (
+                          <Suspense fallback={null}>
+                            <ApprovalsBadge />
+                          </Suspense>
+                        )}
+                      </SidebarMenuItem>
+                    ),
+                  )}
                 </ul>
               </li>
             ))}

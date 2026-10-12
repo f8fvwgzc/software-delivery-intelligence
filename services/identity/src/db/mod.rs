@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod controls;
 pub mod memberships;
+pub mod secrets;
 pub mod sessions;
 pub mod users;
 pub mod workspaces;

@@ -9,9 +9,19 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-import type { components } from '@/lib/api/schema'
-
-export type Artifact = components['schemas']['Artifact']
+/** One generated file as the viewer shows it; the gateway's `Artifact` fits as is. */
+export interface ViewerFile {
+  /** Repository-relative path, e.g. `.github/workflows/deploy.yml`. */
+  path: string
+  /** Full file content. */
+  content: string
+  /** `dockerfile`, `yaml`, `hcl`, `bicep`, `json`, `markdown`, `nginx` or `text`. */
+  language: string
+  /** One sentence: why this file exists. */
+  purpose?: string
+  /** True when the repository already has a file at this path. */
+  replacesExisting?: boolean
+}
 
 /** Icon per generator language (CONTRACT.md §14); the extension decides for `text`. */
 const LANGUAGE_ICON: Record<string, LucideIcon> = {
@@ -22,6 +32,7 @@ const LANGUAGE_ICON: Record<string, LucideIcon> = {
   json: BracesIcon,
   markdown: FileTextIcon,
   nginx: ServerIcon,
+  groovy: FileCode2Icon,
 }
 
 const EXTENSION_ICON: Record<string, LucideIcon> = {
@@ -37,11 +48,12 @@ const EXTENSION_ICON: Record<string, LucideIcon> = {
   example: FileCogIcon,
 }
 
-export function artifactIcon(artifact: Pick<Artifact, 'language' | 'path'>): LucideIcon {
-  const byLanguage = LANGUAGE_ICON[artifact.language.toLowerCase()]
+export function fileIcon(file: Pick<ViewerFile, 'language' | 'path'>): LucideIcon {
+  const byLanguage = LANGUAGE_ICON[file.language.toLowerCase()]
   if (byLanguage) return byLanguage
-  const name = baseName(artifact.path)
+  const name = baseName(file.path)
   if (/^dockerfile/i.test(name) || /\.dockerfile$/i.test(name)) return ContainerIcon
+  if (/^jenkinsfile/i.test(name)) return FileCode2Icon
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
   return EXTENSION_ICON[extension] ?? FileIcon
 }
@@ -56,26 +68,26 @@ export function directoryOf(path: string) {
   return index === -1 ? '' : path.slice(0, index)
 }
 
-export interface ArtifactGroup {
+export interface FileGroup<T extends ViewerFile = ViewerFile> {
   /** Directory, '' for the repository root. */
   directory: string
-  files: Artifact[]
+  files: T[]
 }
 
 /** Files grouped by directory: root first, then directories in path order; files by name. */
-export function groupByDirectory(artifacts: Artifact[]): ArtifactGroup[] {
-  const groups = new Map<string, Artifact[]>()
-  for (const artifact of artifacts) {
-    const directory = directoryOf(artifact.path)
-    const files = groups.get(directory)
-    if (files) files.push(artifact)
-    else groups.set(directory, [artifact])
+export function groupByDirectory<T extends ViewerFile>(files: readonly T[]): FileGroup<T>[] {
+  const groups = new Map<string, T[]>()
+  for (const file of files) {
+    const directory = directoryOf(file.path)
+    const list = groups.get(directory)
+    if (list) list.push(file)
+    else groups.set(directory, [file])
   }
   return [...groups.entries()]
     .sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
-    .map(([directory, files]) => ({
+    .map(([directory, list]) => ({
       directory,
-      files: files.toSorted((a, b) => baseName(a.path).localeCompare(baseName(b.path))),
+      files: list.toSorted((a, b) => baseName(a.path).localeCompare(baseName(b.path))),
     }))
 }
 
@@ -99,16 +111,16 @@ function saveBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1_000)
 }
 
-/** Downloads one artifact as a text file named after its basename. */
-export function downloadArtifact(artifact: Pick<Artifact, 'path' | 'content'>) {
-  saveBlob(new Blob([artifact.content], { type: 'text/plain;charset=utf-8' }), baseName(artifact.path))
+/** Downloads one file as text, named after its basename. */
+export function downloadFile(file: Pick<ViewerFile, 'path' | 'content'>) {
+  saveBlob(new Blob([file.content], { type: 'text/plain;charset=utf-8' }), baseName(file.path))
 }
 
-/** Zips every artifact at its repository path. `fflate` is loaded on demand. */
-export async function downloadArtifactsZip(artifacts: Pick<Artifact, 'path' | 'content'>[], filename: string) {
+/** Zips every file at its repository path. `fflate` is loaded on demand. */
+export async function downloadFilesZip(files: readonly Pick<ViewerFile, 'path' | 'content'>[], filename: string) {
   const { strToU8, zipSync } = await import('fflate')
   const entries: Record<string, Uint8Array> = {}
-  for (const artifact of artifacts) entries[artifact.path] = strToU8(artifact.content)
+  for (const file of files) entries[file.path] = strToU8(file.content)
   const bytes = zipSync(entries, { level: 6 })
   saveBlob(new Blob([bytes as BlobPart], { type: 'application/zip' }), filename)
 }

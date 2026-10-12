@@ -5,10 +5,11 @@ use sdi_common::time;
 use sdi_proto::{
     common::v1::{CostLine, PlanStep},
     intelligence::v1::{
-        Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus, Diagram,
-        DiagramEdge as ProtoDiagramEdge, DiagramGroup as ProtoDiagramGroup, DiagramKind,
-        DiagramNode as ProtoDiagramNode, DiagramSpec as ProtoDiagramSpec, Document, DocumentKind,
-        Evidence, EvidenceKind as ProtoEvidenceKind, Finding, FindingDecision, FindingSeverity,
+        Artifact, Constraint, Decision, DecisionScope, DecisionSource, DecisionStatus,
+        DeliveryArtifacts, Diagram, DiagramEdge as ProtoDiagramEdge,
+        DiagramGroup as ProtoDiagramGroup, DiagramKind, DiagramNode as ProtoDiagramNode,
+        DiagramSpec as ProtoDiagramSpec, Document, DocumentKind, Evidence,
+        EvidenceKind as ProtoEvidenceKind, Finding, FindingDecision, FindingSeverity,
         IntelligenceSettings, Message, MessageRole, Proposal, ProposalKind, ProposalOption,
         ProposalStatus, Review, ReviewActivity, ReviewStatus, ReviewStep, ScoreBreakdown,
         ScoreWeights,
@@ -182,6 +183,15 @@ pub fn artifact(a: &ArtifactData) -> Artifact {
         language: a.language.clone(),
         purpose: a.purpose.clone(),
         replaces_existing: a.replaces_existing,
+    }
+}
+
+/// The delivery setup files with their notes (CONTRACT.md §22).
+pub fn delivery_artifacts(files: &crate::generators::delivery::DeliveryFiles) -> DeliveryArtifacts {
+    DeliveryArtifacts {
+        artifacts: files.artifacts.iter().map(artifact).collect(),
+        notes: files.notes.clone(),
+        required_secrets: files.required_secrets.clone(),
     }
 }
 

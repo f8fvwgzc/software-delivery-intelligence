@@ -8,8 +8,9 @@ use async_trait::async_trait;
 use sdi_common::principal::Principal;
 use sdi_proto::{
     execution::v1::{
-        CreateExecutionRequest, DeliveryStats, Execution, GetDeliveryStatsRequest,
-        GetExecutionRequest, execution_service_client::ExecutionServiceClient,
+        CreateExecutionRequest, DeliveryStats, Environment, Execution, GetDeliveryStatsRequest,
+        GetExecutionRequest, ListEnvironmentsRequest, ListRegistriesRequest, Registry,
+        execution_service_client::ExecutionServiceClient,
     },
     identity::v1::{
         AuditEntry, DataControls, GetDataControlsRequest, GetInstallationTokenRequest,
@@ -146,6 +147,14 @@ pub trait ExecutionGateway: Send + Sync {
         principal: &Principal,
         project_id: &str,
     ) -> Result<DeliveryStats, GatewayError>;
+    /// Where the workspace's images live (CONTRACT.md §22).
+    async fn list_registries(&self, principal: &Principal) -> Result<Vec<Registry>, GatewayError>;
+    /// The project's environments, in promotion order.
+    async fn list_environments(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<Vec<Environment>, GatewayError>;
 }
 
 /// The identity service: per-workspace data controls, the workspace's own
@@ -438,6 +447,33 @@ impl ExecutionGateway for GrpcExecution {
             .map(|r| r.into_inner())
             .map_err(execution_err)
     }
+
+    async fn list_registries(&self, principal: &Principal) -> Result<Vec<Registry>, GatewayError> {
+        self.client
+            .clone()
+            .list_registries(outgoing(principal, ListRegistriesRequest {}))
+            .await
+            .map(|r| r.into_inner().registries)
+            .map_err(execution_err)
+    }
+
+    async fn list_environments(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<Vec<Environment>, GatewayError> {
+        self.client
+            .clone()
+            .list_environments(outgoing(
+                principal,
+                ListEnvironmentsRequest {
+                    project_id: project_id.to_owned(),
+                },
+            ))
+            .await
+            .map(|r| r.into_inner().environments)
+            .map_err(execution_err)
+    }
 }
 
 #[derive(Clone)]
@@ -681,6 +717,22 @@ pub mod fake {
         pub created: Mutex<Vec<CreateExecutionRequest>>,
         pub stats: Option<DeliveryStats>,
         pub callers: Mutex<Vec<Principal>>,
+        /// The workspace's registries (CONTRACT.md §22).
+        pub registries: Mutex<Vec<Registry>>,
+        /// Environments of every project; `list_environments` filters.
+        pub environments: Mutex<Vec<Environment>>,
+        /// The delivery RPCs answer `UNAVAILABLE` while set.
+        pub delivery_down: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeExecution {
+        fn delivery_up(&self) -> Result<(), GatewayError> {
+            if self.delivery_down.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(execution_err(Status::unavailable("connection refused")))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     #[async_trait]
@@ -723,6 +775,32 @@ pub mod fake {
         ) -> Result<DeliveryStats, GatewayError> {
             self.callers.lock().unwrap().push(principal.clone());
             Ok(self.stats.unwrap_or_default())
+        }
+
+        async fn list_registries(
+            &self,
+            principal: &Principal,
+        ) -> Result<Vec<Registry>, GatewayError> {
+            self.callers.lock().unwrap().push(principal.clone());
+            self.delivery_up()?;
+            Ok(self.registries.lock().unwrap().clone())
+        }
+
+        async fn list_environments(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+        ) -> Result<Vec<Environment>, GatewayError> {
+            self.callers.lock().unwrap().push(principal.clone());
+            self.delivery_up()?;
+            Ok(self
+                .environments
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.project_id == project_id)
+                .cloned()
+                .collect())
         }
     }
 

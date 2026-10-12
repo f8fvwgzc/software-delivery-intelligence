@@ -26,7 +26,7 @@ pub struct PolicyRow {
 
 /// `(action_type, label, risk, decision, editable)`: the §5.2 table. The
 /// bootstrap workspace got the same rows from the migrations.
-pub const SEED: [(&str, &str, &str, &str, bool); 22] = [
+pub const SEED: [(&str, &str, &str, &str, bool); 27] = [
     ("repo.read", "Read repository", "SAFE", "AUTO", false),
     ("repo.analyze", "Analyze repository", "SAFE", "AUTO", false),
     ("tests.run_local", "Run tests locally", "SAFE", "AUTO", true),
@@ -154,6 +154,43 @@ pub const SEED: [(&str, &str, &str, &str, bool); 22] = [
         "repo.open_pull_request",
         "Open a pull request with generated files",
         "MEDIUM",
+        "APPROVAL",
+        true,
+    ),
+    // CONTRACT.md §22: the plan of a deployment run. `deploy.staging` and
+    // `deploy.production` are the §5.2 rows above.
+    (
+        "registry.verify_image",
+        "Verify the image exists in the registry",
+        "SAFE",
+        "AUTO",
+        false,
+    ),
+    (
+        "deploy.development",
+        "Deploy to development",
+        "MEDIUM",
+        "AUTO",
+        true,
+    ),
+    (
+        "deploy.verify_health",
+        "Verify the deployment is healthy",
+        "SAFE",
+        "AUTO",
+        false,
+    ),
+    (
+        "deploy.record",
+        "Record the deployment on GitHub",
+        "SAFE",
+        "AUTO",
+        true,
+    ),
+    (
+        "deploy.rollback",
+        "Roll back an environment",
+        "HIGH",
         "APPROVAL",
         true,
     ),

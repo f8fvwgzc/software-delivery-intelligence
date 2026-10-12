@@ -1,0 +1,63 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        required: true
+        type: environment
+      image:
+        description: Image repository without a tag, such as ghcr.io/f8fvwgzc/view-engine
+        required: true
+        type: string
+      digest:
+        description: Digest of the released image (sha256:...)
+        required: false
+        type: string
+        default: ""
+      version:
+        description: Release version, which is also the image tag
+        required: true
+        type: string
+
+run-name: Deploy ${{ inputs.version }} to ${{ inputs.environment }}
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    env:
+      IMAGE: ${{ inputs.image }}
+      DIGEST: ${{ inputs.digest }}
+      VERSION: ${{ inputs.version }}
+      KUBE_DEPLOYMENT: ${{ vars.KUBE_DEPLOYMENT || 'view-engine' }}
+      KUBE_CONTAINER: ${{ vars.KUBE_CONTAINER || 'view-engine' }}
+      KUBE_NAMESPACE: ${{ vars.KUBE_NAMESPACE || inputs.environment }}
+    steps:
+      - name: Resolve the image reference
+        run: |
+          if [ -z "$IMAGE" ]; then echo "An image is required" >&2; exit 1; fi
+          if [ -z "$VERSION" ] && [ -z "$DIGEST" ]; then echo "A version or a digest is required" >&2; exit 1; fi
+          if [ -n "$DIGEST" ]; then ref="$IMAGE@$DIGEST"; else ref="$IMAGE:$VERSION"; fi
+          echo "IMAGE_REF=$ref" >> "$GITHUB_ENV"
+      - uses: azure/setup-kubectl@v4
+      - name: Deploy to Kubernetes (kubectl)
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl set image "deployment/$KUBE_DEPLOYMENT" "$KUBE_CONTAINER=$IMAGE_REF" --namespace "$KUBE_NAMESPACE"
+          kubectl rollout status "deployment/$KUBE_DEPLOYMENT" --namespace "$KUBE_NAMESPACE" --timeout=300s

@@ -39,6 +39,9 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RUN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const TESTS_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const DESTROY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+/// `docker pull` of a release's image for a `docker_local` environment.
+pub const LOCAL_DEPLOY_TIMEOUT_SECONDS: u64 = 10 * 60;
+const PULL_TIMEOUT: Duration = Duration::from_secs(LOCAL_DEPLOY_TIMEOUT_SECONDS);
 /// How long `container.run` waits for the health path to answer.
 const HEALTH_WAIT: Duration = Duration::from_secs(60);
 const HEALTH_POLL: Duration = Duration::from_secs(1);
@@ -837,6 +840,177 @@ impl DockerAdapter {
         }
     }
 
+    /// The container an environment's release runs in. One per project and
+    /// environment: a new deployment replaces the previous one, and the
+    /// name does not carry the execution id, so the cleanup of a finished
+    /// run (which removes `sdi-<execution>`) leaves it running.
+    pub fn environment_container(project_id: &str, environment: &str) -> String {
+        let clean = |text: &str, max: usize| -> String {
+            let cleaned: String = text
+                .trim()
+                .chars()
+                .filter_map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        Some(c.to_ascii_lowercase())
+                    } else if matches!(c, '-' | '_' | '.' | ' ') {
+                        Some('-')
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let trimmed = cleaned.trim_matches('-');
+            trimmed[trimmed.len().saturating_sub(max)..].to_owned()
+        };
+        // The tail of a v7 id is its random part.
+        let project = clean(&project_id.replace('-', ""), 8);
+        format!("sdi-env-{project}-{}", clean(environment, 40))
+    }
+
+    /// The `docker_local` deployer (CONTRACT.md §22): pulls the release's
+    /// image and runs it on this host, replacing whatever the environment
+    /// ran before. Development only: the image must be public or the host
+    /// already logged in to its registry. The health step reads the
+    /// address from `container_url`.
+    async fn deploy_local(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
+        let param = |key: &str| step.params.get(key).map(|v| v.trim()).unwrap_or_default();
+        let image = param("image");
+        let tag = param("tag");
+        let digest = ctx
+            .outputs
+            .get("digest")
+            .map(String::as_str)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(param("digest"));
+        let reference = match (image, tag, digest) {
+            ("", _, _) => {
+                return StepOutcome::failed(
+                    diagnosis::DEPLOYER_FAILED,
+                    "the release has no image to run",
+                );
+            }
+            (image, "", "") => image.to_owned(),
+            (image, "", digest) => format!("{image}@{digest}"),
+            (image, tag, _) => format!("{image}:{tag}"),
+        };
+        let port: u16 = match param("port") {
+            "" => 8080,
+            raw => match raw.parse() {
+                Ok(port) => port,
+                Err(_) => {
+                    return StepOutcome::failed(
+                        diagnosis::DEPLOYER_FAILED,
+                        "the docker_local environment's port is not a port number",
+                    );
+                }
+            },
+        };
+        let variables: Vec<(String, String)> = match param("env") {
+            "" => Vec::new(),
+            raw => match serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw) {
+                Ok(map) => map
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let value = match value {
+                            serde_json::Value::String(text) => text,
+                            other => other.to_string(),
+                        };
+                        (key, value)
+                    })
+                    .collect(),
+                Err(error) => {
+                    return StepOutcome::failed(
+                        diagnosis::DEPLOYER_FAILED,
+                        format!("the docker_local environment's env is not a JSON object: {error}"),
+                    );
+                }
+            },
+        };
+        if let Some((bad, _)) = variables.iter().find(|(key, _)| {
+            key.is_empty()
+                || key.starts_with(|c: char| c.is_ascii_digit())
+                || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }) {
+            return StepOutcome::failed(
+                diagnosis::DEPLOYER_FAILED,
+                format!("{bad} is not a valid environment variable name"),
+            );
+        }
+        let name = Self::environment_container(param("project_id"), param("environment"));
+        let timeout = Self::timeout_for(step, PULL_TIMEOUT);
+
+        ctx.logs.line(format!("docker pull {reference}"));
+        let mut pull = Command::new("docker");
+        pull.args(["pull", &reference]);
+        match Self::run_command(&ctx.logs, pull, timeout).await {
+            Ok(finished) if finished.success => {}
+            Ok(finished) => {
+                let mut raw = finished.tail.join("\n");
+                raw.push_str(&format!(
+                    "\ndocker pull {reference}: {}\nThe image must be public, or the host must be logged in to its registry (docker login).",
+                    finished.status
+                ));
+                return StepOutcome::failed(diagnosis::DEPLOYER_FAILED, raw);
+            }
+            Err(CommandError::Timeout) => {
+                return StepOutcome::failed(
+                    diagnosis::DEPLOYER_TIMEOUT,
+                    format!("docker pull {reference} did not finish within its time limit"),
+                );
+            }
+            Err(error) => return Self::command_error(error, "docker pull"),
+        }
+
+        // The environment runs one release: the previous container goes.
+        Self::best_effort(&["rm", "-f", &name]).await;
+        let publish = format!("{}:0:{port}", self.publish_host);
+        let shown: Vec<String> = variables
+            .iter()
+            .map(|(key, _)| format!("-e {key}=***"))
+            .collect();
+        ctx.logs.line(format!(
+            "docker run -d -p {publish} --name {name} {} {reference}",
+            shown.join(" ")
+        ));
+        let mut run = Command::new("docker");
+        run.args(["run", "-d", "-p", &publish, "--name", &name]);
+        run.args([
+            "--label",
+            &format!("sdi.environment={}", param("environment")),
+        ]);
+        run.args(["--label", &format!("sdi.release={}", param("version"))]);
+        for (key, value) in &variables {
+            run.args(["-e", &format!("{key}={value}")]);
+        }
+        run.arg(&reference);
+        match Self::run_command(&ctx.logs, run, RUN_TIMEOUT).await {
+            Ok(finished) if finished.success => {}
+            Ok(finished) => return Self::failed_run(diagnosis::DEPLOYER_FAILED, step, &finished),
+            Err(error) => return Self::command_error(error, "docker run"),
+        }
+        let Some(mapped) = self.mapped_port(&name, port).await else {
+            let state = self.container_state(&name).await;
+            let logs = self.container_logs(&name).await;
+            Self::best_effort(&["rm", "-f", &name]).await;
+            return StepOutcome::failed(
+                diagnosis::DEPLOYER_FAILED,
+                format!(
+                    "{name} exposes no host port for {port}/tcp (container {state})\n--- docker logs {name} ---\n{logs}"
+                ),
+            );
+        };
+        let url = format!("http://{}:{mapped}", self.publish_host);
+        ctx.logs.line(format!("{name} runs {reference} on {url}"));
+        StepOutcome::Succeeded {
+            output: format!("{name} runs {reference} on {url}"),
+            outputs: BTreeMap::from([
+                ("container_url".to_owned(), url),
+                ("container".to_owned(), name),
+                ("image_ref".to_owned(), reference),
+            ]),
+        }
+    }
+
     async fn destroy(&self, ctx: &RunContext) -> StepOutcome {
         let name = Self::container_name(ctx.execution_id);
         let command_name = Self::command_container_name(ctx.execution_id);
@@ -1068,6 +1242,7 @@ impl Adapter for DockerAdapter {
             "tests.run_local" => self.run_tests(step, ctx).await,
             "deps.install" => self.install_deps(step, ctx).await,
             "env.destroy_temporary" => self.destroy(ctx).await,
+            action if super::is_deploy_action(action) => self.deploy_local(step, ctx).await,
             other => StepOutcome::failed(
                 diagnosis::UNKNOWN,
                 format!("the docker adapter cannot run {other}"),
@@ -1354,10 +1529,69 @@ mod tests {
             StepOutcome::Failed { raw_output, .. } => assert!(raw_output.contains("params.repo")),
             other => panic!("{other:?}"),
         }
-        match adapter.run(&step("deploy.production", &[]), &ctx).await {
+        match adapter.run(&step("cloud.modify_resource", &[]), &ctx).await {
             StepOutcome::Failed { code, .. } => assert_eq!(code, diagnosis::UNKNOWN),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The `docker_local` deployer refuses a release or settings it cannot
+    /// run before it touches the daemon, and names an environment's
+    /// container after the environment, not the execution.
+    #[tokio::test]
+    async fn local_deployments_validate_their_settings_and_own_one_container_per_environment() {
+        let adapter = DockerAdapter::new(std::env::temp_dir(), None, "http://127.0.0.1:1");
+        let ctx = RunContext::default();
+        for (params, why) in [
+            (vec![], "no image to run"),
+            (
+                vec![
+                    ("image", "ghcr.io/acme/api"),
+                    ("tag", "v1"),
+                    ("port", "http"),
+                ],
+                "port is not a port number",
+            ),
+            (
+                vec![("image", "ghcr.io/acme/api"), ("tag", "v1"), ("env", "[]")],
+                "env is not a JSON object",
+            ),
+            (
+                vec![
+                    ("image", "ghcr.io/acme/api"),
+                    ("tag", "v1"),
+                    ("env", r#"{"BAD-NAME":"x"}"#),
+                ],
+                "BAD-NAME is not a valid environment variable name",
+            ),
+        ] {
+            match adapter
+                .run(&step("deploy.development", &params), &ctx)
+                .await
+            {
+                StepOutcome::Failed {
+                    code, raw_output, ..
+                } => {
+                    assert_eq!(code, diagnosis::DEPLOYER_FAILED);
+                    assert!(raw_output.contains(why), "{raw_output}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let project = "0192f6a0-1234-7000-8000-0000abcdef01";
+        assert_eq!(
+            DockerAdapter::environment_container(project, "local"),
+            "sdi-env-abcdef01-local"
+        );
+        assert_eq!(
+            DockerAdapter::environment_container(project, "EU West.prod_1"),
+            "sdi-env-abcdef01-eu-west-prod-1"
+        );
+        // Never the name `cleanup` removes for a finished execution.
+        assert_ne!(
+            DockerAdapter::environment_container(project, "local"),
+            DockerAdapter::container_name(Uuid::parse_str(project).unwrap())
+        );
     }
 
     /// Serves `archive` as the tarball of any repository under `prefix`

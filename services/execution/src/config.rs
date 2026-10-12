@@ -30,6 +30,9 @@ pub struct Settings {
     /// Host address the docker adapter publishes container ports on
     /// (`SDI_DOCKER_PUBLISH_HOST`, default loopback).
     pub docker_publish_host: String,
+    /// Azure DevOps base (`AZURE_DEVOPS_URL`, default `https://dev.azure.com`;
+    /// an Azure DevOps Server collection URL otherwise).
+    pub azure_devops_url: String,
 }
 
 impl Settings {
@@ -46,6 +49,10 @@ impl Settings {
             docker_publish_host: config::env_or(
                 "SDI_DOCKER_PUBLISH_HOST",
                 crate::adapters::docker::DEFAULT_PUBLISH_HOST,
+            ),
+            azure_devops_url: config::env_or(
+                "AZURE_DEVOPS_URL",
+                crate::adapters::azure_devops::DEFAULT_BASE,
             ),
         })
     }

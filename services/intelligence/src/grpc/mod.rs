@@ -1,11 +1,13 @@
 //! tonic service: one file per RPC group, the trait impl here only reads the
 //! caller (CONTRACT.md §18), checks the role and delegates.
 //!
-//! Roles: reads need VIEWER; generate / negotiate / accept / reject,
-//! documents, diagrams and decisions need MEMBER; settings need ADMIN;
-//! the workspace export needs ADMIN and the delete needs OWNER.
+//! Roles: reads need VIEWER (the delivery setup files are generated on
+//! read and stored nowhere, so they count as one); generate / negotiate /
+//! accept / reject, documents, diagrams and decisions need MEMBER; settings
+//! need ADMIN; the workspace export needs ADMIN and the delete needs OWNER.
 
 mod decisions;
+mod delivery;
 mod diagrams;
 mod documents;
 mod negotiation;
@@ -31,7 +33,8 @@ use sdi_proto::{
     intelligence::v1::{
         AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, Decision,
         DeleteDiagramRequest, DeleteDiagramResponse, DeleteWorkspaceDataRequest,
-        DeleteWorkspaceDataResponse, Diagram, Document, ExportWorkspaceDataRequest, Finding,
+        DeleteWorkspaceDataResponse, DeliveryArtifacts, Diagram, Document,
+        ExportWorkspaceDataRequest, Finding, GenerateDeliveryArtifactsRequest,
         GenerateDiagramRequest, GenerateDocumentRequest, GenerateProposalRequest,
         GetDiagramRequest, GetDocumentRequest, GetIntelligenceStatsRequest, GetProposalRequest,
         GetReviewRequest, GetSettingsRequest, IntelligenceSettings, IntelligenceStats,
@@ -612,6 +615,16 @@ impl IntelligenceService for IntelligenceGrpc {
     ) -> Result<Response<ListReviewActivityResponse>, Status> {
         let caller = caller(&request, Role::Viewer)?;
         reviews::list_activity(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn generate_delivery_artifacts(
+        &self,
+        request: Request<GenerateDeliveryArtifactsRequest>,
+    ) -> Result<Response<DeliveryArtifacts>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        delivery::generate(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

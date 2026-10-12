@@ -209,6 +209,47 @@ pub(crate) fn is_k8s_dir(path: &str) -> bool {
     .any(|d| has_dir(path, d))
 }
 
+/// Deploy pipelines that live outside `.github/workflows` (CONTRACT.md §22):
+/// a `Jenkinsfile` (also `Jenkinsfile.deploy`) anywhere in the tree.
+pub(crate) fn is_jenkinsfile(path: &str) -> bool {
+    let name = basename(path);
+    name == "Jenkinsfile"
+        || name.strip_prefix("Jenkinsfile.").is_some_and(|suffix| {
+            !suffix.is_empty() && !matches!(suffix, "md" | "txt" | "bak" | "orig")
+        })
+}
+
+/// `azure-pipelines.yml` at any depth, or a pipeline under `.azure-pipelines/`.
+pub(crate) fn is_azure_pipelines(path: &str) -> bool {
+    if !is_yaml(path) {
+        return false;
+    }
+    let name = basename(path);
+    name.starts_with("azure-pipelines.")
+        || name.starts_with(".azure-pipelines.")
+        || has_dir(path, ".azure-pipelines")
+}
+
+/// Directories that only a GitOps layout has: what Flux and Argo CD reconcile.
+fn is_gitops_only_dir(path: &str) -> bool {
+    [
+        "clusters",
+        "gitops",
+        "flux",
+        "flux-system",
+        "argocd",
+        "argo-cd",
+    ]
+    .iter()
+    .any(|d| has_dir(path, d))
+}
+
+/// Where GitOps repositories keep their manifests. `apps/` is the Flux and
+/// Argo CD convention for workloads, and also where monorepos keep code.
+pub(crate) fn is_gitops_dir(path: &str) -> bool {
+    is_gitops_only_dir(path) || has_dir(path, "apps")
+}
+
 pub(crate) fn is_migration_path(path: &str) -> bool {
     has_dir(path, "migrations") || has_dir(path, "migrate") || has_dir(path, "versions")
 }
@@ -242,10 +283,18 @@ const P_PIPELINE: u8 = 4;
 const P_IAC: u8 = 5;
 const P_SUPPORTING: u8 = 6;
 const P_NESTED_MANIFEST: u8 = 7;
-const P_MIGRATION: u8 = 8;
-const P_ENTRY: u8 = 9;
-const P_DOC: u8 = 10;
-const P_BIG_MIGRATION: u8 = 11;
+const P_GITOPS: u8 = 8;
+const P_GITOPS_APPS: u8 = 9;
+const P_MIGRATION: u8 = 10;
+const P_ENTRY: u8 = 11;
+const P_DOC: u8 = 12;
+const P_BIG_MIGRATION: u8 = 13;
+
+/// YAML under `clusters/`, `gitops/` or `apps/` is read to recognise Flux
+/// and Argo CD. A handful of files settles that, and `apps/` is also where
+/// monorepos keep unrelated YAML, so those files rank after the
+/// unambiguous directories and the budget for all of them is capped.
+const MAX_GITOPS_FILES: usize = 40;
 
 /// Lower is better. `None` means the file is not wanted at all.
 fn priority(path: &str) -> Option<u8> {
@@ -276,6 +325,9 @@ fn priority(path: &str) -> Option<u8> {
     if is_workflow(path) || path == ".gitlab-ci.yml" || path == ".github/dependabot.yml" {
         return Some(P_PIPELINE);
     }
+    if is_jenkinsfile(path) || is_azure_pipelines(path) {
+        return Some(P_PIPELINE);
+    }
     let ext = extension(path);
     if ext == "tf" || ext == "bicep" || name == "Pulumi.yaml" || name.starts_with("Pulumi.") {
         return Some(P_IAC);
@@ -298,6 +350,13 @@ fn priority(path: &str) -> Option<u8> {
     }
     if lower == "security.md" || path == ".github/CODEOWNERS" || path == "CODEOWNERS" {
         return Some(P_SUPPORTING);
+    }
+    if is_yaml(path) && is_gitops_dir(path) {
+        return Some(if is_gitops_only_dir(path) {
+            P_GITOPS
+        } else {
+            P_GITOPS_APPS
+        });
     }
     if is_migration_path(path) {
         return Some(P_MIGRATION);
@@ -337,11 +396,18 @@ pub fn wanted_files_with(tree: &[TreeEntry], exclude: &[String]) -> Vec<String> 
         .collect();
     ranked.sort();
     let mut docs = 0usize;
+    let mut gitops = 0usize;
     let mut out = Vec::new();
     for (p, _, path) in ranked {
         if p == P_DOC {
             docs += 1;
             if docs > 12 {
+                continue;
+            }
+        }
+        if p == P_GITOPS || p == P_GITOPS_APPS {
+            gitops += 1;
+            if gitops > MAX_GITOPS_FILES {
                 continue;
             }
         }
@@ -443,6 +509,54 @@ mod tests {
         assert!(!filtered.iter().any(|w| w == "docs/legacy/plan.md"));
         assert!(!filtered.iter().any(|w| w.starts_with("vendor-legacy/")));
         assert!(filtered.iter().any(|w| w == "docs/current/plan.md"));
+    }
+
+    #[test]
+    fn delivery_pipelines_and_gitops_manifests_are_wanted() {
+        let mut tree = vec![
+            entry("package.json", 10),
+            entry("Jenkinsfile", 10),
+            entry("ci/Jenkinsfile.deploy", 10),
+            entry("azure-pipelines.yml", 10),
+            entry(".azure-pipelines/release.yaml", 10),
+            entry("clusters/production/flux-system/gotk-sync.yaml", 10),
+            entry("apps/api/kustomization.yaml", 10),
+            entry("gitops/argocd/application.yaml", 10),
+            entry("apps/api/src/handler.ts", 10),
+            entry("notes/Jenkinsfile.md", 10),
+        ];
+        let wanted = wanted_files(&tree);
+        for p in [
+            "Jenkinsfile",
+            "ci/Jenkinsfile.deploy",
+            "azure-pipelines.yml",
+            ".azure-pipelines/release.yaml",
+            "clusters/production/flux-system/gotk-sync.yaml",
+            "apps/api/kustomization.yaml",
+            "gitops/argocd/application.yaml",
+        ] {
+            assert!(wanted.iter().any(|w| w == p), "missing {p}: {wanted:?}");
+        }
+        assert!(!wanted.iter().any(|w| w == "apps/api/src/handler.ts"));
+        assert!(!wanted.iter().any(|w| w == "notes/Jenkinsfile.md"));
+        // Pipelines rank with the workflows, ahead of the GitOps manifests.
+        let position = |p: &str| wanted.iter().position(|w| w == p).unwrap();
+        assert!(position("Jenkinsfile") < position("apps/api/kustomization.yaml"));
+        // A monorepo's `apps/` cannot spend the whole budget on YAML.
+        tree.extend((0..200).map(|i| entry(&format!("apps/svc{i}/config.yaml"), 10)));
+        let wanted = wanted_files(&tree);
+        let gitops = wanted
+            .iter()
+            .filter(|w| is_yaml(w) && is_gitops_dir(w))
+            .count();
+        assert_eq!(gitops, MAX_GITOPS_FILES);
+        for p in [
+            "package.json",
+            "clusters/production/flux-system/gotk-sync.yaml",
+            "gitops/argocd/application.yaml",
+        ] {
+            assert!(wanted.iter().any(|w| w == p), "missing {p}");
+        }
     }
 
     #[test]

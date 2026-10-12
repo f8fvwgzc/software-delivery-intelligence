@@ -6,7 +6,7 @@ in `src/index.css`. `DESIGN.md` at `web/` describes the world these live in;
 this file is the contract.
 
 ```
-import { Frame, Panel, Row, RowList, Tag, Rail, RailStep, Toolbar, Stat, Code, Stack, Inline } from '@/components/system'
+import { Frame, Panel, Row, RowList, Tag, Rail, RailStep, Toolbar, Stat, Code, Stack, Inline, CrossFade, FileViewer } from '@/components/system'
 ```
 
 | Primitive | Job | Rules |
@@ -21,6 +21,8 @@ import { Frame, Panel, Row, RowList, Tag, Rail, RailStep, Toolbar, Stat, Code, S
 | `Code` / `InlineCode` | 12px mono block on a muted wash with an inset hairline; `wrap` for prose-length lines. `InlineCode` for a path or sha in a sentence. | Mono is for code, data and measurement, not decoration. |
 | `Stack` / `Inline` | Flex column / row with `gap` on the 4px grid (`0 1 2 3 4 5 6 8`). | Page rhythm is `Stack gap={4}` (16px) between frames, `gap={2}` inside them. |
 | `PageTransition` | `motion` fade + 4px rise on route change, 150ms, honours reduced motion. Mounted once in the shell. | The only place `motion` is used for page-level presence. |
+| `CrossFade` | Swaps a small read-only block when its `swapKey` changes: the old content fades out over the new one (180ms, `motion`, lazily loaded through `useMotionLib`). No animation on first mount or with reduced motion. | For a value that changes under the reader (the release a stage runs). Children are display only: the block remounts once when the runtime lands. |
+| `FileViewer` / `FileViewerSkeleton` | Generated files as a directory tree beside a read-only code pane with copy and download (`@/components/system/file-viewer`, which also exports `downloadFilesZip` and the path helpers). A container query stacks the tree above the pane when the region is narrow. | Proposals and the pipeline's setup files both use it; the caller renders the empty state. |
 
 ## Compatibility shims
 

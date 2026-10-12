@@ -1,0 +1,14 @@
+# The staging environment of view-engine.
+# `newTag` is rewritten on every promotion: the release that runs here is
+# whatever this file says on `main`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: view-engine-staging
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: ghcr.io/f8fvwgzc/view-engine
+    newName: ghcr.io/f8fvwgzc/view-engine
+    newTag: latest

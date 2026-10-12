@@ -1,0 +1,91 @@
+// Deploys one released image of view-engine to one environment.
+// SDI starts this job (buildWithParameters) once a promotion has passed its
+// policy gates and follows the build to its end. Nothing here builds an image.
+
+def HEALTH_URLS = [
+  'staging': 'https://staging.view-engine.dev/healthz'
+]
+
+pipeline {
+  agent any
+
+  options {
+    disableConcurrentBuilds()
+    timeout(time: 30, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '50'))
+  }
+
+  parameters {
+    string(name: 'IMAGE', defaultValue: 'ghcr.io/f8fvwgzc/view-engine', description: 'Image repository without a tag')
+    string(name: 'DIGEST', defaultValue: '', description: 'Digest of the released image (sha256:...)')
+    string(name: 'VERSION', defaultValue: '', description: 'Release version, which is also the image tag')
+    choice(name: 'ENVIRONMENT', choices: ['staging', 'production'], description: 'Environment to deploy to')
+  }
+
+  environment {
+    IMAGE = "${params.IMAGE}"
+    IMAGE_REF = "${params.DIGEST?.trim() ? params.IMAGE.trim() + '@' + params.DIGEST.trim() : params.IMAGE.trim() + ':' + params.VERSION}"
+    KUBE_DEPLOYMENT = 'view-engine'
+    KUBE_CONTAINER = 'view-engine'
+    KUBE_NAMESPACE = "${params.ENVIRONMENT}"
+  }
+
+  stages {
+    stage('Verify') {
+      steps {
+        script {
+          if (!params.IMAGE?.trim()) {
+            error('IMAGE is required')
+          }
+          if (!params.DIGEST?.trim() && !params.VERSION?.trim()) {
+            error('A DIGEST or a VERSION is required')
+          }
+          if (params.DIGEST?.trim() && !(params.DIGEST.trim() ==~ /sha256:[a-f0-9]{64}/)) {
+            error("DIGEST must be sha256 followed by 64 hex characters, got ${params.DIGEST}")
+          }
+        }
+        sh '''
+          set -eu
+          if command -v docker > /dev/null 2>&1; then
+            docker manifest inspect "$IMAGE_REF" > /dev/null
+          fi
+        '''
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        withCredentials([
+          string(credentialsId: "kubeconfig-b64-${params.ENVIRONMENT}", variable: 'KUBECONFIG_B64')
+        ]) {
+          sh '''
+            set -eu
+            mkdir -p "$HOME/.kube"
+            echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+            chmod 600 "$HOME/.kube/config"
+            kubectl set image "deployment/$KUBE_DEPLOYMENT" "$KUBE_CONTAINER=$IMAGE_REF" --namespace "$KUBE_NAMESPACE"
+            kubectl rollout status "deployment/$KUBE_DEPLOYMENT" --namespace "$KUBE_NAMESPACE" --timeout=300s
+          '''
+        }
+      }
+    }
+
+    stage('Health') {
+      when {
+        expression { HEALTH_URLS.containsKey(params.ENVIRONMENT) }
+      }
+      steps {
+        sh "curl --retry 10 --retry-delay 6 --retry-all-errors -fsS '${HEALTH_URLS[params.ENVIRONMENT]}'"
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "Deployed ${env.IMAGE_REF} to ${params.ENVIRONMENT}"
+    }
+    failure {
+      echo "Deploying ${env.IMAGE_REF} to ${params.ENVIRONMENT} failed"
+    }
+  }
+}

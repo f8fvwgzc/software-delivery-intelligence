@@ -1,10 +1,13 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use sdi_common::grpc::db_status;
-use sdi_proto::execution::v1::{
-    CancelExecutionRequest, CreateExecutionRequest, EventType, Execution, ExecutionStatus,
-    ListExecutionsRequest, ListExecutionsResponse, ResolveFailureRequest, StartExecutionRequest,
-    StepStatus,
+use sdi_proto::{
+    common::v1::PlanStep,
+    execution::v1::{
+        CancelExecutionRequest, CreateExecutionRequest, EventType, Execution, ExecutionStatus,
+        ListExecutionsRequest, ListExecutionsResponse, ResolveFailureRequest,
+        StartExecutionRequest, StepStatus,
+    },
 };
 use sqlx::types::Json;
 use tonic::Status;
@@ -14,7 +17,12 @@ use super::{Caller, load_execution, parse_id};
 use crate::{
     adapters::{self, Fault},
     convert,
-    db::{self, events::NewEvent, executions::NewExecution, steps::StepRow},
+    db::{
+        self,
+        events::{EventRow, NewEvent},
+        executions::NewExecution,
+        steps::StepRow,
+    },
     domain::{dag, diagnosis, policy, state},
     runner::{Command, Runtime},
 };
@@ -22,20 +30,34 @@ use crate::{
 const DEFAULT_LIST_LIMIT: i64 = 50;
 const MAX_LIST_LIMIT: i64 = 200;
 
-pub async fn create(
-    rt: &Arc<Runtime>,
-    caller: &Caller,
-    req: CreateExecutionRequest,
-) -> Result<Execution, Status> {
-    // The runtime decides which steps may run at all (CONTRACT.md §5.4): a
-    // plan that needs a tool the runtime cannot provide is refused here,
-    // naming the step, rather than failing mid-flight. It also decides who
-    // may create the run: a dry run is a member's, a real one an approver's.
-    let runtime = adapters::runtime_name(&req.adapter)?;
-    caller.require_adapter(runtime)?;
-    let workspace = caller.workspace;
+/// What `insert_plan` stores: a validated plan on a runtime.
+pub(crate) struct NewPlan<'a> {
+    pub project_id: &'a str,
+    pub project_name: &'a str,
+    pub proposal_id: &'a str,
+    pub pattern_id: &'a str,
+    pub title: &'a str,
+    pub steps: &'a [PlanStep],
+    /// A name `adapters::runtime_name` returned.
+    pub runtime: &'static str,
+    pub artifacts: &'a BTreeMap<String, String>,
+    /// `x-sdi-user` of whoever asked for the run.
+    pub created_by: &'a str,
+}
 
-    let plan: Vec<_> = req
+/// The one way an execution comes to exist: validates the plan against the
+/// runtime, decorates every step with its policy, and writes the execution,
+/// its steps and its first event inside the caller's transaction (a
+/// deployment run stores its own row next to them before committing). The
+/// caller publishes with [`publish_created`] once it committed.
+pub(crate) async fn insert_plan(
+    tx: &mut db::Tx,
+    rt: &Runtime,
+    workspace: Uuid,
+    plan: NewPlan<'_>,
+) -> Result<(Uuid, EventRow), Status> {
+    let runtime = plan.runtime;
+    let keys: Vec<_> = plan
         .steps
         .iter()
         .map(|s| {
@@ -48,12 +70,12 @@ pub async fn create(
             )
         })
         .collect();
-    let nodes: Vec<dag::Node<'_>> = plan
+    let nodes: Vec<dag::Node<'_>> = keys
         .iter()
         .map(|(key, depends_on)| dag::Node { key, depends_on })
         .collect();
     dag::validate(&nodes).map_err(|e| Status::invalid_argument(e.to_string()))?;
-    for step in &req.steps {
+    for step in plan.steps {
         let action_type = step.action_type.trim();
         if action_type.is_empty() {
             return Err(Status::invalid_argument(format!(
@@ -87,47 +109,35 @@ pub async fn create(
         }
         Err(error) => return Err(db_status(error)),
     };
-    let artifacts: BTreeMap<String, String> = req
-        .artifacts
-        .iter()
-        .filter(|(path, _)| !path.trim().is_empty())
-        .map(|(path, content)| (path.trim().to_owned(), content.clone()))
-        .collect();
 
     let id = Uuid::now_v7();
-    let title = if req.title.trim().is_empty() {
+    let title = if plan.title.trim().is_empty() {
         "Untitled execution"
     } else {
-        req.title.trim()
+        plan.title.trim()
     };
     let planning = convert::status_to_db(ExecutionStatus::Planning);
-    let project_name = rt
-        .outcomes
-        .project_name(&caller.principal, req.project_id.trim())
-        .await;
-
-    let mut tx = rt.pool.begin().await.map_err(db_status)?;
     db::executions::insert(
-        &mut tx,
+        tx,
         NewExecution {
             id,
             workspace_id: workspace,
-            project_id: req.project_id.trim(),
-            project_name: &project_name,
-            proposal_id: req.proposal_id.trim(),
-            pattern_id: req.pattern_id.trim(),
+            project_id: plan.project_id.trim(),
+            project_name: plan.project_name,
+            proposal_id: plan.proposal_id.trim(),
+            pattern_id: plan.pattern_id.trim(),
             title,
             status: planning,
             adapter: runtime,
             identity_id: identity.id,
-            created_by: &caller.principal.user_id,
-            artifacts: &artifacts,
+            created_by: plan.created_by,
+            artifacts: plan.artifacts,
         },
     )
     .await
     .map_err(db_status)?;
 
-    for (position, (step, (key, depends_on))) in req.steps.iter().zip(plan).enumerate() {
+    for (position, (step, (key, depends_on))) in plan.steps.iter().zip(keys).enumerate() {
         let rule = policy::lookup(&rules, step.action_type.trim());
         let row = StepRow {
             id: Uuid::now_v7(),
@@ -171,28 +181,41 @@ pub async fn create(
             started_at: None,
             finished_at: None,
         };
-        db::steps::insert(&mut tx, &row).await.map_err(db_status)?;
+        db::steps::insert(tx, &row).await.map_err(db_status)?;
     }
     let event = db::events::append(
-        &mut tx,
+        tx,
         NewEvent {
             workspace_id: workspace,
             execution_id: id,
             r#type: convert::event_type_to_db(EventType::StateChanged),
             step_key: "",
-            message: format!("planned {} steps", req.steps.len()),
+            message: format!("planned {} steps", plan.steps.len()),
             status: planning,
-            data: [("steps".to_owned(), req.steps.len().to_string())].into(),
+            data: [("steps".to_owned(), plan.steps.len().to_string())].into(),
         },
     )
     .await
     .map_err(db_status)?;
-    tx.commit().await.map_err(db_status)?;
+    Ok((id, event))
+}
+
+/// Tells the watchers about an execution `insert_plan` stored, once its
+/// transaction committed.
+pub(crate) fn publish_created(
+    rt: &Runtime,
+    workspace: Uuid,
+    id: Uuid,
+    project_id: &str,
+    runtime: &str,
+    event: EventRow,
+) {
+    let planning = convert::status_to_db(ExecutionStatus::Planning);
     rt.bus.publish(convert::event_to_proto(event));
     rt.platform.execution(
         workspace,
         &id.to_string(),
-        req.project_id.trim(),
+        project_id.trim(),
         "created",
         &planning.to_ascii_lowercase(),
         BTreeMap::from([
@@ -200,6 +223,59 @@ pub async fn create(
             ("adapter".to_owned(), runtime.to_owned()),
         ]),
     );
+}
+
+pub async fn create(
+    rt: &Arc<Runtime>,
+    caller: &Caller,
+    req: CreateExecutionRequest,
+) -> Result<Execution, Status> {
+    // The runtime decides which steps may run at all (CONTRACT.md §5.4): a
+    // plan that needs a tool the runtime cannot provide is refused here,
+    // naming the step, rather than failing mid-flight. It also decides who
+    // may create the run: a dry run is a member's, a real one an approver's.
+    let runtime = adapters::runtime_name(&req.adapter)?;
+    if runtime == adapters::DELIVERY {
+        // A deployment run's plan is built from an environment and a
+        // release; a hand-written one would skip that validation.
+        return Err(Status::invalid_argument(
+            "delivery runs are created by promoting or rolling back an environment, not by CreateExecution",
+        ));
+    }
+    caller.require_adapter(runtime)?;
+    let workspace = caller.workspace;
+
+    let artifacts: BTreeMap<String, String> = req
+        .artifacts
+        .iter()
+        .filter(|(path, _)| !path.trim().is_empty())
+        .map(|(path, content)| (path.trim().to_owned(), content.clone()))
+        .collect();
+    let project_name = rt
+        .outcomes
+        .project_name(&caller.principal, req.project_id.trim())
+        .await;
+
+    let mut tx = rt.pool.begin().await.map_err(db_status)?;
+    let (id, event) = insert_plan(
+        &mut tx,
+        rt,
+        workspace,
+        NewPlan {
+            project_id: &req.project_id,
+            project_name: &project_name,
+            proposal_id: &req.proposal_id,
+            pattern_id: &req.pattern_id,
+            title: &req.title,
+            steps: &req.steps,
+            runtime,
+            artifacts: &artifacts,
+            created_by: &caller.principal.user_id,
+        },
+    )
+    .await?;
+    tx.commit().await.map_err(db_status)?;
+    publish_created(rt, workspace, id, &req.project_id, runtime, event);
 
     load_execution(rt, workspace, id, true).await
 }
@@ -326,9 +402,11 @@ pub async fn resolve(
     } else {
         format!("option {}", req.option_id.trim())
     };
+    let by = caller.principal.user_id.clone();
     rt.command(caller.workspace, id, |reply| Command::Resolve {
         option_id: req.option_id,
         instruction: req.instruction,
+        by,
         reply,
     })
     .await?;

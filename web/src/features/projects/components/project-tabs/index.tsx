@@ -20,6 +20,7 @@ function buildTabs(project: Project): ProjectTab[] {
     { label: 'Code', to: routes.projectCode(project.id) },
     { label: 'Dependencies', to: routes.projectDependencies(project.id) },
     { label: 'Delivery', to: routes.projectDelivery(project.id) },
+    { label: 'Pipeline', to: routes.projectPipeline(project.id) },
     { label: 'Proposals', to: routes.projectProposals(project.id) },
     { label: 'Documents', to: routes.projectDocuments(project.id) },
     { label: 'Diagrams', to: routes.projectDiagrams(project.id) },

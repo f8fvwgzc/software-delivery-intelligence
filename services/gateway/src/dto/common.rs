@@ -65,7 +65,8 @@ impl Adapter {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformEvent {
-    /// `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval` or `pattern`.
+    /// `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,
+    /// or, for continuous delivery, `release`, `deployment` or `environment`.
     pub entity: String,
     /// Id of the entity that changed.
     pub entity_id: String,

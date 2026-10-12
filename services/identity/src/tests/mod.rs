@@ -969,3 +969,312 @@ async fn installation_token_cache_is_bounded() {
     assert_eq!(h.state.cached_tokens(), crate::grpc::TOKEN_CACHE_CAPACITY);
     h.drop_schema().await;
 }
+
+/// Workspace secrets (CONTRACT.md §22): sealed at rest, managed by admins
+/// of their own workspace only, never returned, and resolved in clear only
+/// for an internal (owner-role) caller, with an audit entry per resolve.
+#[tokio::test]
+async fn secrets_are_sealed_admin_managed_and_resolved_only_by_internal_callers() {
+    use sdi_common::principal::Principal as Caller;
+    use sdi_proto::identity::v1::{
+        DeleteSecretRequest, ListSecretsRequest, ResolveSecretRequest, SetSecretRequest,
+        identity_service_server::IdentityService,
+    };
+
+    use crate::grpc::{IdentityGrpc, secrets};
+
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let (_token, user_id) = h.login().await;
+    let ws = workspaces::list(
+        &h.state,
+        ListWorkspacesRequest {
+            user_id: user_id.clone(),
+        },
+    )
+    .await
+    .unwrap()
+    .workspaces
+    .remove(0);
+    let caller = |role: Role| Caller {
+        user_id: user_id.clone(),
+        workspace_id: ws.id.clone(),
+        role,
+    };
+    let admin = caller(Role::Admin);
+    let value = "jenkins-api-token-0123456789-wxyz";
+    let set = |name: &str, value: &str| SetSecretRequest {
+        workspace_id: ws.id.clone(),
+        name: name.to_owned(),
+        value: value.to_owned(),
+        description: "CI trigger token".into(),
+    };
+
+    // Stored: the answer describes the secret and never carries its value.
+    let info = secrets::set(&h.state, &admin, set("JENKINS_TOKEN", value))
+        .await
+        .unwrap();
+    assert_eq!(info.name, "JENKINS_TOKEN");
+    assert_eq!(info.hint, "wxyz");
+    assert_eq!(info.description, "CI trigger token");
+    assert_eq!(info.updated_by, "octo", "the login, not the user id");
+    assert!(info.updated_at.is_some());
+    assert!(!format!("{info:?}").contains(value));
+
+    // At rest the value is sealed: the column neither equals nor contains it.
+    let workspace_id = Uuid::parse_str(&ws.id).unwrap();
+    let sealed: Vec<u8> = sqlx::query_scalar(
+        "SELECT sealed_value FROM secrets WHERE workspace_id = $1 AND name = $2",
+    )
+    .bind(workspace_id)
+    .bind("JENKINS_TOKEN")
+    .fetch_one(&h.state.pool)
+    .await
+    .unwrap();
+    assert!(
+        !sealed
+            .windows(value.len())
+            .any(|window| window == value.as_bytes())
+    );
+    assert_eq!(h.state.keys.open_str(&sealed).unwrap(), value);
+
+    // Validation: the name pattern, an empty or oversized value.
+    for bad in ["jenkins_token", "1TOKEN", "A", "MY-TOKEN", ""] {
+        let err = secrets::set(&h.state, &admin, set(bad, value))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "{bad}");
+    }
+    let err = secrets::set(&h.state, &admin, set("EMPTY_ONE", ""))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    let err = secrets::set(
+        &h.state,
+        &admin,
+        set("HUGE_ONE", &"x".repeat(secrets::MAX_VALUE_BYTES + 1)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+
+    // A second one, short enough to get no hint.
+    let short = secrets::set(&h.state, &admin, set("WEBHOOK_KEY", "tiny"))
+        .await
+        .unwrap();
+    assert_eq!(short.hint, "");
+
+    // Listing: names, hints, descriptions; sorted; no value anywhere.
+    let listed = secrets::list(
+        &h.state,
+        &admin,
+        ListSecretsRequest {
+            workspace_id: ws.id.clone(),
+        },
+    )
+    .await
+    .unwrap()
+    .secrets;
+    assert_eq!(
+        listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["JENKINS_TOKEN", "WEBHOOK_KEY"]
+    );
+    assert!(!format!("{listed:?}").contains(value));
+
+    // Management needs an admin of this very workspace.
+    for role in [Role::Viewer, Role::Member, Role::Approver] {
+        let low = caller(role);
+        let err = secrets::list(
+            &h.state,
+            &low,
+            ListSecretsRequest {
+                workspace_id: ws.id.clone(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{role:?} lists");
+        let err = secrets::set(&h.state, &low, set("NEW_ONE", value))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{role:?} sets");
+        let err = secrets::delete(
+            &h.state,
+            &low,
+            DeleteSecretRequest {
+                workspace_id: ws.id.clone(),
+                name: "JENKINS_TOKEN".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{role:?} deletes");
+    }
+    let elsewhere = Caller {
+        workspace_id: Uuid::now_v7().to_string(),
+        ..admin.clone()
+    };
+    let err = secrets::list(
+        &h.state,
+        &elsewhere,
+        ListSecretsRequest {
+            workspace_id: ws.id.clone(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied, "another workspace");
+
+    // Resolve: every end-user role below owner is refused ...
+    let resolve = |name: &str| ResolveSecretRequest {
+        workspace_id: ws.id.clone(),
+        name: name.to_owned(),
+    };
+    for role in [Role::Viewer, Role::Member, Role::Approver, Role::Admin] {
+        let err = secrets::resolve(&h.state, &caller(role), resolve("JENKINS_TOKEN"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{role:?} resolves");
+    }
+    // ... a call without metadata is not even identified ...
+    let grpc = IdentityGrpc::new(Arc::clone(&h.state));
+    let err = grpc
+        .resolve_secret(tonic::Request::new(resolve("JENKINS_TOKEN")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+    let err = grpc
+        .list_secrets(tonic::Request::new(ListSecretsRequest {
+            workspace_id: ws.id.clone(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+    // ... the system principal of another workspace is refused ...
+    let err = secrets::resolve(
+        &h.state,
+        &Caller::system(Uuid::now_v7().to_string()),
+        resolve("JENKINS_TOKEN"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    // ... and nothing so far was audited as a resolve.
+    let audited = |prefix: &'static str| {
+        let state = Arc::clone(&h.state);
+        let workspace_id = ws.id.clone();
+        async move {
+            audit::list(
+                &state,
+                ListAuditRequest {
+                    workspace_id,
+                    action_prefix: prefix.into(),
+                    limit: 0,
+                    before: None,
+                },
+            )
+            .await
+            .unwrap()
+            .entries
+        }
+    };
+    assert!(audited("secret.").await.is_empty());
+
+    // The internal caller gets the value, through the real gRPC surface.
+    let system = Caller::system(ws.id.clone());
+    let mut request = tonic::Request::new(resolve("JENKINS_TOKEN"));
+    system.apply(&mut request);
+    let resolved = grpc.resolve_secret(request).await.unwrap().into_inner();
+    assert_eq!(resolved.value, value);
+    let err = secrets::resolve(&h.state, &system, resolve("NOT_THERE"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+
+    // Exactly the successful resolve is in the audit trail: who, which
+    // secret, and never the value.
+    let entries = audited("secret.resolve").await;
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].action, "secret.resolve");
+    assert_eq!(entries[0].entity, "secret");
+    assert_eq!(entries[0].entity_id, "JENKINS_TOKEN");
+    assert_eq!(entries[0].user_id, "system");
+    assert!(!format!("{entries:?}").contains(value));
+
+    // Replacing keeps one row and refreshes the hint.
+    let replaced = secrets::set(
+        &h.state,
+        &admin,
+        set("JENKINS_TOKEN", "a-brand-new-token-value-QRST"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replaced.hint, "QRST");
+    assert_eq!(
+        secrets::resolve(&h.state, &system, resolve("JENKINS_TOKEN"))
+            .await
+            .unwrap()
+            .value,
+        "a-brand-new-token-value-QRST"
+    );
+
+    // Deleting removes it for good.
+    secrets::delete(
+        &h.state,
+        &admin,
+        DeleteSecretRequest {
+            workspace_id: ws.id.clone(),
+            name: "JENKINS_TOKEN".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let err = secrets::delete(
+        &h.state,
+        &admin,
+        DeleteSecretRequest {
+            workspace_id: ws.id.clone(),
+            name: "JENKINS_TOKEN".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = secrets::resolve(&h.state, &system, resolve("JENKINS_TOKEN"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+
+    // A secret of a workspace that does not exist cannot be stored ...
+    let ghost = Uuid::now_v7().to_string();
+    let err = secrets::set(
+        &h.state,
+        &Caller {
+            workspace_id: ghost.clone(),
+            ..admin.clone()
+        },
+        SetSecretRequest {
+            workspace_id: ghost,
+            name: "ANY_ONE".into(),
+            value: value.into(),
+            description: String::new(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    // ... and the rows go with their workspace.
+    sqlx::query("DELETE FROM workspaces WHERE id = $1")
+        .bind(workspace_id)
+        .execute(&h.state.pool)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM secrets WHERE workspace_id = $1")
+        .bind(workspace_id)
+        .fetch_one(&h.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    h.drop_schema().await;
+}

@@ -15,6 +15,9 @@ pub struct Settings {
     pub github_token: Option<String>,
     /// Where workspace tokens, data controls and the audit log live.
     pub identity_url: String,
+    /// Where the `.sdi.yml` environments are synced after a scan
+    /// (CONTRACT.md §22).
+    pub execution_url: String,
 }
 
 impl Settings {
@@ -24,6 +27,7 @@ impl Settings {
             database_url: config::database_url(),
             github_token: config::env_opt("GITHUB_TOKEN"),
             identity_url: config::identity_url(),
+            execution_url: config::execution_url(),
         })
     }
 }

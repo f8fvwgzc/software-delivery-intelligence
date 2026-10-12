@@ -19,7 +19,7 @@ pub(crate) fn derive(ctx: &Ctx<'_>) -> Vec<QuestionDraft> {
         || ctx.has_fact_prefix("deploy:pipeline:")
         || !ctx.deploy_targets.is_empty();
     if !deploy_evidence {
-        let reason = if ctx.has_fact_prefix("ci:") {
+        let reason = if ctx.has_fact_prefix("ci:") || ctx.has_fact_prefix("cd:") {
             "CI runs but no job deploys, and no infrastructure code or cloud configuration names a target."
         } else if ctx.has_fact_prefix("container:dockerfile:") {
             "A Dockerfile exists but nothing shows where the image runs: no CI deploy job, no IaC, no cloud configuration."

@@ -1758,3 +1758,541 @@ fn plain_php_without_composer() {
     );
     assert_eq!(a.maturity.stage, "legacy");
 }
+
+// ---------------------------------------------------------------------------
+// Continuous delivery (CONTRACT.md §22): `.sdi.yml` `delivery:` and the
+// evidence of how images are built, where they are pushed and what deploys.
+// ---------------------------------------------------------------------------
+
+const DELIVERY_SDI: &str = r#"version: 1
+deploy:
+  target: kubernetes
+delivery:
+  registry: { kind: ghcr }
+  build_workflow: build.yml
+  environments:
+    - name: staging
+      kind: github_actions
+      url: https://staging.example.com
+      health_path: /health
+      auto_promote: true
+    - name: production
+      kind: gitops_flux
+      protected: true
+      config: { repo: acme/fleet, path: apps/api/kustomization.yaml, strategy: kustomize_image }
+"#;
+
+const BUILD_WORKFLOW: &str = r#"name: Build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+"#;
+
+const DISPATCH_DEPLOY_WORKFLOW: &str = r#"name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment: { type: environment, required: true }
+      image: { type: string, required: true }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - run: kubectl set image deployment/api api=${{ inputs.image }}
+"#;
+
+const CLOUD_REGISTRIES_WORKFLOW: &str = r#"name: Mirror
+on: workflow_dispatch
+jobs:
+  azure:
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - uses: azure/login@v2
+      - run: az acr login --name acmeregistry
+      - run: docker build -t acmeregistry.azurecr.io/api:1 . && docker push acmeregistry.azurecr.io/api:1
+  aws:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+  gcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: europe-west1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+  hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+  private:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: registry.acme.dev:5000
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.MYSTERY_REGISTRY }}
+"#;
+
+const FLUX_SYNC: &str = r#"apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: api
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/acme/api
+  ref:
+    branch: main
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: api
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./deploy/production
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: api
+"#;
+
+const KUSTOMIZE_ONLY: &str = r#"apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+images:
+  - name: ghcr.io/acme/api
+    newTag: "1.4.2"
+"#;
+
+const ARGO_APPLICATION: &str = r#"apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/acme/api
+    path: deploy/production
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: api
+"#;
+
+const ARGO_WORKFLOW: &str = r#"apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: nightly-
+spec:
+  entrypoint: main
+"#;
+
+const JENKINSFILE: &str = r#"pipeline {
+  agent any
+  parameters { string(name: 'IMAGE', defaultValue: '') }
+  stages {
+    stage('Deploy') { steps { sh 'kubectl set image deployment/api api=$IMAGE' } }
+  }
+}
+"#;
+
+const AZURE_PIPELINES: &str = r#"trigger: none
+parameters:
+  - name: image
+    type: string
+stages:
+  - stage: Deploy
+    jobs:
+      - deployment: api
+        environment: production
+"#;
+
+#[test]
+fn delivery_config_and_cd_evidence() {
+    let snap = snapshot(
+        "acme/api",
+        &[
+            (".sdi.yml", DELIVERY_SDI),
+            (
+                "package.json",
+                "{\"name\":\"api\",\"dependencies\":{\"express\":\"^4\"}}",
+            ),
+            (
+                "Dockerfile",
+                "FROM node:22-alpine\nCMD [\"node\", \"server.js\"]\n",
+            ),
+            (".github/workflows/build.yml", BUILD_WORKFLOW),
+            (".github/workflows/deploy.yml", DISPATCH_DEPLOY_WORKFLOW),
+            (".github/workflows/mirror.yml", CLOUD_REGISTRIES_WORKFLOW),
+            ("clusters/production/api-sync.yaml", FLUX_SYNC),
+            ("apps/api/kustomization.yaml", KUSTOMIZE_ONLY),
+            ("gitops/argocd/api.yaml", ARGO_APPLICATION),
+            ("gitops/workflows/nightly.yaml", ARGO_WORKFLOW),
+            ("Jenkinsfile", JENKINSFILE),
+            ("azure-pipelines.yml", AZURE_PIPELINES),
+        ],
+        &["server.js"],
+    );
+    for wanted in [
+        "Jenkinsfile",
+        "azure-pipelines.yml",
+        "clusters/production/api-sync.yaml",
+        "apps/api/kustomization.yaml",
+        "gitops/argocd/api.yaml",
+    ] {
+        assert!(
+            snap.files.contains_key(wanted),
+            "{wanted} was not downloaded"
+        );
+    }
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+
+    // --- `.sdi.yml` delivery: canonical JSON plus configured facts ----------
+    assert!(config_is_usable(&a.config), "{:?}", a.config.errors);
+    assert!(a.config.errors.is_empty(), "{:?}", a.config.errors);
+    let delivery = DeliveryConfigDraft::from_json(&a.config.delivery_json).expect("delivery_json");
+    assert_eq!(delivery.registry.kind, "ghcr");
+    assert_eq!(delivery.registry.host, "ghcr.io");
+    assert_eq!(delivery.build_workflow, "build.yml");
+    assert_eq!(delivery.environments.len(), 2);
+    assert_eq!(delivery.environments[0].name, "staging");
+    assert_eq!(delivery.environments[0].kind, "github_actions");
+    assert!(delivery.environments[0].auto_promote);
+    assert_eq!(delivery.environments[1].kind, "gitops_flux");
+    assert!(delivery.environments[1].protected);
+    assert_eq!(
+        delivery.environments[1].config["path"],
+        "apps/api/kustomization.yaml"
+    );
+    assert_eq!(
+        a.config.delivery_json,
+        r#"{"registry":{"kind":"ghcr","host":"ghcr.io","namespace":""},"build_workflow":"build.yml","environments":[{"name":"staging","kind":"github_actions","url":"https://staging.example.com","health_path":"/health","protected":false,"auto_promote":true,"registry":"","config":{}},{"name":"production","kind":"gitops_flux","url":"","health_path":"","protected":true,"auto_promote":false,"registry":"","config":{"path":"apps/api/kustomization.yaml","repo":"acme/fleet","strategy":"kustomize_image"}}]}"#
+    );
+    let environments = fact(&a, "config:delivery.environments").expect("environments fact");
+    assert_eq!(environments.kind, FactKind::Configured);
+    assert_eq!(
+        environments.value,
+        "staging (github_actions, auto-promote), production (gitops_flux, protected)"
+    );
+    assert!(
+        environments.evidence.contains("name: staging"),
+        "{}",
+        environments.evidence
+    );
+    let registry = fact(&a, "config:delivery.registry").expect("registry fact");
+    assert_eq!(registry.kind, FactKind::Configured);
+    assert_eq!(registry.value, "ghcr (ghcr.io)");
+    assert!(
+        registry.evidence.contains("kind: ghcr"),
+        "{}",
+        registry.evidence
+    );
+    assert_eq!(
+        fact(&a, "config:delivery.build_workflow").unwrap().value,
+        "build.yml"
+    );
+    // The workflows already name an environment, so nothing is asked; had
+    // it been asked, the declared stages would be the answer.
+    if let Some(q) = question(&a, "environments") {
+        assert_eq!(q.answer, "Staging and production");
+        assert_eq!(q.answered_by, "config");
+    }
+
+    // --- CD tools -----------------------------------------------------------
+    let flux = fact(&a, "cd:flux").expect("cd:flux");
+    assert_eq!(flux.kind, FactKind::Detected);
+    assert_eq!(flux.category, FactCategory::CiCd);
+    assert_eq!(flux.source_path, "clusters/production/api-sync.yaml");
+    assert_eq!(flux.value, "GitRepository, Kustomization in 1 file");
+    assert!(
+        flux.evidence.contains("toolkit.fluxcd.io"),
+        "{}",
+        flux.evidence
+    );
+    let argo = fact(&a, "cd:argocd").expect("cd:argocd");
+    assert_eq!(argo.source_path, "gitops/argocd/api.yaml");
+    assert_eq!(argo.value, "Application in 1 file");
+    let jenkins = fact(&a, "cd:jenkins").expect("cd:jenkins");
+    assert_eq!(jenkins.source_path, "Jenkinsfile");
+    assert_eq!(jenkins.evidence, "pipeline {");
+    let azure = fact(&a, "cd:azure_pipelines").expect("cd:azure_pipelines");
+    assert_eq!(azure.source_path, "azure-pipelines.yml");
+    assert_eq!(azure.evidence, "stages:");
+
+    // --- GitHub environments: named ones only -------------------------------
+    let k = keys(&a);
+    assert!(k.contains(&"cd:github_environment:staging"), "{k:?}");
+    let staging = fact(&a, "cd:github_environment:staging").unwrap();
+    assert_eq!(staging.category, FactCategory::Deployment);
+    assert_eq!(staging.value, "staging");
+    assert_eq!(staging.source_path, ".github/workflows/mirror.yml");
+    assert!(
+        !k.iter()
+            .any(|k| k.contains("${{") || k.contains("inputs.environment")),
+        "an expression is not an environment: {k:?}"
+    );
+    assert!(
+        !a.nodes.iter().any(|n| n.key.contains("${{")),
+        "an expression is not an environment node"
+    );
+    // The dispatch workflow still counts as the deploy pipeline it is.
+    assert_eq!(
+        fact(&a, "deploy:pipeline:.github/workflows/deploy.yml")
+            .unwrap()
+            .value,
+        "kubernetes"
+    );
+
+    // --- registries -----------------------------------------------------------
+    for (kind, value) in [
+        ("ghcr", "ghcr.io"),
+        ("acr", "acmeregistry.azurecr.io"),
+        ("ecr", "used by mirror.yml"),
+        ("gar", "europe-west1-docker.pkg.dev"),
+        ("dockerhub", "docker.io"),
+        ("generic", "registry.acme.dev:5000"),
+    ] {
+        let f = fact(&a, &format!("registry:{kind}"))
+            .unwrap_or_else(|| panic!("missing registry:{kind}; got {k:?}"));
+        assert_eq!(f.kind, FactKind::Detected, "{kind}");
+        assert_eq!(f.category, FactCategory::Container, "{kind}");
+        assert_eq!(f.value, value, "{kind}");
+    }
+    let ghcr = fact(&a, "registry:ghcr").unwrap();
+    assert_eq!(ghcr.source_path, ".github/workflows/build.yml");
+    assert_eq!(ghcr.evidence, "registry: ghcr.io");
+    assert!(
+        !k.iter().any(|k| k.to_lowercase().contains("mystery")),
+        "{k:?}"
+    );
+
+    // --- image builds -----------------------------------------------------------
+    let build = fact(&a, "ci:build_image:.github/workflows/build.yml").expect("build_image");
+    assert_eq!(build.value, "push");
+    assert_eq!(build.category, FactCategory::CiCd);
+    assert_eq!(
+        fact(&a, "ci:build_image:.github/workflows/mirror.yml")
+            .unwrap()
+            .value,
+        "push"
+    );
+    assert!(fact(&a, "ci:build_image:.github/workflows/deploy.yml").is_none());
+    let pipeline = a
+        .nodes
+        .iter()
+        .find(|n| n.key == "pipeline:.github/workflows/build.yml")
+        .unwrap();
+    assert_eq!(
+        pipeline.attributes.get("image").map(String::as_str),
+        Some("push")
+    );
+
+    // --- capabilities (§5.1) and the stack --------------------------------------
+    for cap in [
+        "cd:flux",
+        "cd:argocd",
+        "registry:ghcr",
+        "registry:acr",
+        "registry:ecr",
+        "registry:gar",
+        "registry:dockerhub",
+    ] {
+        assert!(
+            a.capabilities.contains(&cap.to_string()),
+            "missing capability {cap}; got {:?}",
+            a.capabilities
+        );
+    }
+    assert!(
+        !a.capabilities.iter().any(|c| c.starts_with("cd:jenkins")
+            || c.starts_with("cd:azure")
+            || c.starts_with("cd:github_environment")
+            || c.starts_with("ci:build_image")),
+        "{:?}",
+        a.capabilities
+    );
+    for tool in ["Flux", "Argo CD", "Jenkins", "Azure Pipelines"] {
+        assert!(
+            a.technologies.contains(&tool.to_string()),
+            "{tool} missing from {:?}",
+            a.technologies
+        );
+    }
+    assert!(
+        !a.technologies
+            .iter()
+            .any(|t| t.contains("CI builds") || t.contains("registry")),
+        "{:?}",
+        a.technologies
+    );
+    assert!(a.chunks.iter().any(|c| c.path == "Jenkinsfile"));
+}
+
+#[test]
+fn kustomize_and_argo_workflows_are_not_gitops_controllers() {
+    let snap = snapshot(
+        "acme/api",
+        &[
+            ("package.json", "{\"name\":\"api\"}"),
+            ("apps/api/kustomization.yaml", KUSTOMIZE_ONLY),
+            ("gitops/workflows/nightly.yaml", ARGO_WORKFLOW),
+        ],
+        &[],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    assert!(!k.iter().any(|k| k.starts_with("cd:")), "{k:?}");
+    assert!(!a.capabilities.iter().any(|c| c.starts_with("cd:")));
+    // The manifests themselves are still Kubernetes manifests.
+    assert!(k.contains(&"k8s:manifests"), "{k:?}");
+
+    // `flux bootstrap` output: the components file is too large to download,
+    // so the directory in the tree is the evidence.
+    let bootstrapped = snapshot(
+        "acme/fleet",
+        &[("README.md", "# fleet\n")],
+        &["clusters/production/flux-system/gotk-components.yaml"],
+    );
+    let a = analyze(&bootstrapped);
+    let flux = fact(&a, "cd:flux").expect("cd:flux from the tree");
+    assert_eq!(
+        flux.source_path,
+        "clusters/production/flux-system/gotk-components.yaml"
+    );
+    assert!(a.capabilities.contains(&"cd:flux".to_string()));
+}
+
+#[test]
+fn an_image_that_is_only_built_is_not_a_release() {
+    let ci = r#"name: CI
+on: [push]
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: api:${{ github.sha }}
+"#;
+    let packages = r#"name: Publish package
+on: [push]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm publish
+"#;
+    let snap = snapshot(
+        "acme/api",
+        &[
+            ("package.json", "{\"name\":\"api\"}"),
+            ("Dockerfile", "FROM node:22-alpine\n"),
+            (".github/workflows/ci.yml", ci),
+            (".github/workflows/packages.yml", packages),
+        ],
+        &[],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let build = fact(&a, "ci:build_image:.github/workflows/ci.yml").expect("build_image");
+    assert_eq!(build.value, "build");
+    assert!(
+        fact(&a, "deploy:pipeline:.github/workflows/ci.yml").is_none(),
+        "a build without a push releases nothing"
+    );
+    // `packages: write` next to `npm publish` may be the npm registry of
+    // GitHub Packages: a guess, never a capability.
+    let ghcr = fact(&a, "registry:ghcr").expect("inferred registry");
+    assert_eq!(ghcr.kind, FactKind::Inferred);
+    assert!(ghcr.confidence < 0.8);
+    assert!(
+        !a.capabilities.iter().any(|c| c.starts_with("registry:")),
+        "{:?}",
+        a.capabilities
+    );
+}
+
+#[test]
+fn an_invalid_delivery_section_ignores_the_whole_file() {
+    let snap = snapshot(
+        "acme/api",
+        &[
+            (
+                ".sdi.yml",
+                "version: 1\ndeploy:\n  target: azure\ndelivery:\n  environments:\n    - { name: staging, kind: github_actions }\n    - { name: staging, kind: teleport }\n",
+            ),
+            ("package.json", "{\"name\":\"api\"}"),
+        ],
+        &[],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    assert!(!config_is_usable(&a.config));
+    assert!(a.config.delivery_json.is_empty());
+    assert!(a.config.deploy_target.is_empty());
+    for needle in [
+        "`delivery.environments[1].kind` must be one of",
+        "`delivery.environments[1].name` `staging` is used twice",
+    ] {
+        assert!(
+            a.config.errors.iter().any(|e| e.contains(needle)),
+            "{needle}: {:?}",
+            a.config.errors
+        );
+    }
+    assert!(!keys(&a).iter().any(|k| k.starts_with("config:")));
+}

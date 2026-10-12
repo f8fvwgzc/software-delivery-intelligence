@@ -4,14 +4,12 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/shared/feedback'
+import { FileViewer, downloadFilesZip } from '@/components/system/file-viewer'
 import { Button } from '@/components/ui/button'
 
 import { optionArtifactsQuery } from '../../api/queries'
-import { downloadArtifactsZip, groupByDirectory } from '../../lib/artifacts'
-import { CodePane } from './code-pane'
-import { FileTree } from './file-tree'
 
-export { ArtifactsSkeleton } from './skeleton'
+export { FileViewerSkeleton as ArtifactsSkeleton } from '@/components/system/file-viewer'
 
 interface ArtifactsPanelProps {
   proposalId: string
@@ -19,16 +17,14 @@ interface ArtifactsPanelProps {
 }
 
 /**
- * The generated files of the option in focus: a directory tree and a code
- * pane. Suspends on its own query; mount it inside a QueryBoundary.
+ * The generated files of the option in focus, in the shared file viewer (a
+ * directory tree and a code pane). Suspends on its own query; mount it
+ * inside a QueryBoundary.
  */
 export function ArtifactsPanel({ proposalId, optionId }: ArtifactsPanelProps) {
   const { data: artifacts } = useSuspenseQuery(optionArtifactsQuery(proposalId, optionId))
-  const groups = groupByDirectory(artifacts)
-  const [chosenPath, setChosenPath] = useState<string | null>(null)
-  const selected = artifacts.find((artifact) => artifact.path === chosenPath) ?? groups[0]?.files[0] ?? null
 
-  if (artifacts.length === 0 || !selected) {
+  if (artifacts.length === 0) {
     return (
       <EmptyState
         icon={FilesIcon}
@@ -38,17 +34,7 @@ export function ArtifactsPanel({ proposalId, optionId }: ArtifactsPanelProps) {
     )
   }
 
-  return (
-    // Container query: the tree sits beside the pane only when the panel itself is wide enough.
-    <div className="@container">
-      <div className="grid overflow-hidden rounded-lg ring-1 ring-border @2xl:grid-cols-[14rem_minmax(0,1fr)]">
-        <div className="border-b @2xl:border-r @2xl:border-b-0">
-          <FileTree groups={groups} selectedPath={selected.path} onSelect={setChosenPath} />
-        </div>
-        <CodePane key={selected.path} artifact={selected} />
-      </div>
-    </div>
-  )
+  return <FileViewer files={artifacts} />
 }
 
 interface DownloadAllButtonProps {
@@ -71,7 +57,7 @@ export function DownloadAllButton({ proposalId, optionId, artifactCount }: Downl
         toast('This option has no files to download')
         return
       }
-      await downloadArtifactsZip(artifacts, `${proposalId}-${optionId}-files.zip`)
+      await downloadFilesZip(artifacts, `${proposalId}-${optionId}-files.zip`)
     } catch {
       toast.error('Could not build the archive')
     } finally {
