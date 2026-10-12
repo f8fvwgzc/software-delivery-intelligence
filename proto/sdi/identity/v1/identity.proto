@@ -24,6 +24,10 @@ service IdentityService {
   rpc SetMemberRole(SetMemberRoleRequest) returns (Member);
   // Re-reads org members and teams from GitHub.
   rpc SyncMembers(SyncMembersRequest) returns (ListMembersResponse);
+  // Names for the user ids that other services store as actors (who
+  // started, approved, requested). Scoped to the workspace: its members, its
+  // owner, and anyone in its own audit trail.
+  rpc ResolveUsers(ResolveUsersRequest) returns (ResolveUsersResponse);
 
   // --- GitHub App installations ---------------------------------------------
   // Called by the gateway's webhook handler and the post-install redirect.
@@ -184,6 +188,27 @@ message ListMembersRequest {
 message ListMembersResponse {
   repeated Member members = 1;
   google.protobuf.Timestamp synced_at = 2;
+}
+
+message ResolveUsersRequest {
+  string workspace_id = 1;
+  // At most 100 per call; ids that are not UUIDs are ignored.
+  repeated string user_ids = 2;
+}
+
+// The public face of a user. Deliberately without the email address.
+message UserRef {
+  string id = 1;
+  string login = 2;
+  string name = 3;
+  string avatar_url = 4;
+  // False for someone who acted in the workspace and has since left it.
+  bool member = 5;
+}
+
+message ResolveUsersResponse {
+  // Only the ids that resolved; unknown ids are absent, not an error.
+  repeated UserRef users = 1;
 }
 
 message SetMemberRoleRequest {

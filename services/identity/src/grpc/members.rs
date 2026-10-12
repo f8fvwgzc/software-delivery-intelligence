@@ -3,7 +3,8 @@
 use chrono::Utc;
 use sdi_common::{grpc::db_status, principal::Role, time};
 use sdi_proto::identity::v1::{
-    ListMembersRequest, ListMembersResponse, Member, SetMemberRoleRequest, SyncMembersRequest,
+    ListMembersRequest, ListMembersResponse, Member, ResolveUsersRequest, ResolveUsersResponse,
+    SetMemberRoleRequest, SyncMembersRequest,
 };
 use tonic::Status;
 use uuid::Uuid;
@@ -57,6 +58,41 @@ pub async fn list(
         .await
         .map_err(db_status)?;
     members_of(state, &row).await
+}
+
+/// Ids one call names. A page of rows never carries more people than this.
+pub const RESOLVE_LIMIT: usize = 100;
+
+/// Names for stored actor ids, scoped to the workspace (§18). Values that
+/// are not user ids (a service name, a free-text approver) are skipped, and
+/// ids the workspace may not name are simply absent from the answer.
+pub async fn resolve(
+    state: &IdentityState,
+    req: ResolveUsersRequest,
+) -> Result<ResolveUsersResponse, Status> {
+    let workspace_id = parse_id(&req.workspace_id, "workspace_id")?;
+    if req.user_ids.len() > RESOLVE_LIMIT {
+        return Err(Status::invalid_argument(format!(
+            "at most {RESOLVE_LIMIT} user ids per call (got {})",
+            req.user_ids.len()
+        )));
+    }
+    let mut ids: Vec<Uuid> = req
+        .user_ids
+        .iter()
+        .filter_map(|id| Uuid::parse_str(id.trim()).ok())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(ResolveUsersResponse::default());
+    }
+    let rows = db::users::resolve(&state.pool, workspace_id, &ids)
+        .await
+        .map_err(db_status)?;
+    Ok(ResolveUsersResponse {
+        users: rows.into_iter().map(convert::user_ref_to_proto).collect(),
+    })
 }
 
 pub async fn set_role(state: &IdentityState, req: SetMemberRoleRequest) -> Result<Member, Status> {

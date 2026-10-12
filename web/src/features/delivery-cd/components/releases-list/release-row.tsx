@@ -1,6 +1,7 @@
 import { BadgeCheckIcon, ChevronDownIcon, CircleDashedIcon } from 'lucide-react'
 import { useState } from 'react'
 
+import { Person } from '@/components/shared/data/person'
 import { RelativeTime } from '@/components/shared/data/relative-time'
 import { Row } from '@/components/system/row'
 import { Tag } from '@/components/system/tag'
@@ -50,7 +51,7 @@ export function ReleaseRow({ release, repoUrl }: ReleaseRowProps) {
           <>
             <CommitLink sha={release.commitSha} repoUrl={repoUrl} />
             <span>{releaseSource(release.source)}</span>
-            {release.createdBy ? <span>{release.createdBy}</span> : null}
+            {release.createdBy ? <Person value={release.createdBy} /> : null}
             <RelativeTime value={release.createdAt} />
           </>
         }

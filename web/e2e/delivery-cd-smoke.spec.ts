@@ -48,7 +48,7 @@ const DEFAULT_REGISTRY = {
 /** A project with no environment, no release and no deployment yet. */
 async function mockEmptyPipeline(page: Page, projectId: string) {
   await page.route('**/api/v1/projects/*/pipeline', (route) =>
-    route.fulfill(json({ projectId, stages: [], registry: DEFAULT_REGISTRY, successRate: 0, deployments30d: 0, leadTimeSeconds: 0 })),
+    route.fulfill(json({ projectId, stages: [], registry: DEFAULT_REGISTRY, successRate: 0, deployments30d: 0, finishedRuns30d: 0, leadTimeSeconds: 0 })),
   )
   await page.route('**/api/v1/projects/*/releases**', (route) => route.fulfill(json([])))
   await page.route('**/api/v1/projects/*/deployment-runs**', (route) => route.fulfill(json([])))

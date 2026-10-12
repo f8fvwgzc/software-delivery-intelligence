@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { toast } from 'sonner'
 
 import { Markdown } from '@/components/shared/data/markdown'
+import { Person } from '@/components/shared/data/person'
 import { Code } from '@/components/system/code'
 import { Tag } from '@/components/system/tag'
 import { Button } from '@/components/ui/button'
@@ -62,7 +63,12 @@ export function FindingItem({ finding, reviewId, decidable, index, measure, styl
       ) : null}
       {!pending && finding.decisionNote ? (
         <p className="text-xs text-muted-foreground">
-          {finding.decidedBy ? <span className="font-medium text-foreground/80">{finding.decidedBy}: </span> : null}
+          {finding.decidedBy ? (
+            <>
+              <Person value={finding.decidedBy} avatar={false} className="font-medium text-foreground/80" />
+              {': '}
+            </>
+          ) : null}
           {finding.decisionNote}
         </p>
       ) : null}

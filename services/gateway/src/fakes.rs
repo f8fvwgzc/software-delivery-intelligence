@@ -426,6 +426,7 @@ pub mod execution {
                     registry: Some(registry("r1")),
                     success_rate: 0.75,
                     deployments_30d: 8,
+                    finished_30d: 4,
                     lead_time_seconds: 5400,
                     project_id,
                 }))
@@ -1591,6 +1592,31 @@ pub mod identity {
                     return Err(Status::invalid_argument("override is not lower than the derived role"));
                 }
                 Ok(Response::new(member(if role == proto::Role::Unspecified { proto::Role::Admin } else { role })))
+            }
+
+            async fn resolve_users(
+                &self,
+                request: Request<proto::ResolveUsersRequest>,
+            ) -> Result<Response<proto::ResolveUsersResponse>, Status> {
+                let req = request.into_inner();
+                if req.user_ids.len() > 100 {
+                    return Err(Status::invalid_argument("at most 100 user ids per call"));
+                }
+                // Names `u1` only, and only inside the workspace it was asked for.
+                Ok(Response::new(proto::ResolveUsersResponse {
+                    users: req
+                        .user_ids
+                        .iter()
+                        .filter(|id| id.as_str() == "u1")
+                        .map(|id| proto::UserRef {
+                            id: id.clone(),
+                            login: format!("octo@{}", req.workspace_id),
+                            name: "Octo Cat".into(),
+                            avatar_url: "https://avatars.example/u1".into(),
+                            member: true,
+                        })
+                        .collect(),
+                }))
             }
 
             async fn sync_members(

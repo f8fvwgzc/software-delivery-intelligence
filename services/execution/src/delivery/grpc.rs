@@ -37,6 +37,7 @@ use super::{
     runs::{self as flow, StartRun},
 };
 use crate::{
+    adapters::net::{self, ALLOW_PRIVATE_ENV, NetPolicy},
     grpc::{Caller, parse_id},
     runner::Runtime,
 };
@@ -99,11 +100,64 @@ async fn require_secrets(
     for (field, name) in wanted {
         if !known.iter().any(|k| k == name) {
             return Err(Status::invalid_argument(format!(
-                "{field}: this workspace has no secret named {name}; add it under Settings, Secrets first"
+                "{field}: this workspace has no secret named {name}; add it under Workspace, Secrets first"
             )));
         }
     }
     Ok(())
+}
+
+/// The sentence a refused private target gets, whoever typed it.
+fn private_target(field: &str, why: &str) -> Status {
+    Status::invalid_argument(format!(
+        "{field}: {why}; targets on private networks are refused unless the operator sets \
+         {ALLOW_PRIVATE_ENV}=1 on the execution service"
+    ))
+}
+
+/// Refuses, when it is saved, an environment whose deployer or health URL
+/// plainly points at a private network: an IP literal that is not public,
+/// or `localhost`. Names are resolved and judged when the deploy runs
+/// (which also covers a name that later moves); this spares the admin a
+/// first run that could only fail. `docker_local` is exempt: it runs on
+/// this machine by definition and is only offered with the local-exec
+/// profile.
+fn refuse_private_environment(policy: NetPolicy, input: &EnvironmentInput) -> Result<(), Status> {
+    if policy.allow_private || input.kind == model::ENV_DOCKER_LOCAL {
+        return Ok(());
+    }
+    let targets = [
+        ("config.url", input.config.get("url").map(String::as_str)),
+        ("url", Some(input.url.as_str())),
+    ];
+    for (field, value) in targets {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if let Some(why) = net::literal_refusal(value) {
+            return Err(private_target(field, &why));
+        }
+        // The deploy would refuse it too: plain http is only ever accepted
+        // inside a private network the operator has allowed.
+        if value.to_ascii_lowercase().starts_with("http://") {
+            return Err(Status::invalid_argument(format!(
+                "{field}: must use https (http is only accepted for private addresses when the \
+                 operator sets {ALLOW_PRIVATE_ENV}=1 on the execution service)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The same for a registry host (`host[:port]`, no scheme).
+fn refuse_private_registry(policy: NetPolicy, host: &str) -> Result<(), Status> {
+    if policy.allow_private {
+        return Ok(());
+    }
+    match net::literal_refusal(&format!("https://{host}")) {
+        Some(why) => Err(private_target("host", &why)),
+        None => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +187,7 @@ pub async fn upsert_registry(
         .registry
         .ok_or_else(|| Status::invalid_argument("registry is required"))?;
     let mut input = model::normalize_registry(&registry).map_err(Status::invalid_argument)?;
+    refuse_private_registry(rt.delivery.policy, &input.host)?;
     // The seeded default must exist before another one can take its place.
     ensure_default_registry(rt, workspace).await?;
     let existing = match registry.id.trim() {
@@ -378,6 +433,7 @@ pub async fn upsert_environment(
         input.position = row.position;
     }
     check_registry(rt, workspace, &input).await?;
+    refuse_private_environment(rt.delivery.policy, &input)?;
     let wanted: Vec<(String, String)> = model::secret_keys(&input.kind)
         .iter()
         .filter_map(|key| {
@@ -800,4 +856,118 @@ pub async fn get_run(
         .await
         .map(convert::run)
         .map_err(missing("deployment run"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tonic::Code;
+
+    use super::*;
+
+    fn environment(kind: &str, config_url: Option<&str>, url: &str) -> EnvironmentInput {
+        EnvironmentInput {
+            name: "staging".into(),
+            position: 0,
+            kind: kind.into(),
+            config: config_url
+                .map(|value| BTreeMap::from([("url".to_owned(), value.to_owned())]))
+                .unwrap_or_default(),
+            url: url.into(),
+            health_path: String::new(),
+            registry_id: None,
+            protected: false,
+            auto_promote: false,
+        }
+    }
+
+    /// A private target is refused when it is saved, with the field it was
+    /// typed into and the switch that would allow it; the same input is
+    /// accepted once the operator allows private targets.
+    #[test]
+    fn private_targets_are_refused_at_save_unless_the_operator_allows_them() {
+        let cases = [
+            (
+                environment(
+                    model::ENV_WEBHOOK,
+                    Some("http://169.254.169.254/latest"),
+                    "",
+                ),
+                "config.url: 169.254.169.254 is a link-local (cloud metadata) address",
+            ),
+            (
+                environment(model::ENV_JENKINS, Some("http://localhost:8080"), ""),
+                "config.url: localhost is the machine SDI runs on",
+            ),
+            (
+                environment(model::ENV_GITHUB_ACTIONS, None, "http://10.0.0.7:3000"),
+                "url: 10.0.0.7 is a private address",
+            ),
+        ];
+        for (input, expected) in &cases {
+            let refused = refuse_private_environment(NetPolicy::PUBLIC_ONLY, input).unwrap_err();
+            assert_eq!(refused.code(), Code::InvalidArgument);
+            assert!(
+                refused.message().starts_with(expected),
+                "{}",
+                refused.message()
+            );
+            assert!(
+                refused.message().contains(ALLOW_PRIVATE_ENV),
+                "{}",
+                refused.message()
+            );
+            refuse_private_environment(NetPolicy::ALLOW_PRIVATE, input).unwrap();
+        }
+        // Plain http to a public name would be refused by the deploy as well.
+        let plain = refuse_private_environment(
+            NetPolicy::PUBLIC_ONLY,
+            &environment(
+                model::ENV_WEBHOOK,
+                Some("http://deploy.example.com/hook"),
+                "",
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            plain.message().starts_with("config.url: must use https"),
+            "{}",
+            plain.message()
+        );
+        refuse_private_environment(
+            NetPolicy::ALLOW_PRIVATE,
+            &environment(model::ENV_WEBHOOK, Some("http://deploy.internal/hook"), ""),
+        )
+        .unwrap();
+        // Names are judged when the deploy runs, not here.
+        refuse_private_environment(
+            NetPolicy::PUBLIC_ONLY,
+            &environment(
+                model::ENV_JENKINS,
+                Some("https://ci.example.com"),
+                "https://staging.example.com",
+            ),
+        )
+        .unwrap();
+        // Local Docker runs on this machine by definition.
+        refuse_private_environment(
+            NetPolicy::PUBLIC_ONLY,
+            &environment(model::ENV_DOCKER_LOCAL, None, "http://localhost:8080"),
+        )
+        .unwrap();
+
+        let refused = refuse_private_registry(NetPolicy::PUBLIC_ONLY, "10.0.0.5:5000").unwrap_err();
+        assert!(
+            refused
+                .message()
+                .starts_with("host: 10.0.0.5 is a private address"),
+            "{}",
+            refused.message()
+        );
+        refuse_private_registry(NetPolicy::PUBLIC_ONLY, "localhost:5000").unwrap_err();
+        refuse_private_registry(NetPolicy::ALLOW_PRIVATE, "localhost:5000").unwrap();
+        refuse_private_registry(NetPolicy::PUBLIC_ONLY, "ghcr.io").unwrap();
+        refuse_private_registry(NetPolicy::PUBLIC_ONLY, "myorg.azurecr.io").unwrap();
+    }
 }

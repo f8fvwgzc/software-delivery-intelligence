@@ -1,5 +1,6 @@
 export { ActionTypeChip } from './action-type-chip'
 export { KeyValue } from './key-value'
+export { Person } from './person'
 export { PlanRail } from './plan-rail'
 export { RelativeTime } from './relative-time'
 export { RISK, riskOf, type RiskLevel } from './risk'

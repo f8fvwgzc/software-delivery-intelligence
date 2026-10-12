@@ -449,6 +449,10 @@ pub struct DeliveryPipeline {
     /// Deployment runs started in the last 30 days.
     #[serde(rename = "deployments30d")]
     pub deployments_30d: u32,
+    /// Runs behind `successRate`: finished in the last 30 days. A paused run
+    /// is not finished, so a rate over zero runs means "no data yet".
+    #[serde(rename = "finishedRuns30d")]
+    pub finished_runs_30d: u32,
     /// Median seconds from a release being created to the last stage succeeding (0 when nothing got there).
     pub lead_time_seconds: u32,
 }
@@ -473,6 +477,7 @@ impl From<proto::DeliveryPipeline> for DeliveryPipeline {
             registry: pipeline.registry.map(Into::into),
             success_rate: pipeline.success_rate,
             deployments_30d: pipeline.deployments_30d,
+            finished_runs_30d: pipeline.finished_30d,
             lead_time_seconds: pipeline.lead_time_seconds,
         }
     }
@@ -640,10 +645,12 @@ mod tests {
             success_rate: 0.75,
             deployments_30d: 8,
             lead_time_seconds: 3600,
+            finished_30d: 4,
         });
         let json = serde_json::to_value(&pipeline).unwrap();
         assert_eq!(json["successRate"], 0.75);
         assert_eq!(json["deployments30d"], 8);
+        assert_eq!(json["finishedRuns30d"], 4);
         assert_eq!(json["leadTimeSeconds"], 3600);
         assert_eq!(json["registry"], serde_json::Value::Null);
         let stage = &json["stages"][0];

@@ -2,6 +2,7 @@ import { ArrowRightIcon, ExternalLinkIcon } from 'lucide-react'
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
+import { Person } from '@/components/shared/data/person'
 import { RelativeTime } from '@/components/shared/data/relative-time'
 import { Tag } from '@/components/system/tag'
 import { TableCell, TableRow } from '@/components/ui/table'
@@ -55,7 +56,9 @@ export function RunRow({ run }: { run: DeploymentRun }) {
           statusTag
         )}
       </TableCell>
-      <TableCell className="hidden max-w-36 truncate px-3 py-2 text-xs text-muted-foreground md:table-cell">{run.startedBy || 'system'}</TableCell>
+      <TableCell className="hidden max-w-36 px-3 py-2 text-xs text-muted-foreground md:table-cell">
+        <Person value={run.startedBy} fallback="system" />
+      </TableCell>
       <TableCell className="hidden px-3 py-2 font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
         {open || !run.durationSeconds ? '—' : formatDuration(run.durationSeconds)}
       </TableCell>

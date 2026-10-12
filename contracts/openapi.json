@@ -4687,6 +4687,120 @@
         }
       }
     },
+    "/api/v1/people": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Names for the user ids rows carry as actors: who started a run, created\na release, decided an approval, requested a review. Scoped to the current\nworkspace (its members, its owner, and anyone in its own audit trail);\nan id it may not name is absent from the answer rather than an error, and\nvalues that are not user ids are ignored. One call names a whole page.",
+        "operationId": "resolve_people",
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Comma-separated user ids (at most 100), as rows carry them in\n`startedBy`, `createdBy`, `decidedBy` and `requestedBy`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Person"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/policies": {
       "get": {
         "tags": [
@@ -14479,6 +14593,7 @@
           "stages",
           "successRate",
           "deployments30d",
+          "finishedRuns30d",
           "leadTimeSeconds"
         ],
         "properties": {
@@ -14486,6 +14601,12 @@
             "type": "integer",
             "format": "int32",
             "description": "Deployment runs started in the last 30 days.",
+            "minimum": 0
+          },
+          "finishedRuns30d": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Runs behind `successRate`: finished in the last 30 days. A paused run\nis not finished, so a rate over zero runs means \"no data yet\".",
             "minimum": 0
           },
           "leadTimeSeconds": {
@@ -17523,6 +17644,39 @@
           "permission": {
             "type": "string",
             "description": "Permission, e.g. `database:write`."
+          }
+        }
+      },
+      "Person": {
+        "type": "object",
+        "description": "The public face of a user, for naming who did something. Never carries\nthe email address.",
+        "required": [
+          "id",
+          "login",
+          "name",
+          "avatarUrl",
+          "member"
+        ],
+        "properties": {
+          "avatarUrl": {
+            "type": "string",
+            "description": "Avatar image URL."
+          },
+          "id": {
+            "type": "string",
+            "description": "User id."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub login."
+          },
+          "member": {
+            "type": "boolean",
+            "description": "False for someone who acted in this workspace and has since left it."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name, when set on the profile."
           }
         }
       },

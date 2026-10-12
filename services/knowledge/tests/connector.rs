@@ -611,6 +611,12 @@ impl IdentityService for FakeIdentity {
     ) -> Result<GrpcResponse<sdi_proto::identity::v1::ListMembersResponse>, Status> {
         Err(Status::unimplemented(""))
     }
+    async fn resolve_users(
+        &self,
+        _: Request<sdi_proto::identity::v1::ResolveUsersRequest>,
+    ) -> Result<GrpcResponse<sdi_proto::identity::v1::ResolveUsersResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
     async fn record_installation(
         &self,
         _: Request<sdi_proto::identity::v1::RecordInstallationRequest>,

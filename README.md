@@ -105,7 +105,7 @@ cp .env.example .env            # optional: GITHUB_TOKEN, ANTHROPIC_API_KEY
 
 make dev                        # Postgres in Docker, services + web on the host
 #   gateway   http://127.0.0.1:8080/api/docs
-#   web       http://127.0.0.1:5173
+#   web       http://localhost:5173
 
 make up                         # the whole stack in Docker behind nginx
 #   open http://localhost
@@ -144,7 +144,7 @@ because the default thread count exhausts memory on a 16 GB machine.
 | `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge |
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` | `0.0.0.0:<port>` | each service |
 | `SDI_SESSION_SECRET` | — (required; `scripts/dev.sh` generates one into `.run/session-secret`) | identity: signs sessions, encrypts stored tokens and keys |
-| `SDI_PUBLIC_URL` | `http://127.0.0.1:5173` (dev) · `http://localhost` (compose) | identity, gateway: OAuth callback origin, cookie host |
+| `SDI_PUBLIC_URL` | `http://localhost:5173` (dev) · `http://localhost` (compose) | identity, gateway: OAuth callback origin, cookie host |
 | `SDI_DEV_LOGIN` | `1` under `make dev`, unset otherwise | identity: local session for the `GITHUB_TOKEN` account when no OAuth app is configured |
 | `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | — | identity: sign-in for individuals ([`docs/github-app.md`](docs/github-app.md)) |
 | `GITHUB_APP_ID` / `GITHUB_APP_SLUG` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_WEBHOOK_SECRET` | — | identity: organisation installations and webhook verification |

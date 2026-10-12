@@ -423,9 +423,9 @@ mod tests {
         let paths = json["paths"].as_object().expect("paths object");
         // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1, plus the
         // two code browser routes of §15, the two diagram routes of §16, the
-        // 17 identity routes of §18, the 8 review routes of §20 and the 14
-        // continuous delivery paths of §22.
-        assert_eq!(paths.len(), 98, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // 18 identity routes of §18 (with `/people`), the 8 review routes of
+        // §20 and the 14 continuous delivery paths of §22.
+        assert_eq!(paths.len(), 99, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -449,6 +449,7 @@ mod tests {
             "/api/v1/workspaces/{id}/members",
             "/api/v1/workspaces/{id}/members/{userId}",
             "/api/v1/workspaces/{id}/members/sync",
+            "/api/v1/people",
             "/api/v1/github/app/install-url",
             "/api/v1/github/app/setup",
             "/api/v1/webhooks/github",
@@ -1110,6 +1111,37 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(json["syncedAt"], "2023-11-14T22:15:00Z");
 
+        // Names for stored actor ids: scoped to the caller's workspace, the
+        // email never leaves, and ids it cannot name are absent.
+        let (status, json) = send(
+            stack.app.clone(),
+            "GET",
+            "/api/v1/people?ids=u1,%20u2,,ops@example.test",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json.as_array().unwrap().len(), 1, "{json}");
+        assert_eq!(json[0]["id"], "u1");
+        assert_eq!(json[0]["login"], "octo@w1");
+        assert_eq!(json[0]["avatarUrl"], "https://avatars.example/u1");
+        assert_eq!(json[0]["member"], true);
+        assert!(json[0].get("email").is_none(), "{json}");
+        let (status, json) = send(stack.app.clone(), "GET", "/api/v1/people?ids=", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json, json!([]));
+        let many = vec!["u1"; 101].join(",");
+        let (status, json) = send(
+            stack.app.clone(),
+            "GET",
+            &format!("/api/v1/people?ids={many}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        let (status, json) = send(stack.app.clone(), "GET", "/api/v1/people", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+
         let (status, json) = send(
             stack.app.clone(),
             "GET",
@@ -1699,6 +1731,31 @@ mod tests {
         assert_eq!(events[0]["at"], "2023-11-14T22:13:20Z");
         assert!(text.contains("id: 2\n"), "{text}");
         assert!(text.trim_end().ends_with("event: end"), "{text}");
+        // The first bytes are a comment, so a proxy that waits for a body
+        // byte lets the response through before the first event exists.
+        assert!(text.starts_with(": open\n\n"), "{text}");
+    }
+
+    /// A stream with nothing to say yet still answers at once: the opening
+    /// comment arrives while every upstream is silent (here: unreachable),
+    /// so the browser's EventSource leaves CONNECTING without waiting for
+    /// the first keep-alive.
+    #[tokio::test]
+    async fn event_streams_open_with_a_comment_before_any_event() {
+        let stack = stack(DEAD, DEAD, DEAD).await;
+        let response = stack
+            .app
+            .oneshot(request("GET", "/api/v1/events/stream", Some(OWNER), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut chunks = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(2), chunks.next())
+            .await
+            .expect("an opening chunk within 2s")
+            .expect("the stream stays open")
+            .expect("no body error");
+        assert_eq!(&first[..], b": open\n\n");
     }
 
     #[tokio::test]

@@ -55,3 +55,38 @@ pub async fn get<'e>(exec: impl PgExecutor<'e>, id: Uuid) -> sqlx::Result<UserRo
     .fetch_one(exec)
     .await
 }
+
+/// What the rest of the platform may show of a user: never the email.
+#[derive(Debug, Clone, FromRow)]
+pub struct UserRefRow {
+    pub id: Uuid,
+    pub login: String,
+    pub name: String,
+    pub avatar_url: String,
+    /// Belongs to the workspace now (a member, or its owner).
+    pub member: bool,
+}
+
+/// The users among `ids` this workspace may name: its members, its owner,
+/// and anyone who appears in its own audit trail (so history keeps its names
+/// after someone leaves). Ids outside those three are not returned.
+pub async fn resolve<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    ids: &[Uuid],
+) -> sqlx::Result<Vec<UserRefRow>> {
+    sqlx::query_as(
+        "SELECT id, login, name, avatar_url, member FROM ( \
+           SELECT u.id, u.login, u.name, u.avatar_url, \
+             (EXISTS (SELECT 1 FROM memberships m WHERE m.workspace_id = $1 AND m.user_id = u.id) \
+              OR EXISTS (SELECT 1 FROM workspaces w WHERE w.id = $1 AND w.owner_user_id = u.id)) AS member \
+           FROM users u WHERE u.id = ANY($2)) known \
+         WHERE member OR EXISTS ( \
+           SELECT 1 FROM audit a WHERE a.workspace_id = $1 AND a.user_id = known.id::text) \
+         ORDER BY lower(login)",
+    )
+    .bind(workspace_id)
+    .bind(ids)
+    .fetch_all(exec)
+    .await
+}

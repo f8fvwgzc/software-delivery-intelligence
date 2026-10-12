@@ -1,7 +1,7 @@
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { RelativeTime, StatusBadge } from '@/components/shared/data'
+import { Person, RelativeTime, StatusBadge } from '@/components/shared/data'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { components } from '@/lib/api/schema'
@@ -54,7 +54,9 @@ export function HistoryTable({ approvals }: HistoryTableProps) {
                 <TableCell>
                   <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground">{approval.decidedBy || '—'}</TableCell>
+                <TableCell className="max-w-40 text-xs text-muted-foreground">
+                  <Person value={approval.decidedBy} />
+                </TableCell>
                 <TableCell className="max-w-64 truncate text-xs text-muted-foreground">{approval.note || '—'}</TableCell>
                 <TableCell className="text-right text-xs text-muted-foreground">
                   <RelativeTime value={approval.decidedAt ?? approval.requestedAt} className="font-mono tabular-nums" />

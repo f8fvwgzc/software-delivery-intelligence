@@ -439,6 +439,12 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 | `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the proposal (201) whose `executionId` is that execution, where `outputs.pull_request_url` appears once the approved step ran |
 | `POST /executions {…, adapter?, artifacts?}` | Execution.CreateExecution (adapter per §5.4) |
 
+Every SSE stream starts with the comment line `: open` the moment it is
+accepted, before any event exists, and repeats `: keep-alive` every 15s.
+A proxy that holds a response until its first body byte therefore lets it
+through at once, and `EventSource` leaves `CONNECTING` without waiting for
+an event. Comments never reach listeners.
+
 **Live events.** The web app opens `GET /events/stream` once (in the shell)
 and invalidates TanStack Query families by `entity`: `project`/`scan` →
 `['projects']`, `['scans']`; `proposal`/`decision`/`document` →
@@ -898,6 +904,7 @@ directory and no way to grant someone more than GitHub already grants them.
   (`{user, workspaces}` or 401), `GET /workspaces`, `GET /workspaces/{id}`,
   `GET /workspaces/{id}/members`, `PATCH /workspaces/{id}/members/{userId}
   {overrideRole}`, `POST /workspaces/{id}/members/sync`,
+  `GET /people?ids=a,b,c` (names for stored actor ids, see below),
   `GET /github/app/install-url`, `GET /github/app/setup?installation_id=`
   (post-install redirect), `POST /webhooks/github` (HMAC `X-Hub-Signature-256`
   verified, no session), `GET /workspaces/{id}/audit?actionPrefix=&before=&limit=`,
@@ -907,6 +914,16 @@ directory and no way to grant someone more than GitHub already grants them.
   `DELETE /workspaces/{id}` (owner; everything).
   All existing `/api/v1/*` routes require a session and a workspace; the
   SSE streams are filtered to the workspace.
+- **Actors are stored as user ids, shown as people.** `startedBy`,
+  `createdBy`, `decidedBy` and `requestedBy` carry the caller's user id (a
+  UUID) or, for automation, a plain word such as `system`. Clients never
+  print the id: they resolve a page of them with one `GET /people?ids=`
+  (comma-separated, at most 100) → `[{id, login, name, avatarUrl, member}]`
+  via `Identity.ResolveUsers`. The answer is scoped to the current
+  workspace: its members, its owner, and anyone in its own audit trail
+  (`member: false`, so history keeps its names after someone leaves). An id
+  the workspace may not name is absent, not an error; values that are not
+  UUIDs are ignored; the email address is never part of the answer.
 - Environment: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`,
   `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM, base64 allowed),
   `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `SDI_SESSION_SECRET` (32+ bytes,
@@ -1149,7 +1166,12 @@ is only sent to a token realm on the registry's own host, so a registry
 definition can never be used to exfiltrate the workspace token. Outbound
 deployer and health URLs must be `https` and must not resolve to
 loopback, link-local, private or metadata addresses unless
-`SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1`. A workflow dispatch is matched to
+`SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1`. The rule is applied twice: saving
+an environment or registry answers `invalid_argument` (naming the field)
+for a plain `http` URL and for a host that is an IP literal outside the
+public ranges or `localhost`; every call is then checked again after the
+host is resolved, which also covers a name that later moves. `docker_local`
+is exempt from the save-time check. A workflow dispatch is matched to
 its run by creation time, so two simultaneous dispatches of the same
 workflow cannot be told apart: runs to one environment are serialised. A
 paused run reads `failed` with `finishedAt: null` and stays open until
@@ -1228,3 +1250,10 @@ web app offers them as a pull request through the `github` adapter.
 Roles: registries, secrets and environment edits ADMIN; create release
 MEMBER; promote/rollback APPROVER. PlatformEvent entities `release`,
 `deployment` and `environment` (with `data["workspace_id"]`).
+
+**Pipeline numbers** (`GET /projects/{id}/pipeline`): `deployments30d`
+counts runs *started* in the last 30 days whatever became of them;
+`finishedRuns30d` counts the ones that reached SUCCEEDED or FAILED in that
+window and is the denominator of `successRate`. A paused run is not
+finished, so `finishedRuns30d: 0` means "no rate yet" and clients show a
+dash, never 0%.

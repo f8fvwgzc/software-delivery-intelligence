@@ -2,13 +2,17 @@
 
 use sdi_common::{principal::Role, time};
 use sdi_proto::identity::v1::{
-    AuditEntry, DataControls, Member, SecretInfo, User, Workspace, WorkspaceKind,
+    AuditEntry, DataControls, Member, SecretInfo, User, UserRef, Workspace, WorkspaceKind,
 };
 
 use crate::{
     db::{
-        audit::AuditRow, controls::ControlsRow, memberships::MemberRow, secrets::SecretRow,
-        users::UserRow, workspaces::WorkspaceRow,
+        audit::AuditRow,
+        controls::ControlsRow,
+        memberships::MemberRow,
+        secrets::SecretRow,
+        users::{UserRefRow, UserRow},
+        workspaces::WorkspaceRow,
     },
     roles,
 };
@@ -23,6 +27,16 @@ pub fn user_to_proto(row: UserRow) -> User {
         email: row.email,
         github_host: row.github_host,
         created_at: Some(time::to_proto(row.created_at)),
+    }
+}
+
+pub fn user_ref_to_proto(row: UserRefRow) -> UserRef {
+    UserRef {
+        id: row.id.to_string(),
+        login: row.login,
+        name: row.name,
+        avatar_url: row.avatar_url,
+        member: row.member,
     }
 }
 

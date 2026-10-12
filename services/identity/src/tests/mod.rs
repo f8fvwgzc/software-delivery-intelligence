@@ -15,8 +15,9 @@ use sdi_proto::identity::v1::{
     AuditEntry, AuthorizeRequest, BeginLoginRequest, CompleteLoginRequest, DataControls,
     GetDataControlsRequest, GetInstallationTokenRequest, GetSessionRequest, ListAuditRequest,
     ListMembersRequest, ListWorkspacesRequest, RecordAuditRequest, RecordInstallationRequest,
-    RemoveInstallationRequest, RevokeSessionRequest, Role as ProtoRole, SetMemberRoleRequest,
-    SetReasonerKeyRequest, SyncMembersRequest, UpdateDataControlsRequest, WorkspaceKind,
+    RemoveInstallationRequest, ResolveUsersRequest, RevokeSessionRequest, Role as ProtoRole,
+    SetMemberRoleRequest, SetReasonerKeyRequest, SyncMembersRequest, UpdateDataControlsRequest,
+    WorkspaceKind,
 };
 use serde_json::{Value, json};
 use tonic::Code;
@@ -603,6 +604,80 @@ async fn installations_sync_members_and_derive_roles() {
         .find(|m| m.user.as_ref().unwrap().login == "bob")
         .unwrap();
     assert_eq!(bob_after.effective_role, ProtoRole::Viewer as i32);
+
+    // Names for stored actor ids. A member resolves; a stranger, a free-text
+    // actor and someone who left without a trace do not.
+    let stranger = Uuid::now_v7().to_string();
+    let named = members::resolve(
+        &h.state,
+        ResolveUsersRequest {
+            workspace_id: ws.id.clone(),
+            user_ids: vec![
+                bob.id.clone(),
+                bob.id.clone(),
+                user_id.clone(),
+                stranger.clone(),
+                "ops@example.test".into(),
+            ],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(named.users.len(), 1, "{:?}", named.users);
+    assert_eq!(named.users[0].id, bob.id);
+    assert_eq!(named.users[0].login, "bob");
+    assert!(named.users[0].member);
+    // octo acted here before leaving: the audit trail keeps the name, marked
+    // as no longer a member.
+    audit::record(
+        &h.state,
+        RecordAuditRequest {
+            entry: Some(AuditEntry {
+                workspace_id: ws.id.clone(),
+                user_id: user_id.clone(),
+                user_login: "octo".into(),
+                action: "deployment.promote".into(),
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    let former = members::resolve(
+        &h.state,
+        ResolveUsersRequest {
+            workspace_id: ws.id.clone(),
+            user_ids: vec![user_id.clone(), stranger.clone()],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(former.users.len(), 1);
+    assert_eq!(former.users[0].login, "octo");
+    assert!(!former.users[0].member);
+    // A personal workspace names its owner and nobody from another workspace.
+    let own = members::resolve(
+        &h.state,
+        ResolveUsersRequest {
+            workspace_id: mine.workspaces[0].id.clone(),
+            user_ids: vec![user_id.clone(), bob.id.clone()],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(own.users.len(), 1);
+    assert_eq!(own.users[0].id, user_id);
+    assert!(own.users[0].member);
+    let too_many = members::resolve(
+        &h.state,
+        ResolveUsersRequest {
+            workspace_id: ws.id.clone(),
+            user_ids: vec![stranger; members::RESOLVE_LIMIT + 1],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(too_many.code(), Code::InvalidArgument);
 
     // The webhook form: login known, no selection; nothing stored is lost.
     let again = workspaces::record_installation(

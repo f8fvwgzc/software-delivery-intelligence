@@ -17,9 +17,9 @@ use crate::{
     dto::{
         delivery::{SecretInfo, SetSecretRequest},
         identity::{
-            AuditEntry, AuditQuery, DataControls, DataExport, Member, MembersResponse, PurgeResult,
-            SetReasonerKeyRequest, UpdateDataControlsRequest, UpdateMemberRoleRequest, Workspace,
-            WorkspaceDeleted,
+            AuditEntry, AuditQuery, DataControls, DataExport, Member, MembersResponse, PeopleQuery,
+            Person, PurgeResult, SetReasonerKeyRequest, UpdateDataControlsRequest,
+            UpdateMemberRoleRequest, Workspace, WorkspaceDeleted,
         },
     },
     error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult, ErrorResponses},
@@ -33,6 +33,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_members))
         .routes(routes!(update_member_role))
         .routes(routes!(sync_members))
+        .routes(routes!(resolve_people))
         .routes(routes!(list_audit))
         .routes(routes!(get_data_controls, update_data_controls))
         .routes(routes!(set_reasoner_key))
@@ -159,6 +160,44 @@ async fn list_members(
         members: map_all(response.members),
         synced_at: crate::dto::opt_timestamp(response.synced_at.as_ref()),
     }))
+}
+
+/// Names for the user ids rows carry as actors: who started a run, created
+/// a release, decided an approval, requested a review. Scoped to the current
+/// workspace (its members, its owner, and anyone in its own audit trail);
+/// an id it may not name is absent from the answer rather than an error, and
+/// values that are not user ids are ignored. One call names a whole page.
+#[utoipa::path(
+    get,
+    path = "/people",
+    tag = "workspaces",
+    params(PeopleQuery),
+    responses((status = 200, body = Vec<Person>), ErrorResponses),
+)]
+async fn resolve_people(
+    scoped: Scoped,
+    auth: Auth,
+    ApiQuery(query): ApiQuery<PeopleQuery>,
+) -> ApiResult<Json<Vec<Person>>> {
+    let user_ids: Vec<String> = query
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if user_ids.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+    let response = scoped
+        .identity()
+        .resolve_users(identity::ResolveUsersRequest {
+            workspace_id: auth.principal.workspace_id.clone(),
+            user_ids,
+        })
+        .await?
+        .into_inner();
+    Ok(Json(map_all(response.users)))
 }
 
 /// Narrows a member's role below what GitHub grants (admin). Null clears the override.

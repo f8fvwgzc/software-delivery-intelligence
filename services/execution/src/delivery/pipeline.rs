@@ -274,6 +274,7 @@ pub async fn get(
             0.0
         },
         deployments_30d: u32::try_from(stats.deployments.max(0)).unwrap_or(u32::MAX),
+        finished_30d: u32::try_from(stats.finished.max(0)).unwrap_or(u32::MAX),
         lead_time_seconds: lead_time
             .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
             .map_or(0, |seconds| seconds.round().min(f64::from(u32::MAX)) as u32),

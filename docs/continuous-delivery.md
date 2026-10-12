@@ -135,7 +135,18 @@ credential.
 
 ## Self-hosted networks
 
-Deployers and health checks refuse loopback, private and metadata
-addresses by default. If your Jenkins or cluster endpoints are on a private
-network that SDI should reach, set `SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1` on
-the execution service.
+Deployers, registries and health checks refuse loopback, private and
+metadata addresses by default. The refusal happens twice: when an
+environment or registry is saved with an address that is plainly private
+(an IP literal or `localhost`), and again when the call is made, after the
+host name has been resolved, so a name that later moves to a private
+address is caught too. If your Jenkins or cluster endpoints are on a
+private network that SDI should reach, set
+`SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1` on the execution service.
+
+## Who did what
+
+Releases, deployment runs and approvals record the person who acted, and
+the app shows them by GitHub login and avatar. Someone who has since left
+the workspace keeps their name in its history, marked as no longer a
+member.

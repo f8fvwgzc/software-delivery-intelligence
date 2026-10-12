@@ -137,6 +137,26 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     }
 }
 
+/// Why a URL is refused before any lookup: its host is an IP literal that
+/// is not public, or `localhost`. `None` for names that still have to be
+/// resolved (those are judged when the call is made, see [`Net::check`])
+/// and for text that is not a URL. Lets a form refuse a private target when
+/// it is saved instead of at the first deploy.
+pub fn literal_refusal(raw: &str) -> Option<String> {
+    let url = Url::parse(raw.trim()).ok()?;
+    let host = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Some(format!("{host} is the machine SDI runs on"));
+    }
+    let ip: IpAddr = host.parse().ok()?;
+    forbidden_ip(ip).map(|why| format!("{ip} is a {why} address"))
+}
+
 /// Whether `host` (no port) is a loopback or private IP literal or
 /// `localhost`: the hosts a registry may be reached over plain `http` on
 /// when private targets are allowed, as the Docker CLI does.
@@ -521,6 +541,42 @@ mod tests {
         }
         for host in ["ghcr.io", "8.8.8.8", "myorg.azurecr.io"] {
             assert!(!is_local_host(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn plainly_private_urls_are_refused_before_any_lookup() {
+        for (url, expected) in [
+            (
+                "http://169.254.169.254/latest/meta-data",
+                "link-local (cloud metadata)",
+            ),
+            ("http://127.0.0.1:9000/hook", "loopback"),
+            ("https://10.1.2.3/job/deploy", "private"),
+            ("https://192.168.1.10:8443", "private"),
+            ("http://[::1]:8080/", "loopback"),
+            ("http://[fd00:ec2::254]/", "unique local (private)"),
+            // Forms a URL parser folds into the same address.
+            ("http://2130706433/", "loopback"),
+            ("http://0x7f.0.0.1/", "loopback"),
+            ("http://[::ffff:10.0.0.1]/", "private"),
+        ] {
+            let why = literal_refusal(url).unwrap_or_else(|| panic!("{url} was let through"));
+            assert!(why.contains(expected), "{url}: {why}");
+        }
+        for url in ["http://localhost:9000/hook", "https://jenkins.LOCALHOST./"] {
+            let why = literal_refusal(url).unwrap_or_else(|| panic!("{url} was let through"));
+            assert!(why.contains("the machine SDI runs on"), "{url}: {why}");
+        }
+        // Public literals and names pass here; names are judged when called.
+        for url in [
+            "https://ci.example.com/job/deploy",
+            "https://8.8.8.8/",
+            "https://jenkins.internal.corp/",
+            "not a url",
+            "",
+        ] {
+            assert_eq!(literal_refusal(url), None, "{url}");
         }
     }
 

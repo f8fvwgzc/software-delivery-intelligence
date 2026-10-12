@@ -238,6 +238,45 @@ impl From<proto::AuditEntry> for AuditEntry {
     }
 }
 
+/// Query of `GET /people`.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct PeopleQuery {
+    /// Comma-separated user ids (at most 100), as rows carry them in
+    /// `startedBy`, `createdBy`, `decidedBy` and `requestedBy`.
+    pub ids: String,
+}
+
+/// The public face of a user, for naming who did something. Never carries
+/// the email address.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    /// User id.
+    pub id: String,
+    /// GitHub login.
+    pub login: String,
+    /// Display name, when set on the profile.
+    pub name: String,
+    /// Avatar image URL.
+    pub avatar_url: String,
+    /// False for someone who acted in this workspace and has since left it.
+    pub member: bool,
+}
+
+impl From<proto::UserRef> for Person {
+    fn from(user: proto::UserRef) -> Self {
+        Self {
+            id: user.id,
+            login: user.login,
+            name: user.name,
+            avatar_url: user.avatar_url,
+            member: user.member,
+        }
+    }
+}
+
 /// Query of `GET /workspaces/{id}/audit`.
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]

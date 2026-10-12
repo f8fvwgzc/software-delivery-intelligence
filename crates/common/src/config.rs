@@ -46,7 +46,10 @@ pub const DEFAULT_INTELLIGENCE_URL: &str = "http://127.0.0.1:50052";
 pub const DEFAULT_EXECUTION_URL: &str = "http://127.0.0.1:50053";
 pub const DEFAULT_IDENTITY_URL: &str = "http://127.0.0.1:50054";
 /// Where the browser reaches the app in development (`SDI_PUBLIC_URL`).
-pub const DEFAULT_PUBLIC_URL: &str = "http://127.0.0.1:5173";
+/// `localhost`, not `127.0.0.1`: the Vite dev server binds the name, which
+/// on current Node resolves to the IPv6 loopback only, so a redirect to the
+/// IPv4 literal would land on a closed port.
+pub const DEFAULT_PUBLIC_URL: &str = "http://localhost:5173";
 
 pub fn database_url() -> String {
     env_or("DATABASE_URL", DEFAULT_DATABASE_URL)

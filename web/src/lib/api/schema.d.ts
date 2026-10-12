@@ -680,6 +680,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Names for the user ids rows carry as actors: who started a run, created
+         *     a release, decided an approval, requested a review. Scoped to the current
+         *     workspace (its members, its owner, and anyone in its own audit trail);
+         *     an id it may not name is absent from the answer rather than an error, and
+         *     values that are not user ids are ignored. One call names a whole page.
+         */
+        get: operations["resolve_people"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies": {
         parameters: {
             query?: never;
@@ -2230,6 +2253,12 @@ export interface components {
             deployments30d: number;
             /**
              * Format: int32
+             * @description Runs behind `successRate`: finished in the last 30 days. A paused run
+             *     is not finished, so a rate over zero runs means "no data yet".
+             */
+            finishedRuns30d: number;
+            /**
+             * Format: int32
              * @description Median seconds from a release being created to the last stage succeeding (0 when nothing got there).
              */
             leadTimeSeconds: number;
@@ -3551,6 +3580,22 @@ export interface components {
             expiresAt?: string | null;
             /** @description Permission, e.g. `database:write`. */
             permission: string;
+        };
+        /**
+         * @description The public face of a user, for naming who did something. Never carries
+         *     the email address.
+         */
+        Person: {
+            /** @description Avatar image URL. */
+            avatarUrl: string;
+            /** @description User id. */
+            id: string;
+            /** @description GitHub login. */
+            login: string;
+            /** @description False for someone who acted in this workspace and has since left it. */
+            member: boolean;
+            /** @description Display name, when set on the profile. */
+            name: string;
         };
         /** @description A pipeline definition found in the repository. */
         Pipeline: {
@@ -8716,6 +8761,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Pattern"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    resolve_people: {
+        parameters: {
+            query: {
+                /**
+                 * @description Comma-separated user ids (at most 100), as rows carry them in
+                 *     `startedBy`, `createdBy`, `decidedBy` and `requestedBy`.
+                 */
+                ids: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Person"][];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */

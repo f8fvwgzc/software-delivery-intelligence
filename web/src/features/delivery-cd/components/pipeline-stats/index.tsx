@@ -36,13 +36,18 @@ export function PipelineStats({ projectId }: { projectId: string }) {
     <StatStrip>
       <Stat
         label="Success rate"
-        value={pipeline ? (pipeline.deployments30d > 0 ? `${percent(pipeline.successRate)}%` : NONE) : placeholder}
-        delta="of finished runs, 30 days"
+        // A paused run is not finished: with nothing finished there is no rate yet, which is not the same as 0%.
+        value={pipeline ? (pipeline.finishedRuns30d > 0 ? `${percent(pipeline.successRate)}%` : NONE) : placeholder}
+        delta={
+          pipeline && pipeline.finishedRuns30d > 0
+            ? `of ${count(pipeline.finishedRuns30d, 'finished run', 'finished runs')}, 30 days`
+            : 'no run has finished in 30 days'
+        }
       />
       <Stat
-        label="Deployments"
+        label="Deployment runs"
         value={pipeline ? pipeline.deployments30d.toLocaleString() : placeholder}
-        delta={pipeline ? `${count(pipeline.stages.length, 'environment', 'environments')}, 30 days` : 'last 30 days'}
+        delta={pipeline ? `started in 30 days, ${count(pipeline.stages.length, 'environment', 'environments')}` : 'started in 30 days'}
       />
       <Stat
         label="Median lead time"

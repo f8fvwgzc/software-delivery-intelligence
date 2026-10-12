@@ -1,7 +1,7 @@
 import { Link } from 'react-router'
 
 import { routes } from '@/app/router/routes'
-import { RelativeTime } from '@/components/shared/data'
+import { Person, RelativeTime } from '@/components/shared/data'
 import { Badge } from '@/components/ui/badge'
 import type { components } from '@/lib/api/schema'
 import { cn } from '@/lib/utils'
@@ -59,7 +59,9 @@ export function DecisionItem({ decision, projectName }: DecisionItemProps) {
             ))}
           </ul>
         ) : null}
-        <span>Approved by {decision.approvedBy || 'nobody yet'}</span>
+        <span>
+          Approved by <Person value={decision.approvedBy} fallback="nobody yet" avatar={false} />
+        </span>
         <span>
           Recorded <RelativeTime value={decision.createdAt} className="font-mono" />
         </span>

@@ -201,7 +201,7 @@ async fn watch_platform_events(
         .map(|event| Ok(data_event(None, &PlatformEvent::from(event))))
         .take_until(sdi_common::shutdown::cancelled());
 
-    Ok(Sse::new(hold(slot, merged)).keep_alive(keep_alive()))
+    Ok(Sse::new(opened(hold(slot, merged))).keep_alive(keep_alive()))
 }
 
 /// Wraps a finite upstream (a watch that ends with its subject) into the SSE
@@ -225,7 +225,20 @@ where
         // On shutdown the connection simply closes (no `end`), so the
         // browser's EventSource reconnects once a replica is back.
         .take_until(sdi_common::shutdown::cancelled());
-    Sse::new(events).keep_alive(keep_alive())
+    Sse::new(opened(events)).keep_alive(keep_alive())
+}
+
+/// Puts a comment line in front of a stream, sent the moment it opens.
+/// Intermediaries that hold a response back until its first body byte
+/// (Node's proxy in development, some CDNs and corporate proxies) would
+/// otherwise leave the browser's `EventSource` in `CONNECTING` until the
+/// first event or keep-alive, up to `KEEP_ALIVE` later. Comments are not
+/// delivered to listeners, so nothing downstream has to know about it.
+fn opened<S>(events: S) -> impl Stream<Item = Result<Event, Infallible>>
+where
+    S: Stream<Item = Result<Event, Infallible>>,
+{
+    stream::once(async { Ok(Event::default().comment("open")) }).chain(events)
 }
 
 fn keep_alive() -> KeepAlive {

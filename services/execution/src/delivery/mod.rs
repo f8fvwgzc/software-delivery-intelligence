@@ -68,6 +68,10 @@ pub struct Delivery {
     pub github: releases::GithubReader,
     /// Live health of environments for the pipeline view.
     pub health: pipeline::HealthProbe,
+    /// Whether deploy targets on private networks are allowed; used to
+    /// refuse a plainly private target when it is saved (the calls
+    /// themselves are guarded where they are made).
+    pub policy: NetPolicy,
     /// Workspaces whose default registry was checked this process.
     seeded: Mutex<HashSet<Uuid>>,
 }
@@ -87,6 +91,7 @@ impl Delivery {
             github_fallback,
             github: releases::GithubReader::default(),
             health: pipeline::HealthProbe::new(policy),
+            policy,
             seeded: Mutex::new(HashSet::new()),
         }
     }

@@ -22,7 +22,7 @@ fi
 # cookies and encrypts stored tokens; it is generated once and kept in
 # .run/session-secret (git-ignored) so sessions survive restarts.
 export SDI_DEV_LOGIN="${SDI_DEV_LOGIN:-1}"
-export SDI_PUBLIC_URL="${SDI_PUBLIC_URL:-http://127.0.0.1:5173}"
+export SDI_PUBLIC_URL="${SDI_PUBLIC_URL:-http://localhost:5173}"
 if [[ -z "${SDI_SESSION_SECRET:-}" ]]; then
   secret_file=.run/session-secret
   if [[ ! -s "$secret_file" ]]; then
@@ -75,7 +75,7 @@ fi
 
 echo
 echo "  gateway   http://127.0.0.1:8080/api/docs"
-echo "  web       http://127.0.0.1:5173"
+echo "  web       http://localhost:5173"
 echo "  sign-in   dev login (SDI_DEV_LOGIN=$SDI_DEV_LOGIN) as the GITHUB_TOKEN account"
 echo
 wait

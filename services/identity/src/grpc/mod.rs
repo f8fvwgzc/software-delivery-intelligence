@@ -19,10 +19,11 @@ use sdi_proto::identity::v1::{
     ListAuditRequest, ListAuditResponse, ListMembersRequest, ListMembersResponse,
     ListSecretsRequest, ListSecretsResponse, ListWorkspacesRequest, ListWorkspacesResponse, Member,
     Principal, ReasonerKey, RecordAuditRequest, RecordAuditResponse, RecordInstallationRequest,
-    RemoveInstallationRequest, RemoveInstallationResponse, ResolveSecretRequest, ResolvedSecret,
-    RevokeSessionRequest, RevokeSessionResponse, SecretInfo, Session, SetMemberRoleRequest,
-    SetReasonerKeyRequest, SetSecretRequest, SyncMembersRequest, UpdateDataControlsRequest,
-    Workspace, identity_service_server::IdentityService,
+    RemoveInstallationRequest, RemoveInstallationResponse, ResolveSecretRequest,
+    ResolveUsersRequest, ResolveUsersResponse, ResolvedSecret, RevokeSessionRequest,
+    RevokeSessionResponse, SecretInfo, Session, SetMemberRoleRequest, SetReasonerKeyRequest,
+    SetSecretRequest, SyncMembersRequest, UpdateDataControlsRequest, Workspace,
+    identity_service_server::IdentityService,
 };
 use sqlx::PgPool;
 use tonic::{Request, Response, Status};
@@ -220,6 +221,15 @@ impl IdentityService for IdentityGrpc {
         request: Request<SyncMembersRequest>,
     ) -> Result<Response<ListMembersResponse>, Status> {
         members::sync(&self.state, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn resolve_users(
+        &self,
+        request: Request<ResolveUsersRequest>,
+    ) -> Result<Response<ResolveUsersResponse>, Status> {
+        members::resolve(&self.state, request.into_inner())
             .await
             .map(Response::new)
     }

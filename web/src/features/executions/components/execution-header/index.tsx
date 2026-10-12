@@ -12,6 +12,7 @@ import type { components } from '@/lib/api/schema'
 import { EXECUTION_STATUS, adapterLabel, canCancel, canStart } from '../../lib/labels'
 import { stepProgress } from '../../lib/progress'
 import { CancelDialog } from './cancel-dialog'
+import { IdentityName } from './identity-name'
 import { StartDialog } from './start-dialog'
 
 interface ExecutionHeaderProps {
@@ -46,7 +47,7 @@ export function ExecutionHeader({ execution }: ExecutionHeaderProps) {
             {adapterLabel(execution.adapter)}
           </Badge>
           <span>
-            as <span className="font-mono">{execution.identityId}</span>
+            as <IdentityName id={execution.identityId} />
           </span>
           <span>
             updated <RelativeTime value={execution.updatedAt} className="font-mono tabular-nums" />

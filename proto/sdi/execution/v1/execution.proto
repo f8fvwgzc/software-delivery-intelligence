@@ -655,9 +655,13 @@ message DeliveryPipeline {
   Registry registry = 3;
   // 0.0 – 1.0 over finished deployment runs of the last 30 days.
   double success_rate = 4;
+  // Runs started in the last 30 days, whatever became of them.
   uint32 deployments_30d = 5;
   // Median seconds from release creation to the last stage succeeding.
   uint32 lead_time_seconds = 6;
+  // Runs behind `success_rate`: finished in the last 30 days. A paused run is
+  // not finished, so a rate over 0 runs means "no data", not 0%.
+  uint32 finished_30d = 7;
 }
 
 message GetPipelineRequest {

@@ -22,7 +22,7 @@ export function StageRunning({ stage, repoUrl }: StageRunningProps) {
 
   return (
     <div className="flex min-w-0 flex-col gap-1 px-3 py-2.5">
-      <span className={BLOCK_LABEL_CLASS}>Running</span>
+      <span className={BLOCK_LABEL_CLASS}>Deployed</span>
       <CrossFade swapKey={current?.id ?? 'none'} className="min-w-0">
         {current ? (
           <div className="flex min-w-0 flex-col gap-0.5">

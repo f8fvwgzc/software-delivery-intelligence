@@ -357,7 +357,7 @@ impl Secrets {
             Err(SecretError::NotFound(_)) => Err(StepOutcome::failed(
                 crate::domain::diagnosis::UNKNOWN,
                 format!(
-                    "secret {name} is not set in this workspace: add it under Settings, Secrets, then retry"
+                    "secret {name} is not set in this workspace: add it under Workspace, Secrets, then retry"
                 ),
             )),
             Err(SecretError::Unavailable(reason)) => Err(StepOutcome::failed(
