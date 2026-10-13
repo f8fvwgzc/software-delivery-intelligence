@@ -22,10 +22,7 @@ async fn main() -> Result<()> {
     let settings = Settings::from_env()?;
 
     let pool = sdi_common::db::connect(&settings.database_url, "knowledge").await?;
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .context("knowledge migrations failed")?;
+    db::migrate(&pool).await?;
 
     // Scans that were mid-flight when the previous process died can never finish.
     let interrupted = db::scans::fail_interrupted(&pool).await?;

@@ -4,14 +4,19 @@ import { toast } from 'sonner'
 
 import { Markdown } from '@/components/shared/data/markdown'
 import { Person } from '@/components/shared/data/person'
-import { Code } from '@/components/system/code'
+import { DisabledReason } from '@/components/shared/feedback/disabled-reason'
 import { Tag } from '@/components/system/tag'
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/features/auth/lib/auth-context'
 
-import { useDecideFinding } from '../../api/mutations'
+import { useDecideFinding, useDraftFix } from '../../api/mutations'
 import type { Finding } from '../../api/types'
-import { DECISION, formatLocation } from '../../lib/labels'
+import { DECISION, formatLocation, isExample } from '../../lib/labels'
+import { decideGate, draftFixGate } from '../../lib/permissions'
 import { DismissDialog } from './dismiss-dialog'
+import { RefusalNote } from '@/components/shared/feedback/refusal-note'
+import { DraftFixButton } from './draft-fix'
+import { FindingSuggestion } from './finding-suggestion'
 
 interface FindingItemProps {
   finding: Finding
@@ -23,13 +28,20 @@ interface FindingItemProps {
   style?: CSSProperties
 }
 
-/** One finding: where, which rule, the evidence, the suggested replacement, and the decision. */
+/** One finding: where, which rule, the evidence, the suggested replacement (or the way to draft one), and the decision. */
 export function FindingItem({ finding, reviewId, decidable, index, measure, style }: FindingItemProps) {
+  const { currentWorkspace } = useAuth()
   const decide = useDecideFinding(reviewId)
+  const draft = useDraftFix(reviewId)
   const decision = DECISION[finding.decision] ?? DECISION.pending
   const pending = finding.decision === 'pending' || finding.decision === 'unspecified'
   const accepting = decide.isPending && decide.variables?.decision === 'accepted'
   const dismissing = decide.isPending && decide.variables?.decision === 'dismissed'
+  const canDecide = decidable && pending
+  const decideReason = decideGate(currentWorkspace.myRole)
+  // The server says where a fix can be drafted: a finding without a replacement yet (none at all, or only the
+  // analyzer's example) that points at lines of a text file.
+  const canDraft = finding.canDraftFix && (!finding.suggestion || isExample(finding.suggestionSource))
 
   const accept = () => {
     decide.mutate(
@@ -55,12 +67,7 @@ export function FindingItem({ finding, reviewId, decidable, index, measure, styl
         {formatLocation(finding.path, finding.line, finding.endLine)}
       </code>
       {finding.detail ? <Markdown className="text-xs [&_p]:my-1.5">{finding.detail}</Markdown> : null}
-      {finding.suggestion ? (
-        <div className="flex flex-col gap-1">
-          <span className="text-2xs font-medium text-muted-foreground">Suggested replacement</span>
-          <Code>{finding.suggestion}</Code>
-        </div>
-      ) : null}
+      {finding.suggestion ? <FindingSuggestion finding={finding} /> : null}
       {!pending && finding.decisionNote ? (
         <p className="text-xs text-muted-foreground">
           {finding.decidedBy ? (
@@ -72,15 +79,24 @@ export function FindingItem({ finding, reviewId, decidable, index, measure, styl
           {finding.decisionNote}
         </p>
       ) : null}
-      {decidable && pending ? (
-        <div className="flex items-center gap-2 pt-0.5">
-          <Button size="xs" onClick={accept} loading={accepting} disabled={dismissing}>
-            <CheckIcon data-icon="inline-start" />
-            Accept
-          </Button>
-          <DismissDialog finding={finding} decide={decide} />
+      {canDecide || canDraft ? (
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          {canDecide ? (
+            <DisabledReason reason={decideReason}>
+              <span className="flex items-center gap-2">
+                <Button size="xs" onClick={accept} loading={accepting} disabled={dismissing || decideReason !== null}>
+                  <CheckIcon data-icon="inline-start" />
+                  Accept
+                </Button>
+                <DismissDialog finding={finding} decide={decide} disabled={decideReason !== null} />
+              </span>
+            </DisabledReason>
+          ) : null}
+          {canDraft ? <DraftFixButton finding={finding} draft={draft} disabledReason={draftFixGate(currentWorkspace.myRole)} /> : null}
         </div>
       ) : null}
+      {/* A refused draft names the switch to turn on: it stays under the finding it was asked for. */}
+      {draft.isError ? <RefusalNote error={draft.error} /> : null}
     </li>
   )
 }

@@ -28,7 +28,16 @@ pub struct SettingsRow {
     pub reasoner_base_url: String,
     /// Tokens per UTC day before the reasoner falls back to the heuristic.
     pub reasoner_daily_token_cap: i64,
+    /// Reviews ask the model to draft fixes on their own (CONTRACT.md §23.2).
+    pub auto_draft_fixes: bool,
+    /// Whose pull requests the watcher asks to merge: "off" | "dependabot".
+    pub auto_merge: String,
+    /// A merge needs an SDI review of the current head (CONTRACT.md §23.3).
+    pub merge_requires_review: bool,
 }
+
+pub const AUTO_MERGE_OFF: &str = "off";
+pub const AUTO_MERGE_DEPENDABOT: &str = "dependabot";
 
 impl SettingsRow {
     pub fn defaults() -> Self {
@@ -42,7 +51,15 @@ impl SettingsRow {
             reasoner_provider: String::new(),
             reasoner_base_url: String::new(),
             reasoner_daily_token_cap: DEFAULT_DAILY_TOKEN_CAP,
+            auto_draft_fixes: false,
+            auto_merge: AUTO_MERGE_OFF.to_owned(),
+            merge_requires_review: true,
         }
+    }
+
+    /// Whether the watcher may ask to merge Dependabot's pull requests.
+    pub fn merges_dependabot(&self) -> bool {
+        self.auto_merge == AUTO_MERGE_DEPENDABOT
     }
 
     /// Whether the settings ask for the LLM at all.
@@ -58,7 +75,8 @@ impl SettingsRow {
 pub async fn get(pool: &PgPool, workspace_id: Uuid) -> sqlx::Result<Option<SettingsRow>> {
     sqlx::query_as(
         "SELECT default_weights, reasoner, model, cost_ceiling_usd, auto_review, reasoner_provider, reasoner_base_url, \
-         reasoner_daily_token_cap FROM settings WHERE workspace_id = $1",
+         reasoner_daily_token_cap, auto_draft_fixes, auto_merge, merge_requires_review \
+         FROM settings WHERE workspace_id = $1",
     )
     .bind(workspace_id)
     .fetch_optional(pool)
@@ -68,13 +86,16 @@ pub async fn get(pool: &PgPool, workspace_id: Uuid) -> sqlx::Result<Option<Setti
 pub async fn upsert(pool: &PgPool, workspace_id: Uuid, row: &SettingsRow) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO settings (workspace_id, default_weights, reasoner, model, cost_ceiling_usd, auto_review, \
-         reasoner_provider, reasoner_base_url, reasoner_daily_token_cap, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+         reasoner_provider, reasoner_base_url, reasoner_daily_token_cap, auto_draft_fixes, auto_merge, \
+         merge_requires_review, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now()) \
          ON CONFLICT (workspace_id) DO UPDATE SET default_weights = EXCLUDED.default_weights, \
          reasoner = EXCLUDED.reasoner, model = EXCLUDED.model, cost_ceiling_usd = EXCLUDED.cost_ceiling_usd, \
          auto_review = EXCLUDED.auto_review, reasoner_provider = EXCLUDED.reasoner_provider, \
          reasoner_base_url = EXCLUDED.reasoner_base_url, \
-         reasoner_daily_token_cap = EXCLUDED.reasoner_daily_token_cap, updated_at = now()",
+         reasoner_daily_token_cap = EXCLUDED.reasoner_daily_token_cap, \
+         auto_draft_fixes = EXCLUDED.auto_draft_fixes, auto_merge = EXCLUDED.auto_merge, \
+         merge_requires_review = EXCLUDED.merge_requires_review, updated_at = now()",
     )
     .bind(workspace_id)
     .bind(&row.default_weights)
@@ -85,7 +106,28 @@ pub async fn upsert(pool: &PgPool, workspace_id: Uuid, row: &SettingsRow) -> sql
     .bind(&row.reasoner_provider)
     .bind(&row.reasoner_base_url)
     .bind(row.reasoner_daily_token_cap)
+    .bind(row.auto_draft_fixes)
+    .bind(&row.auto_merge)
+    .bind(row.merge_requires_review)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Every workspace that switched `auto_review` on, in a stable order: the
+/// ones the pull request watcher looks at (CONTRACT.md §23.1). This is the
+/// one query of the schema that is not scoped to a workspace: it only
+/// answers which workspaces asked to be watched.
+/// Workspaces the watcher looks at, the one it looked at longest ago
+/// first (never looked at before all others), so a look that is cut short
+/// starves nobody: whoever was left out comes first next time.
+pub async fn auto_review_workspaces(pool: &PgPool) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "SELECT s.workspace_id FROM settings s \
+         LEFT JOIN pr_watch_state w ON w.workspace_id = s.workspace_id \
+         WHERE s.auto_review \
+         ORDER BY w.last_run_at ASC NULLS FIRST, s.workspace_id",
+    )
+    .fetch_all(pool)
+    .await
 }

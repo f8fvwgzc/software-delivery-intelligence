@@ -165,7 +165,11 @@ const DELIVERY: (&str, &str, &str, [&str; 3]) = (
 
 /// Name of the identity that stands for the connected token.
 pub const GITHUB_TOKEN_IDENTITY: &str = "github-token";
-const GITHUB_TOKEN_DESCRIPTION: &str = "The connected GITHUB_TOKEN. Reads and writes the repositories the token can reach; present only while the token is configured.";
+const GITHUB_TOKEN_DESCRIPTION: &str = "The workspace's GitHub access: the installed GitHub App, the signed-in account, or the instance's GITHUB_TOKEN. Reads and writes the repositories that access can reach; present only while the workspace has one.";
+/// `repository:admin` (changing repository settings, CONTRACT.md §23) is
+/// deliberately not here, nor in any other seeded scope: whatever the
+/// token itself may do on GitHub, a step that needs it pauses for a timed
+/// grant first (§5.3).
 const GITHUB_TOKEN_SCOPES: [&str; 3] = ["repository:read", "repository:write", "pipeline:trigger"];
 
 /// Upserts one seeded identity with its base grants. Existing rows keep
@@ -206,7 +210,8 @@ async fn upsert(
 
 /// Creates the workspace's seeded identities when they are missing:
 /// `simulated`, `local-docker` and `delivery` always, `github-token` only
-/// while a token is configured. Idempotent.
+/// while the workspace has GitHub access (its own, or the instance's
+/// token). Idempotent.
 pub async fn seed(tx: &mut Tx, workspace_id: Uuid, github_configured: bool) -> sqlx::Result<()> {
     let (name, kind, description, scopes) = SIMULATED;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
@@ -292,4 +297,30 @@ pub async fn holding_all<'e>(
     .bind(except)
     .fetch_optional(exec)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT.md §5.3: `repository:admin` is held by nobody; the
+    /// connected token keeps exactly the repository scopes it had.
+    #[test]
+    fn no_seeded_identity_holds_repository_admin() {
+        let seeded: [&[&str]; 4] = [
+            &SIMULATED.3,
+            &LOCAL_DOCKER.3,
+            &DELIVERY.3,
+            &GITHUB_TOKEN_SCOPES,
+        ];
+        for scopes in seeded {
+            assert!(
+                !scopes.contains(&crate::domain::policy::REPOSITORY_ADMIN),
+                "{scopes:?}"
+            );
+            assert!(scopes.iter().all(|scope| !scope.ends_with(":admin")));
+        }
+        assert!(GITHUB_TOKEN_SCOPES.contains(&"repository:read"));
+        assert!(GITHUB_TOKEN_SCOPES.contains(&"repository:write"));
+    }
 }

@@ -65,7 +65,7 @@ Shared crates:
 | `LLM_PROVIDER` | `anthropic` | intelligence (instance-wide reasoner fallback, §19: `anthropic` or `openai_compatible`) |
 | `LLM_BASE_URL` | — | intelligence (OpenAI-compatible endpoint: OpenAI, Azure OpenAI with `?api-version=`, Ollama, vLLM, OpenRouter, Gemini) |
 | `LLM_API_KEY` / `ANTHROPIC_API_KEY` | — | intelligence (optional dev fallback key; `ANTHROPIC_API_KEY` is the alias) |
-| `LLM_MODEL` / `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | intelligence |
+| `LLM_MODEL` / `ANTHROPIC_MODEL` | `claude-sonnet-5-5` for `anthropic`, none otherwise | intelligence (`LLM_MODEL` names the model for whichever provider is configured; `ANTHROPIC_MODEL` is the older name and applies to the Anthropic provider only. An OpenAI-compatible provider has no default: until a model is named nothing is called, §19) |
 | `OSV_API_URL` | `https://api.osv.dev` | intelligence (§20 dependency vulnerabilities; `off` disables) |
 | `KNOWLEDGE_GRPC_URL` | `http://127.0.0.1:50051` | gateway, intelligence, execution |
 | `IDENTITY_GRPC_URL` | `http://127.0.0.1:50054` | gateway, knowledge (tokens, data controls, audit), intelligence, execution |
@@ -76,6 +76,7 @@ Shared crates:
 | `RUST_LOG` | `info,sqlx=warn` | all |
 | `SDI_RUN_DIR` | `.run` | execution (`docker` adapter workdirs) |
 | `SDI_ALLOW_PRIVATE_DEPLOY_TARGETS` | unset | execution: set to `1` to let deployers and health checks reach loopback and private addresses (self-hosted networks, local development); by default those are refused as an SSRF guard |
+| `SDI_PR_WATCH_SECONDS` | `60` | intelligence: seconds between two looks at the open pull requests of workspaces with `auto_review` on (§23). Minimum 15; `0` turns the watcher off |
 | `AZURE_DEVOPS_URL` | `https://dev.azure.com` | execution (`azure_devops` deployer; Azure DevOps Server) |
 | `GITHUB_API_URL` | `https://api.github.com` | execution (`docker` tarball downloads and the `github` adapter; GHES or a test server) |
 | `DOCKER_HOST` | Docker default | execution (`docker` adapter; the compose `local-exec` profile mounts the socket) |
@@ -180,6 +181,11 @@ design conversation. `editable=false` rows can never be relaxed.
 | `deploy.verify_health` | Verify the deployment is healthy | safe | auto | no |
 | `deploy.record` | Record the deployment on GitHub | safe | auto | yes |
 | `deploy.rollback` | Roll back an environment | high | approval | yes |
+| `repo.commit_fixes` | Commit review fixes to a pull request branch | medium | approval | yes |
+| `repo.verify_mergeable` | Check that a pull request can be merged | safe | auto | no |
+| `repo.merge_pull_request` | Merge a pull request | high | approval | yes |
+| `repo.delete_branch` | Delete a merged branch | medium | auto | yes |
+| `repo.enable_security_updates` | Turn on Dependabot alerts and security updates | medium | approval | yes |
 
 ### 5.3 Permissions (`PlanStep.required_permissions`, identity grants)
 
@@ -189,10 +195,15 @@ design conversation. `editable=false` rows can never be relaxed.
 seeded `simulated` identity holds `repository:read`, `container:build`,
 `environment:write` only; the seeded `local-docker` identity adds
 `container:run`, and the seeded `github-token` identity holds
-`repository:read` + `repository:write` (it is the connected token, so the
-grant only exists while `GITHUB_TOKEN` is configured); everything else must be granted (TTL, default 30
+`repository:read` + `repository:write` (it stands for the workspace's
+GitHub access, so it only exists while the workspace has one: the
+installed GitHub App, the signed-in account's OAuth grant, or the
+instance-wide `GITHUB_TOKEN`; a workspace without any is looked at again
+every 5 minutes, and creating a `github` execution there answers
+`FAILED_PRECONDITION` naming the three ways to get one); everything else must be granted (TTL, default 30
 minutes) and a missing grant produces a `PERMISSION_DENIED` failure **before**
-the step runs.
+the step runs. `repository:admin` (changing repository settings,
+§23) is held by nobody: it is always a timed grant.
 
 ### 5.4 Adapters
 
@@ -205,7 +216,7 @@ runtime cannot provide.
 |---|---|---|
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
 | `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/` and writes `CreateExecutionRequest.artifacts` on top of it (so an option's generated Dockerfile is what gets built), `container.build` runs `docker build -f params.dockerfile params.context` (the application directory's Dockerfile in a monorepo), `container.run` starts the image detached (no `--rm`, so a crashed container keeps its logs for the failure) with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, or, when the plan names `params.test_image` (a compiled stack whose runtime image has no toolchain), in that image with `params.test_dir` of the checkout mounted at `/src`; `env.destroy_temporary` stops and removes everything, and a cancelled or finished run removes its container and workdir either way; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
-| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<first 8 chars of the proposal id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Files under `.github/workflows/` need the token's `workflow` scope; without it GitHub answers 404 on the tree and the step fails `PERMISSION_DENIED` naming that scope | `repo.checkout`, `repo.open_pull_request` |
+| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Files under `.github/workflows/` need the token's `workflow` scope; without it GitHub answers 404 on the tree and the step fails `PERMISSION_DENIED` naming that scope. `params.branch` names the branch instead when there is no proposal. The pull request operations of §23 run here too | `repo.checkout`, `repo.open_pull_request`, `repo.commit_fixes`, `repo.verify_mergeable`, `repo.merge_pull_request`, `repo.delete_branch`, `repo.enable_security_updates` |
 | `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
 
 A plan may mix families (build locally, then open a PR): the service routes
@@ -220,7 +231,8 @@ approval → run → verify → checkpoint. The `docker` adapter requires the
 `PERMISSION_DENIED`, `POLICY_BLOCKED`, `SKU_UNAVAILABLE`, `QUOTA_EXCEEDED`,
 `TIMEOUT`, `HEALTH_CHECK_FAILED`, `BUILD_FAILED`, `TESTS_FAILED`,
 `DEPENDENCY_CONFLICT`, `IMAGE_NOT_FOUND`, `DEPLOYER_FAILED`,
-`DEPLOYER_TIMEOUT`, `GITOPS_CONFLICT`, `UNKNOWN`. Each has at least two remediation options
+`DEPLOYER_TIMEOUT`, `GITOPS_CONFLICT`, `HEAD_MOVED`, `MERGE_CONFLICT`,
+`CHECKS_FAILING`, `MERGE_BLOCKED`, `UNKNOWN`. Each has at least two remediation options
 plus the free-text instruction path.
 
 ### 5.6 Pattern catalog (seeded by knowledge, `source=catalog`, scope `public_template`)
@@ -388,7 +400,7 @@ Base `/api/v1`. JSON, `camelCase` fields, enums as lowercase strings without
 their proto prefix (`PROJECT_STATUS_SCANNING` → `"scanning"`,
 `EXECUTION_STATUS_WAITING_FOR_APPROVAL` → `"waiting_for_approval"`,
 `RISK_LEVEL_HIGH` → `"high"`). Timestamps RFC 3339. Ids are strings.
-Errors: `{ "code": string, "message": string }` with 400/404/409/412/429/502/504.
+Errors: `{ "code": string, "message": string }` with 400/404/409/412/429/501/502/504.
 Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 `GET /api/openapi.json` is the contract and `GET /api/docs` renders it
 (Scalar). `web/src/lib/api/schema.d.ts` is generated from it
@@ -438,6 +450,13 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 | `GET /proposals/{id}/options/{optionId}/artifacts` | gateway: the option's artifacts (omitted from `GET /proposals/{id}` and list responses to keep them small; `GET /proposals/{id}` carries `artifactCount` per option) |
 | `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the proposal (201) whose `executionId` is that execution, where `outputs.pull_request_url` appears once the approved step ran |
 | `POST /executions {…, adapter?, artifacts?}` | Execution.CreateExecution (adapter per §5.4) |
+| `POST /settings/reasoner/test` | Intelligence.TestReasoner (§19); a misconfiguration is a 200 with a status |
+| `POST /findings/{id}/draft-fix` | Intelligence.DraftFix (§23.2) |
+| `POST /reviews/{id}/apply-fixes` | Intelligence.ApplyFixes (§23.2); 201 |
+| `GET /projects/{id}/pull-requests/{number}/merge-readiness` | Intelligence.GetMergeReadiness (§23.3) |
+| `POST /projects/{id}/pull-requests/{number}/merge {method?, deleteBranch?}` | Intelligence.MergePullRequest (§23.3); 201 `{executionId, readiness}` |
+| `GET /projects/{id}/security?refresh=` | Intelligence.GetSecurityOverview (§23.4) |
+| `POST /projects/{id}/security/dependabot {alerts?, securityUpdates?, configFile?}` | Intelligence.ConfigureDependabot (§23.4); 201 `{executionId}` |
 
 Every SSE stream starts with the comment line `: open` the moment it is
 accepted, before any event exists, and repeats `: keep-alive` every 15s.
@@ -455,6 +474,8 @@ only as a fallback while the stream is disconnected.
 The gateway converts gRPC status codes: `NOT_FOUND`→404,
 `INVALID_ARGUMENT`→400, `ALREADY_EXISTS`→409, `FAILED_PRECONDITION`→412,
 `PERMISSION_DENIED`→403, `UNAVAILABLE`→502, `DEADLINE_EXCEEDED`→504,
+`UNIMPLEMENTED`→501 (the service is an older build than the gateway; the
+message says to bring them to the same version),
 `RESOURCE_EXHAUSTED`→429, `UNAUTHENTICATED`→401, other→500 with an opaque
 `internal` body (the real message is only logged). Mutating routes answer
 201 for creates (`POST /projects`, `/proposals`, `/proposals/{id}/messages`,
@@ -794,7 +815,10 @@ directory and no way to grant someone more than GitHub already grants them.
   `pull_requests:write` (only used by the `github` adapter), `members:read`;
   for continuous delivery (§22) also `actions:write` (workflow dispatch),
   `deployments:write` (record), `packages:read` (GHCR verify) and
-  `contents:write` (GitOps commits and setup-file pull requests) — a step
+  `contents:write` (GitOps commits and setup-file pull requests); for the
+  pull request autopilot (§23) also `checks:read` and `statuses:read`
+  (merge readiness), `vulnerability_alerts:read` (Dependabot alerts) and,
+  only to turn Dependabot on, `administration:write` — a step
   whose permission is missing pauses with `PERMISSION_DENIED`, it never
   falls back to anything broader;
   events `installation`, `installation_repositories`, `push`,
@@ -948,6 +972,7 @@ choose". The architecture has to make that checkable:
 | Generated artifacts, proposals, decisions, documents, diagrams | `intelligence` schema | until deleted | n/a |
 | Execution logs and outputs | `execution` schema | until deleted; workdirs removed after each run | n/a |
 | LLM requests | none stored; sent only when the data controls allow the reasoner, to the workspace's configured provider with its own key; payload = structured context (findings, options, facts, diagram spec), never raw files, trimmed to the token budget below | `reasoner_usage` keeps token counts per workspace and day (no content) | yes (default off) |
+| Source lines sent to the model (§23) | nothing by default. With `code_to_model = changed_lines` and the reasoner on: the lines one finding points at plus at most 20 lines either side, from the pull request under review, capped at 120 lines per request, to the workspace's configured provider. Never a whole file, never a `secrets.*` finding, and any line a secrets rule matches is replaced by `<redacted>` before sending. The reply is stored as that finding's suggestion | the suggestion lives with the review; the request is not stored | yes (default off; `code_to_model = off`) |
 | OSV lookups (§20) | package coordinates (`ecosystem`, `name`, `version`) of dependencies a pull request adds, sent to `OSV_API_URL`; answers cached in `osv_cache` (shared, not per tenant) | 24 h TTL | `OSV_API_URL=off` |
 | Audit entries | `identity.audit` | `audit_retention_days` (default 365) | no |
 | GitHub tokens | installation tokens are minted per request and cached ≤ 55 min in memory; OAuth tokens encrypted at rest with `SDI_SESSION_SECRET` | session lifetime | — |
@@ -987,6 +1012,29 @@ accepted); execution `execution.start`, `execution.resolve` (entity
 `execution`), `approval.decide` (entity `approval`, detail starts with
 `approved`/`rejected`), `policy.update` (entity `policy`, entity_id =
 action type, detail `OLD -> NEW`), `identity.grant` (entity `identity`).
+
+**What is effective, what is stored.** `GetSettings` returns the
+*effective* provider, endpoint and model: the workspace's own choice,
+else what it inherits (the model stored with its key, `LLM_PROVIDER` /
+`LLM_BASE_URL` / `LLM_MODEL`, and for Anthropic only `ANTHROPIC_MODEL` or
+the built-in default). An inherited value is never stored as the
+workspace's choice: the gateway sends an unpatched provider, endpoint or
+model as empty ("keep what is stored"), and the service drops a value
+that only repeats what the workspace would inherit anyway. So a workspace
+that chose nothing keeps following the environment. An OpenAI-compatible
+provider with no model named anywhere has no effective model, and then
+the built-in reasoner answers.
+
+**Testing the connection.** `TestReasoner` (ADMIN;
+`POST /settings/reasoner/test`) makes one call of at most 16 reply tokens
+and answers `{status, message, provider, model, endpoint, latencyMs,
+inputTokens, outputTokens}`. `status` is `ok`, or the first thing in the
+way, in the order a person fixes them: `off` (the data controls),
+`heuristic` (the settings choose the built-in reasoner), `no_key`,
+`no_model`, `cap_reached`, `provider_error` (the provider's HTTP status,
+never its body), `identity_unavailable`. A misconfiguration is an answer
+(200), not an error. `endpoint` is scheme and host only. The call counts
+against the daily cap; audit action `settings.reasoner_test`.
 
 **Any LLM, token-efficient.** The reasoner is provider-agnostic
 (`intelligence/src/reasoner/provider.rs`): `Provider::Anthropic` (Messages
@@ -1037,7 +1085,7 @@ shows as a rail, like executions:
 | `analyze` | deterministic analyzers over the diff, each a pure function `fn(&ReviewInput) -> Vec<Finding>` in `intelligence/src/domain/review/rules/`: `secrets` (keys/tokens/private keys in added lines; `config_credential`: password/secret/token/api_key keys with literal values in yaml/json/toml/env/properties files, references like `${VAR}`/`secretKeyRef` and placeholders excluded), `security` (shell injection, `eval`, SQL built by format, disabled TLS verification, `chmod 777`, hard-coded hosts; insecure defaults `debug_enabled`, `cors_wildcard`, `insecure_cookie` outside local/dev/example files), `dependencies` (new deps without lockfile change, EOL runtimes introduced — judged by the analyzer's EOL table against the review date —, version pins loosened, `vulnerable`: see OSV below), `docker` (root user, `latest` tags, secrets in `ENV`, missing healthcheck), `ci` (workflows without permissions block, `pull_request_target` with checkout, unpinned actions), `iac` (public buckets/0.0.0.0/0 ingress, missing tags/state), `tests` (`missing`: source changed without tests when the project has a test framework; `required`: a path matching `.sdi.yml review.require_tests_for` changed without a test change, high), `docs` (README/CONTRACT claims touched vs code), `correctness` (TODO/FIXME added, unwrap/expect/`!` in non-test Rust/TS, swallowed errors, `console.log`; `unhandled_promise`: `.then(` chains without `.catch`/`.finally` and floating `fetch`/`axios`/`save()`-style calls in TS/JS; `unhandled_result`: a dropped `.await;` in Rust, an ignored error return in Go; `large_function`: more than 120 added lines in one function; `duplicate_block`: 6+ meaningful added lines repeated elsewhere in the pull request, reported once per copy pointing at the first), `migrations` (`drop`: DROP TABLE/COLUMN and the ORM equivalents; `alter_type`: a column's type changed in place; `not_null_without_default`: NOT NULL added or set without a default on a table the migration does not itself create), `maturity` (the change moves a maturity axis up or down), `custom` (`.sdi.yml review.rules`, §12), `review.truncated` (info: the pull request was over the limits, naming what was not read). Every finding carries `path`, `line`, `rule`, evidence in `detail` and, when mechanical, a `suggestion` block; findings are deduplicated on `(rule, path, line)`. Diff edge cases every rule family handles through `ReviewInput`: CRLF (`\r` stripped before matching and quoting), binary files and pure renames (no hunks: not reviewable, never asked for tests), whole-file rewrites (counted as a real change however short), truncated patches and file lists over 200 files (skipped and named in `review.truncated`) |
 | `findings` | status `proposed`; the human accepts or dismisses each (`DecideFinding`) with a note. **Learnings**: every verdict updates `review_learnings(workspace, project, rule, accepted, dismissed, last_note)` (a changed verdict moves the count, never double-counts); before each analysis the project's rows are loaded into `ReviewInput.learnings`: a rule dismissed ≥ 3 times with no accept is emitted with `severity=info` and `detail` prefixed "Suppressed by project learnings" (the stored signal; the domain `Finding` also carries a `suppressed` flag), unless the finding is `critical`; a rule the project accepted at least once orders one severity step higher (its stored severity is unchanged). Learnings are exported and deleted with the workspace (entity `review_learning`) |
 | `summary` | walkthrough Markdown: intent (from title/body/commits), what changed per file group, impacted components (graph), risk, and what to verify — templated from the facts; when the workspace reasoner is on (§19), rewritten in prose by the configured LLM from the structured context (never raw files), reply capped at 600 tokens |
-| `publish` | `PublishReview` posts a GitHub PR review (`github` token with `pull_requests:write`) with the summary as the body and one review comment per **accepted** finding (`suggestion` blocks become GitHub suggestions); event `comment` / `request_changes` / `approve` |
+| `publish` | `PublishReview` posts a GitHub PR review (`github` token with `pull_requests:write`) with the summary as the body and one review comment per **accepted** finding (an exact replacement becomes a GitHub suggestion block, an example plain code under "Example to adapt", §23.2); event `comment` / `request_changes` / `approve` |
 
 **OSV.** Nothing about vulnerabilities is bundled. For every dependency
 the pull request adds with an exact version (`package.json`,
@@ -1058,7 +1106,8 @@ rule's severity after all rules ran, `require_tests_for` drives
 `tests.required`.
 
 Rules: never publish automatically; webhooks `pull_request` (opened,
-synchronize) only *start* a review when the workspace setting
+synchronize) and the pull request watcher (§23, for installs that receive
+no webhooks) only *start* a review when the workspace setting
 `auto_review` is on (default off), and it stops at `proposed`. Reviews are
 per `(project, pr_number, head_sha)`; a new push creates a new review and
 links the previous one. `ListReviewActivity` is the audit of the review
@@ -1257,3 +1306,304 @@ counts runs *started* in the last 30 days whatever became of them;
 window and is the denominator of `successRate`. A paused run is not
 finished, so `finishedRuns30d: 0` means "no rate yet" and clients show a
 dash, never 0%.
+
+## 23. Pull request autopilot
+
+SDI can carry a pull request from "opened" to "merged" with a person only
+deciding: it notices the pull request, reviews it, writes the fixes it can,
+commits them, and merges. Each of those is a separate, switchable step, and
+the three that change the repository (commit, merge, repository settings)
+are executions, so permission → policy → approval → act → verify applies
+exactly as in §7. With every default left alone, nothing is published,
+committed or merged without a person deciding it.
+
+It works with a plain token (`gh auth`, a personal access token) as well as
+with the GitHub App: no step depends on a webhook.
+
+Each of the three executions is **created and started** by intelligence as
+the principal that asked (`CreateExecution`, then `StartExecution`), so it
+runs straight to its first approval instead of waiting in planning for a
+second click. A start that fails does not undo the request: the execution
+is recorded and returned, and can be started from its page. Requests for
+the same thing take turns (`pg_try_advisory_xact_lock` per review, per
+pull request, per project): while one is being handled a second is refused
+with `FAILED_PRECONDITION`, so "is one already open?" can never be passed
+twice.
+
+### 23.1 Watcher (intelligence)
+
+A background task looks at the open pull requests of every workspace whose
+`auto_review` setting is on, every `SDI_PR_WATCH_SECONDS` (default 60,
+minimum 15, `0` = off):
+
+1. `Knowledge.ListProjects` as the system principal of that workspace, then
+   `ListPullRequests(state=open, refresh=true, limit=50)` per project.
+2. A pull request that is not a draft and has no review for its current
+   `head_sha` gets one (`requested_by = system`, activity actor `watcher`).
+   It stops at `proposed`, like every review.
+3. With `auto_merge = dependabot`: a Dependabot pull request whose merge
+   readiness (§23.3) has no blocker and that has no merge execution yet gets
+   one, exactly as if a person had asked for the merge.
+
+Bounds: at most 5 reviews and 2 merge requests started per workspace per
+look; one look at a time across replicas (`pg_try_advisory_lock`); up to 8
+workspaces looked at side by side, the one looked at longest ago first,
+each with a 120-second budget; a workspace whose look fails is skipped
+until the next one and the reason is kept in `pr_watch_last_error` (a
+problem with one project or pull request is noted there and the look goes
+on). The first look comes one interval after start. A Dependabot pull
+request found blocked is not asked about again for 5 minutes. A look that finds nothing new costs GitHub
+only conditional requests (ETag), which do not count against the rate
+limit. Reviews are unique per `(project, pr_number, head_sha)`, so the
+watcher and a webhook can never produce two.
+
+### 23.2 Fixes
+
+A finding's `suggestion` is code that goes with it, and `suggestion_source`
+says what it is. Only an exact replacement of lines `line..=end_line` of
+`path` at the review's `head_sha` may ever be committed:
+
+- `rule`: the analyzer's exact replacement (§20). A rule may only claim
+  this (`Finding::with_replacement`) when replacing those lines with the
+  text is the whole fix and nothing in it needs filling in. Today that is
+  `dependencies.pin_loosened`, which puts the removed line back.
+- `example`: the analyzer's illustration (`Finding::with_suggestion`): a
+  line to add rather than replace (`HEALTHCHECK …`, a `permissions:`
+  block), or text with a placeholder (`FROM node:<version>`). It is shown
+  with the finding, **never committed**, never counted in `fixes_ready`,
+  and published to GitHub as plain code under "Example to adapt", not as a
+  suggestion block (GitHub's "commit suggestion" would replace the
+  commented lines with it). The model may still be asked for the real
+  replacement, which then takes the example's place.
+- `model`: `DraftFix(finding_id)` asked the workspace's model. Allowed only
+  when the data controls say `reasoner != off` **and** `code_to_model =
+  changed_lines` (§19); otherwise `FAILED_PRECONDITION` with a sentence
+  naming the two switches. `can_draft_fix` is false, and the call refused,
+  for a finding that already has a replacement (`rule` or `model`), has no `line`, is in a
+  binary, removed or truncated file, belongs to the `secrets` category, or
+  points into `.github/workflows/`. The request carries the rule id, title
+  and detail, the path and language, and the flagged lines with at most 20
+  lines either side read from the head commit (`GetRepoFile(ref)`), 120
+  lines at most, secret-matching lines redacted. The model is told to
+  return only the replacement for the flagged lines. The reply is capped at
+  800 tokens, stripped of code fences, and refused (`FAILED_PRECONDITION`,
+  nothing stored) when it is empty, identical to the original, longer than
+  200 lines, or when the daily token cap is spent. A drafted fix never
+  changes the finding's decision: a person still accepts or dismisses it.
+  With the setting `auto_draft_fixes` the review drafts up to 10 such fixes
+  itself after `analyze`, most severe first, and fails soft. Unasked, it
+  leaves alone the findings that carry an example and the `tests` and
+  `maturity` categories (no line replacement fixes "there are no tests"):
+  a person can still ask for those.
+
+`ApplyFixes(review_id)` (APPROVER, like every request that writes to the
+repository through the `github` adapter, §18) commits every **accepted**
+finding that has a replacement (`rule` or `model`) and no
+`fix_execution_id` yet:
+
+- Refused with `FAILED_PRECONDITION` when there is none; when the pull
+  request is not open; when its head is no longer the review's `head_sha`
+  ("review the new head first"); when it comes from a fork ("publish the
+  review so the author can apply the suggestions"); or when a fix execution
+  for this review is still open.
+- Each file is read at `head_sha` and its replacements applied bottom-up.
+  Two suggestions that overlap in one file: the more severe one wins, the
+  other is left out and stays available. A replacement whose target lines
+  are beyond the file's end is left out the same way.
+- The result is one execution, adapter `github`, title `Apply N review
+  fixes to #<number>`, `artifacts` = the changed files in full:
+  `repo.checkout` → `repo.commit_fixes` with `params.branch` (the head
+  branch), `params.expected_head_sha`, `params.message`,
+  `params.pull_request`. The adapter creates one commit on top of
+  `expected_head_sha` and moves the branch without force; a branch that
+  moved fails `HEAD_MOVED`. Outputs `commit_sha`, `commit_url`.
+- The review keeps `fix_execution_id`, each included finding too. The new
+  head is reviewed again by the watcher (or by hand), linked to this review.
+  A fix execution that ends failed or cancelled frees its findings, so
+  their suggestions can be applied again.
+
+### 23.3 Merge
+
+`GetMergeReadiness(project, pr_number)` reads GitHub now
+(`Knowledge.GetPullRequestStatus`) and adds SDI's own gate. `blockers`:
+
+| code | when |
+|---|---|
+| `not_open` | closed or already merged |
+| `draft` | still a draft |
+| `conflicts` | GitHub says the branch conflicts with its base |
+| `mergeability_unknown` | GitHub has not computed mergeability yet (ask again) |
+| `checks_failing` | at least one check run or commit status failed |
+| `checks_pending` | none failed, at least one is still running |
+| `changes_requested` | a reviewer on GitHub requested changes |
+| `blocked_by_github` | `mergeable_state = blocked` (branch protection) with none of the above explaining it |
+| `no_review` | `merge_requires_review` is on and no SDI review exists for this pull request |
+| `review_outdated` | the newest SDI review is for an older head |
+| `review_running` | the review of this head has not reached `proposed` |
+| `findings_undecided` | the review of this head has an undecided finding of severity high or critical |
+| `merge_in_progress` | a merge execution for this pull request is still open |
+
+The last five are SDI's gate; the first three review ones exist only while
+`merge_requires_review` is on (default). `can_merge` is `blockers.is_empty()`.
+
+**Checks** are the head commit's check runs (`GET …/check-runs`, GitHub's
+default `filter=latest`) and its commit statuses (`GET …/status`), counted
+together, one entry per name. GitHub already returns only the newest
+attempt of a run and the newest status of a context, so what still shares
+a name is two different things (two apps, two workflows, a run and a
+status), and the **worst** outcome under a name counts: failed over
+pending over passed. Knowledge (readiness) and execution
+(`repo.verify_mergeable`) fold identically, so the frame a person reads and
+the step that enforces it cannot disagree. A conclusion nobody here knows
+counts as failed; an unknown status state as pending.
+
+`MergePullRequest(project, pr_number, method?, delete_branch?)` (APPROVER)
+refuses with `FAILED_PRECONDITION` and the first blocker's sentence unless
+`can_merge`; `method` must be one the repository allows (empty picks
+squash, else merge, else rebase). It creates one execution, adapter
+`github`, title `Merge #<number>: <title>`:
+
+1. `repo.verify_mergeable` — reads the pull request again; fails
+   `HEAD_MOVED` when the head is not `params.expected_head_sha`,
+   `MERGE_CONFLICT`, `CHECKS_FAILING` (failed or still running) or
+   `MERGE_BLOCKED` with GitHub's words.
+2. `repo.merge_pull_request` — `PUT /pulls/{n}/merge` with `sha =
+   expected_head_sha` and `merge_method`; `409` → `HEAD_MOVED`, `405` →
+   `MERGE_BLOCKED` (GitHub's message, e.g. a required review is missing).
+   Outputs `merge_commit_sha`, `pull_request_url`.
+3. `repo.delete_branch` — only with `delete_branch` and a same-repository
+   head; a branch that is already gone is success.
+
+`repo.merge_pull_request` is `high · approval` by default and editable: a
+workspace that wants hands-free merges sets that policy to `auto`, and that
+is the only switch that removes the human from a merge. Remediations:
+`HEAD_MOVED` → review the new head and ask again (ends the run) / cancel;
+`MERGE_CONFLICT` → retry after the branch is updated / give up / cancel
+(resolving a conflict normally adds a commit, and then the retry stops as
+`HEAD_MOVED`, because the plan is pinned to the head that was approved: the
+option says so); `CHECKS_FAILING` → retry when the checks are green / give
+up / cancel; `MERGE_BLOCKED` → retry after the rule is satisfied on GitHub
+/ give up / cancel.
+
+### 23.4 Vulnerabilities and Dependabot
+
+`Knowledge.GetRepositorySecurity(project, refresh?)` reads, with the
+workspace's GitHub access and a 5-minute cache:
+
+- whether a Dependabot configuration exists on the default branch
+  (`.github/dependabot.yml` / `.yaml`) and which ecosystems it names;
+- `GET /repos/{o}/{r}/vulnerability-alerts` → `alerts` (`204` enabled,
+  `404` disabled, anything else `unknown`) and
+  `GET /repos/{o}/{r}/automated-security-fixes` → `security_updates`;
+- `GET /repos/{o}/{r}/dependabot/alerts?state=open` (up to 300, most severe
+  first) → `open_alerts`. `alerts_status` is `ok`, `disabled` (GitHub says
+  alerts are off), `forbidden` (the token may not read them; the message
+  names the scope or App permission) or `unavailable`. It never fails the
+  call: the status and a sentence say what happened.
+- `fix_pull_request`: an open Dependabot pull request whose branch names
+  the alert's package.
+- Alerts are read worst first, in two passes (`severity=critical,high`,
+  then `medium,low` while there is room), because GitHub can filter by
+  severity but not sort by it: a repository with more than 300 open alerts
+  loses the least severe ones, never the critical ones, and `truncated`
+  says that it did. Ecosystems use `Dependency.ecosystem`'s words (`rust`
+  → `cargo`, `actions` → `github_actions`), severities `moderate` →
+  `medium`.
+- Reading the two switches needs admin rights on the repository; without
+  them `alerts` and `security_updates` are `unknown`, which is not an
+  error. `alerts` is `enabled` whenever the alert list itself answered.
+
+`Intelligence.GetSecurityOverview(project, refresh?)` is what clients read.
+`source = dependabot` when `alerts_status = ok`. Otherwise `source = osv`:
+the project's dependencies with an exact version (`ListDependencies`) are
+looked up through the OSV client and cache of §20 (same budget, same soft
+failure), and `source_note` says why it is not Dependabot's list. `none`
+when neither answered. Nothing is stored: the overview is computed per
+request and cached for 5 minutes per project.
+
+`ConfigureDependabot(project, alerts?, security_updates?, config_file?)`
+(ADMIN; at least one must be true) creates one execution, adapter `github`,
+title `Turn on Dependabot for <repository>`:
+
+1. `repo.checkout`
+2. `repo.enable_security_updates` (when `alerts` or `security_updates`) —
+   `PUT /repos/{o}/{r}/vulnerability-alerts`, then, when asked,
+   `PUT /repos/{o}/{r}/automated-security-fixes`. Needs
+   `repository:admin`, which is always a timed grant (§5.3), so the first
+   run pauses for access; `403`/`404` from GitHub → `PERMISSION_DENIED`
+   naming what the token needs (admin on the repository; `administration:
+   write` for the App).
+3. `repo.open_pull_request` (when `config_file`) — the §14 Dependabot
+   generator's file on branch `sdi/dependabot`. Skipped, not failed, when
+   the file already exists.
+
+Dependabot's own pull requests are ordinary pull requests here: listed
+with `is_dependabot`, reviewed by the watcher, merged through §23.3.
+
+### 23.5 Plan steps (intelligence writes them, execution runs them)
+
+Every step has `adapter = github`. Step keys and params are fixed so the
+two services agree without sharing code:
+
+| key | action_type | required_permissions | params |
+|---|---|---|---|
+| `checkout` | `repo.checkout` | `repository:read` | — |
+| `commit_fixes` | `repo.commit_fixes` | `repository:write` | `branch`, `expected_head_sha`, `message`, `pull_request` |
+| `verify_mergeable` | `repo.verify_mergeable` | `repository:read` | `pull_request`, `expected_head_sha` |
+| `merge` | `repo.merge_pull_request` | `repository:write` | `pull_request`, `expected_head_sha`, `merge_method` (`merge` \| `squash` \| `rebase`), `commit_title` (optional) |
+| `delete_branch` | `repo.delete_branch` | `repository:write` | `branch`, `pull_request` |
+| `enable_security_updates` | `repo.enable_security_updates` | `repository:admin` | `alerts`, `security_updates` (`true` \| `false`) |
+| `open_pull_request` | `repo.open_pull_request` | `repository:write` | as §5.4, plus `branch` (used instead of `sdi/<proposal>`), `title`, `body`, and `skip_if_exists` (a repository path: when it already exists on the default branch the step succeeds without opening anything and says so in its output) |
+
+`pull_request` is the number as decimal text. Each step depends on the one
+before it. The repository is the execution's project: a step may name it
+in `params.repo` (`owner/name`), and when it does not the runner asks
+`Knowledge.GetProject`. `repo.commit_fixes` commits
+`CreateExecutionRequest.artifacts` (full file contents keyed by path),
+keeps each file's mode, and refuses the default branch, an empty commit and
+a commit that changes nothing. A plan the adapter cannot make sense of (a
+missing or malformed param) fails `UNKNOWN` with a sentence. "Skip this
+step" is never offered for `repo.commit_fixes` or `repo.merge_pull_request`:
+skipping would end the run as succeeded without a commit or a merge.
+
+Every one of these steps is safe to run twice, because the runner resumes
+after a restart: a commit that is already the branch head, a pull request
+that is already merged and a branch that is already gone are successes.
+
+### 23.6 Settings, routes, roles, events
+
+`IntelligenceSettings`: `auto_review` (existing), `auto_draft_fixes`
+(default false), `auto_merge` (`off` | `dependabot`, default `off`),
+`merge_requires_review` (default true); read-only
+`pr_watch_interval_seconds`, `pr_watch_last_run_at`, `pr_watch_last_error`.
+`DataControls.code_to_model`: `off` (default) | `changed_lines` (ADMIN,
+audited like every data control).
+
+Routes: `POST /findings/{id}/draft-fix` → Finding (MEMBER);
+`POST /reviews/{id}/apply-fixes` → Review, 201 (APPROVER);
+`GET /projects/{id}/pull-requests/{number}/merge-readiness` → MergeReadiness;
+`POST /projects/{id}/pull-requests/{number}/merge {method?, deleteBranch?}`
+→ `{executionId, readiness}`, 201 (APPROVER);
+`GET /projects/{id}/security?refresh=` → SecurityOverview;
+`POST /projects/{id}/security/dependabot {alerts?, securityUpdates?, configFile?}`
+→ `{executionId}`, 201 (ADMIN). The pull request list and detail carry
+`headRepo`, `isFork`, `isBot`, `isDependabot`.
+
+Audit actions (entity / entity id): `review.fix_drafted` (`finding` / its
+id), `review.fixes_requested` (`review` / its id),
+`pull_request.merge_requested` (`pull_request` / the number),
+`security.dependabot_requested` (`project` / its id). As for every
+mutating route, two entries tell the story: the gateway records the
+request (who, from where, and the HTTP status when it was refused) and
+intelligence records the outcome with its detail. A merge the watcher
+asks for has only the second, with user `system`, so none is missing from
+the trail. Review activity gains
+`fix.drafted`, `fixes.requested`, `merge.requested`.
+PlatformEvents: `finding` (`updated`) for a drafted fix, `review`
+(`updated`) when a fix or merge execution is attached; the executions
+themselves emit as always.
+
+What SDI does not do: it does not write features. The code it writes is
+the files of §14 and §22 (generated from facts) and the replacements of
+§23.2 (a finding's lines). Lockfiles are never regenerated by SDI;
+dependency updates are Dependabot's pull requests.

@@ -105,6 +105,12 @@ accept a plan that opens one.
 | Pull requests | write | Only the `github` execution adapter, to open the pull request a plan was approved to open. Nothing else writes. |
 | Members | read | Organisation membership and teams, from which workspace roles are derived |
 
+Optional, added only for the features that use them (`docs/github-app.md`
+lists each): Contents write (committing a review fix you accepted, merging
+a pull request you approved), Checks and Commit statuses read (whether a
+pull request can be merged), Dependabot alerts read (the Security tab),
+Administration write (only to switch Dependabot on when you ask for it).
+
 Events subscribed: `installation`, `installation_repositories` (create
 and remove workspaces, track the repository selection), `push`,
 `pull_request` (keep facts fresh), `member`, `team` (keep roles fresh).
@@ -116,12 +122,18 @@ Uninstalling the App removes the workspace and everything in it.
 
 ## 6. Where data goes
 
-- **GitHub**: every read described above; a pull request when you
-  approved one.
-- **A model provider** (Anthropic by default): only when the reasoner is
-  on, with the workspace's own key, structured context only (facts,
-  options, a spec). No file contents, no identities beyond what you put in
-  a negotiation message.
+- **GitHub**: every read described above; a pull request, a fix commit,
+  a merge or a Dependabot setting when you approved one.
+- **A model provider** (the one the workspace configured): only when the
+  reasoner is on, with the workspace's own key, structured context only
+  (facts, options, a spec). No file contents, no identities beyond what
+  you put in a negotiation message. If an admin also turns on "source
+  lines to the model", drafting a fix sends the lines one review finding
+  points at, at most 120 lines, with secret-looking lines removed; that
+  setting is off by default.
+- **OSV** (`api.osv.dev`, or the endpoint the operator set): package
+  names and versions, to look up known vulnerabilities. No code, no
+  identities.
 - **Nowhere else.** There are no sub-processors built into the software.
   An operator who adds some (hosting, backups, log shipping) lists them in
   the Contact section below.

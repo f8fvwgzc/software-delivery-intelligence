@@ -4,7 +4,8 @@ import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useAuth } from '@/features/auth/lib/auth-context'
 import type { components } from '@/lib/api/schema'
 import { liveConnection } from '@/lib/live/connection-store'
-import { createInvalidationCoalescer, type Family, type InvalidationCoalescer } from '@/lib/live/invalidation-coalescer'
+import { ALL_FAMILIES, ALL_GATED_FAMILIES, FAMILIES_BY_ENTITY, gatedFamilies } from '@/lib/live/event-families'
+import { createInvalidationCoalescer, type CoalescerOptions, type InvalidationCoalescer } from '@/lib/live/invalidation-coalescer'
 import { emitPlatformEvent } from '@/lib/live/platform-events'
 import { useEventSource } from '@/lib/live/use-event-source'
 import { LiveEventsContext } from '@/lib/live/use-live-events'
@@ -17,41 +18,12 @@ const streamUrl = (workspaceId: string) => `${STREAM_URL}?workspace=${encodeURIC
 /** The platform stream never ends; nothing closes it but unmount. */
 const NO_END_EVENTS: readonly string[] = []
 
-/** Entity → query families to invalidate (CONTRACT.md §8, "Live events"). */
-const FAMILIES_BY_ENTITY: Record<string, readonly Family[]> = {
-  project: [['projects'], ['scans']],
-  scan: [['projects'], ['scans']],
-  proposal: [['proposals'], ['decisions'], ['documents']],
-  decision: [['proposals'], ['decisions'], ['documents']],
-  document: [['proposals'], ['decisions'], ['documents']],
-  execution: [['executions'], ['approvals']],
-  approval: [['executions'], ['approvals']],
-  pattern: [['patterns']],
-  diagram: [['diagrams']],
-  review: [['reviews'], ['pull-requests'], ['activity']],
-  finding: [['reviews'], ['activity']],
-  // Continuous delivery (CONTRACT.md §22): the board, the releases and the deployment history.
-  deployment: [['delivery-cd', 'pipeline'], ['delivery-cd', 'runs'], ['delivery-cd', 'releases']],
-  release: [['delivery-cd', 'pipeline'], ['delivery-cd', 'releases']],
-  environment: [['delivery-cd', 'pipeline']],
-}
-
-/** Every family the stream can touch; refetched when the stream comes up or drops. */
-const ALL_FAMILIES: readonly Family[] = [
-  ['projects'],
-  ['scans'],
-  ['proposals'],
-  ['decisions'],
-  ['documents'],
-  ['executions'],
-  ['approvals'],
-  ['patterns'],
-  ['diagrams'],
-  ['reviews'],
-  ['pull-requests'],
-  ['activity'],
-  ['delivery-cd'],
-]
+/**
+ * Spacing of the gated lane (lib/live/event-families.ts): merge readiness and
+ * the security overview are refetched once, a second after the first event
+ * of a burst, however many events the burst holds.
+ */
+const GATED_INTERVAL_MS = 1_000
 
 const isHidden = () => typeof document !== 'undefined' && document.hidden
 
@@ -65,21 +37,29 @@ const isHidden = () => typeof document !== 'undefined' && document.hidden
  * stream is up, feature queries stop polling (they read `liveConnection`);
  * when it drops they resume, and when it reconnects everything is refetched
  * once to cover whatever was missed in between.
+ *
+ * The answers the server has to fetch from GitHub (merge readiness, the
+ * security overview) go through a second, slower lane that only the events
+ * able to change them enter: see `gatedFamilies`.
  */
 export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const { currentWorkspace } = useAuth()
   const wasConnected = useRef(false)
+  const hasConnected = useRef(false)
   const coalescerRef = useRef<InvalidationCoalescer | null>(null)
+  const gatedRef = useRef<InvalidationCoalescer | null>(null)
 
+  const onFlush: CoalescerOptions['onFlush'] = (families) => {
+    for (const family of families) queryClient.invalidateQueries({ queryKey: family })
+  }
   const coalescer = () => {
-    coalescerRef.current ??= createInvalidationCoalescer({
-      isHidden,
-      onFlush: (families) => {
-        for (const family of families) queryClient.invalidateQueries({ queryKey: family })
-      },
-    })
+    coalescerRef.current ??= createInvalidationCoalescer({ isHidden, onFlush })
     return coalescerRef.current
+  }
+  const gated = () => {
+    gatedRef.current ??= createInvalidationCoalescer({ isHidden, onFlush, intervalMs: GATED_INTERVAL_MS, leading: false })
+    return gatedRef.current
   }
 
   useEventSource<PlatformEvent>({
@@ -88,9 +68,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     onMessage: (event) => {
       liveConnection.markEvent(Date.now())
       emitPlatformEvent(event)
-      const families = FAMILIES_BY_ENTITY[event.entity]
-      if (!families) return
-      for (const family of families) coalescer().add(family)
+      for (const family of FAMILIES_BY_ENTITY[event.entity] ?? []) coalescer().add(family)
+      for (const family of gatedFamilies(event)) gated().add(family)
     },
     onStateChange: (state) => {
       const connected = state === 'open'
@@ -102,6 +81,15 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       if (connected || (wasConnected.current && state !== 'paused')) {
         for (const family of ALL_FAMILIES) coalescer().add(family)
       }
+      // The gated lane has no polling to re-evaluate: it only needs the one
+      // refetch after a reconnect, for an event missed while the stream was
+      // away. The first connection of a stream has missed nothing.
+      if (connected && hasConnected.current) {
+        for (const family of ALL_GATED_FAMILIES) gated().add(family)
+      }
+      if (connected) hasConnected.current = true
+      // Closed for good (unmount, another workspace): the next stream starts over.
+      if (state === 'closed') hasConnected.current = false
       wasConnected.current = connected
     },
   })
@@ -109,13 +97,17 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // Hidden → visible releases whatever the stream reported in the meantime.
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (!document.hidden) coalescerRef.current?.resume()
+      if (document.hidden) return
+      coalescerRef.current?.resume()
+      gatedRef.current?.resume()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       coalescerRef.current?.dispose()
       coalescerRef.current = null
+      gatedRef.current?.dispose()
+      gatedRef.current = null
     }
   }, [])
 

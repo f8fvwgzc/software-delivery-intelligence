@@ -50,7 +50,8 @@ pub(super) async fn purge_code_cache(
 }
 
 /// Everything, in one transaction; the in-memory caches for the workspace
-/// (GitHub token, ETags, data controls) go with it.
+/// (GitHub token, ETags, data controls, security answers, sync marks) go
+/// with it.
 pub(super) async fn delete_workspace_data(
     state: &KnowledgeState,
     caller: &Caller,
@@ -70,6 +71,8 @@ pub(super) async fn delete_workspace_data(
     state.github.forget_cache(ws);
     state.github.forget_token(ws);
     state.controls.invalidate(ws);
+    state.security.forget_workspace(ws);
+    state.pull_sync.forget_workspace(ws);
     for project in projects {
         state.events.project(ws, project.id, "deleted", "");
     }

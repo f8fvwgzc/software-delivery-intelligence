@@ -724,7 +724,7 @@ async fn policies_and_grants_follow_the_contract() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies.len(), 27, "§5.2 plus the §22 rows");
+    assert_eq!(policies.len(), 32, "§5.2 with the §22 and §23 rows");
     let production = policies
         .iter()
         .find(|p| p.action_type == "deploy.production")
@@ -1099,7 +1099,12 @@ async fn adapter_choice_validates_steps_and_picks_the_identity() {
         .await
         .unwrap_err();
     assert_eq!(no_token.code(), Code::FailedPrecondition);
-    assert!(no_token.message().contains("GITHUB_TOKEN"));
+    assert!(
+        no_token.message().contains("no GitHub access")
+            && no_token.message().contains("GITHUB_TOKEN"),
+        "{}",
+        no_token.message()
+    );
 
     crate::db::identities::seed_github_token(&h.pool, true)
         .await
@@ -1624,7 +1629,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_b.len(), 27);
+    assert_eq!(policies_b.len(), 32);
     let err = h
         .svc
         .update_policy(as_role(
@@ -1901,7 +1906,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
     assert_eq!(count("execution"), 2);
     assert_eq!(count("step"), 3);
     assert_eq!(count("approval"), 1);
-    assert_eq!(count("policy"), 27);
+    assert_eq!(count("policy"), 32);
     assert_eq!(count("identity"), 3);
     assert!(count("grant") >= 8);
     assert!(count("event") > 5);
@@ -1971,7 +1976,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         "the docker run in PLANNING and the waiting one"
     );
     assert_eq!(deleted.deleted["execution"], 3);
-    assert_eq!(deleted.deleted["policy"], 27);
+    assert_eq!(deleted.deleted["policy"], 32);
     assert_eq!(deleted.deleted["identity"], 3);
     assert!(deleted.deleted["approval"] >= 2);
     let listed = h
@@ -1996,10 +2001,78 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_a.len(), 27);
+    assert_eq!(policies_a.len(), 32);
     assert_eq!(decision_in(&policies_a), PolicyDecision::Approval as i32);
     // The seed note is per process and bounded; both workspaces are in it.
     assert_eq!(h.rt.seeded_workspaces(), 2);
 
+    h.teardown().await;
+}
+
+/// Without an instance-wide `GITHUB_TOKEN`, a workspace still gets the
+/// `github-token` identity when it has GitHub access of its own (the
+/// installed App, or the signed-in account), and one that has none does
+/// not. That is what lets an organisation that only installed the App open
+/// pull requests, commit fixes and merge.
+#[tokio::test]
+async fn a_workspace_with_its_own_github_access_gets_the_github_identity() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    // The harness has neither a token nor per-workspace access.
+    let without = h
+        .svc
+        .list_identities(req(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    assert!(without.iter().all(|i| i.name != "github-token"));
+
+    // Same database, a runtime whose workspaces do have access.
+    let rt = Runtime::new(
+        h.pool.clone(),
+        adapters::test_registry(),
+        Arc::new(h.outcomes.clone()),
+        Arc::new(h.audit.clone()),
+        Duration::ZERO,
+        false,
+        Arc::new(crate::identity::StaticGithubAccess(
+            crate::adapters::GithubAccess {
+                token: "ghs_installation".into(),
+                api_base_url: "http://127.0.0.1:9".into(),
+            },
+        )),
+    );
+    let svc = ExecutionGrpc::new(Arc::clone(&rt));
+    let identities = svc
+        .list_identities(req(ListIdentitiesRequest {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .identities;
+    let github = identities
+        .iter()
+        .find(|i| i.name == "github-token")
+        .expect("seeded from the workspace's own access");
+    let scopes: Vec<&str> = github
+        .grants
+        .iter()
+        .map(|g| g.permission.as_str())
+        .collect();
+    assert_eq!(
+        scopes,
+        vec!["pipeline:trigger", "repository:read", "repository:write"]
+    );
+    assert!(
+        !scopes.contains(&"repository:admin"),
+        "changing repository settings is always a timed grant"
+    );
+    assert!(
+        !format!("{github:?}").contains("ghs_installation"),
+        "the token is never part of an identity"
+    );
+    drop(svc);
+    drop(rt);
     h.teardown().await;
 }

@@ -1,11 +1,16 @@
 # Developer entry points. `make dev` runs everything on the host against the
 # Docker Postgres; `make up` runs the whole stack in Docker behind nginx.
 
-.PHONY: dev deps-up deps-down services web up up-local-exec down build check test fmt lint api-contract e2e loadcheck deploy-check clean
+.PHONY: doctor dev deps-up deps-down services web up up-local-exec down build check test fmt lint api-contract e2e loadcheck deploy-check clean
 
 # `make up UP_FLAGS=` starts the stack from images already in the local
 # store (CI builds them first, from the shared layer cache).
 UP_FLAGS ?= --build
+
+# Is this machine ready? Checks tools, GitHub access, the model settings,
+# disk and ports, and prints the command that fixes each problem.
+doctor:
+	./scripts/doctor.sh
 
 deps-up:
 	docker compose -f docker-compose.dev.yml up -d --wait

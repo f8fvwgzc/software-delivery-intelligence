@@ -8,6 +8,10 @@
  *   (trailing edge); a family is listed once no matter how often it fired.
  * - While `isHidden()` is true nothing flushes: the pending set waits for
  *   `resume()`, which the owner calls when the document is visible again.
+ * - With `leading: false` the first signal waits a full interval too, so a
+ *   burst that belongs together (a mutation's answer and the two events it
+ *   causes) ends in one flush instead of one at each edge. For families
+ *   whose refetch is expensive on the server.
  *
  * Pure and framework-free so the stress page can drive it at 100 events
  * per second and count the flushes.
@@ -19,6 +23,8 @@ export interface CoalescerOptions {
   onFlush: (families: Family[]) => void
   /** Minimum time between two flushes. */
   intervalMs?: number
+  /** Flush the first signal after a quiet period at once (default). False waits `intervalMs` from it instead. */
+  leading?: boolean
   /** Deferred while true; `resume()` releases the backlog. */
   isHidden?: () => boolean
   now?: () => number
@@ -39,6 +45,7 @@ export const DEFAULT_INTERVAL_MS = 250
 export function createInvalidationCoalescer({
   onFlush,
   intervalMs = DEFAULT_INTERVAL_MS,
+  leading = true,
   isHidden = () => false,
   now = () => performance.now(),
 }: CoalescerOptions): InvalidationCoalescer {
@@ -62,6 +69,10 @@ export function createInvalidationCoalescer({
 
   const schedule = () => {
     if (timer || isHidden()) return
+    if (!leading) {
+      timer = setTimeout(flush, intervalMs)
+      return
+    }
     const elapsed = now() - lastFlushAt
     if (elapsed >= intervalMs) {
       flush()

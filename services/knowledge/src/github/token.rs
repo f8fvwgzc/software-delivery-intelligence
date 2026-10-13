@@ -190,6 +190,14 @@ impl TokenProvider {
         self.lock().remove(&workspace_id);
     }
 
+    /// Holds `access` for the workspace as if identity had minted it: it
+    /// is served until it stops being usable, then identity is asked as
+    /// always. For tests and tools that point a workspace at a GitHub of
+    /// their own without running identity.
+    pub fn remember(&self, workspace_id: Uuid, access: GithubAccess) {
+        self.store(workspace_id, access);
+    }
+
     fn cached(&self, workspace_id: Uuid, now: DateTime<Utc>) -> Option<GithubAccess> {
         let mut cache = self.lock();
         cache

@@ -615,16 +615,25 @@ pub mod knowledge {
 
     pub struct Fake;
 
+    /// PR 2 is Dependabot's and PR 3 comes from a fork; every other number
+    /// is a person's branch in the repository itself.
     pub fn pull_request_summary(
         project_id: &str,
         number: u64,
         state: &str,
     ) -> proto::PullRequestSummary {
+        let dependabot = number == 2;
+        let fork = number == 3;
         proto::PullRequestSummary {
             project_id: project_id.to_owned(),
             number,
             title: format!("PR {number}"),
-            author: "ana".into(),
+            author: match number {
+                2 => "dependabot[bot]",
+                3 => "eve",
+                _ => "ana",
+            }
+            .into(),
             state: state.to_owned(),
             base_ref: "main".into(),
             head_ref: format!("feat/{number}"),
@@ -634,6 +643,10 @@ pub mod knowledge {
             html_url: format!("https://github.com/acme/repo/pull/{number}"),
             created_at: at(1_700_000_000),
             updated_at: at(1_700_000_000),
+            head_repo: if fork { "eve/repo" } else { "acme/repo" }.into(),
+            is_fork: fork,
+            is_bot: dependabot,
+            is_dependabot: dependabot,
             ..Default::default()
         }
     }
@@ -903,7 +916,8 @@ pub mod knowledge {
                     .ok_or_else(|| Status::invalid_argument("settings missing"))
             }
 
-            /// Two pull requests of `p1`; `refresh` is echoed in `synced_at`.
+            /// Three pull requests of the project (a person's, Dependabot's
+            /// and one from a fork); `refresh` is echoed in `synced_at`.
             async fn list_pull_requests(
                 &self,
                 request: Request<proto::ListPullRequestsRequest>,
@@ -918,6 +932,7 @@ pub mod knowledge {
                     pull_requests: vec![
                         pull_request_summary(&request.project_id, 1, &state),
                         pull_request_summary(&request.project_id, 2, &state),
+                        pull_request_summary(&request.project_id, 3, &state),
                     ],
                     synced_at: at(if request.refresh { 1_700_000_100 } else { 1_700_000_000 }),
                 }))
@@ -932,7 +947,7 @@ pub mod knowledge {
                 if request.number == 0 {
                     return Err(Status::invalid_argument("number is required"));
                 }
-                if request.number > 2 {
+                if request.number > 3 {
                     return Err(Status::not_found("no such pull request"));
                 }
                 Ok(Response::new(proto::PullRequest {
@@ -1016,6 +1031,11 @@ pub mod knowledge {
             index_knowledge: proto::IndexKnowledgeRequest => proto::IndexKnowledgeResponse,
             list_similar_projects: proto::ListSimilarProjectsRequest => proto::ListSimilarProjectsResponse,
             get_knowledge_stats: proto::GetKnowledgeStatsRequest => proto::KnowledgeStats,
+            // Pull request autopilot (CONTRACT.md §23): service-to-service
+            // only. Intelligence reads these to answer merge readiness and
+            // the security overview; the gateway has no route that calls them.
+            get_pull_request_status: proto::GetPullRequestStatusRequest => proto::PullRequestStatus,
+            get_repository_security: proto::GetRepositorySecurityRequest => proto::RepositorySecurity,
         }
     }
 
@@ -1054,6 +1074,163 @@ pub mod intelligence {
             api_key_configured: false,
             cost_ceiling_usd: 500.0,
             auto_review: false,
+            // Pull request autopilot (§23): the defaults, and a watcher that
+            // looked once and had nothing to complain about.
+            auto_draft_fixes: false,
+            auto_merge: "off".into(),
+            merge_requires_review: true,
+            pr_watch_interval_seconds: 60,
+            pr_watch_last_run_at: at(1_700_000_000),
+            pr_watch_last_error: String::new(),
+            ..Default::default()
+        }
+    }
+
+    /// Readiness of a pull request of the fake repository: PR 1 can be
+    /// merged, PR 2 (Dependabot's) has a failed check, a running one and no
+    /// review, and no other pull request exists.
+    pub fn readiness(project_id: &str, pr_number: u64) -> Result<proto::MergeReadiness, Status> {
+        if project_id == "missing" {
+            return Err(Status::not_found("no such project"));
+        }
+        let common = proto::MergeReadiness {
+            project_id: project_id.to_owned(),
+            pr_number,
+            title: format!("PR {pr_number}"),
+            state: "open".into(),
+            head_sha: format!("sha{pr_number}"),
+            head_ref: format!("feat/{pr_number}"),
+            base_ref: "main".into(),
+            checks_total: 3,
+            allowed_methods: vec!["squash".into(), "merge".into()],
+            base_protected: true,
+            checked_at: at(1_700_000_300),
+            ..Default::default()
+        };
+        match pr_number {
+            1 => Ok(proto::MergeReadiness {
+                mergeable: "mergeable".into(),
+                mergeable_state: "clean".into(),
+                checks_passed: 3,
+                approvals: 1,
+                review_id: "r-new".into(),
+                review_status: "proposed".into(),
+                can_merge: true,
+                ..common
+            }),
+            2 => Ok(proto::MergeReadiness {
+                is_dependabot: true,
+                mergeable: "mergeable".into(),
+                mergeable_state: "unstable".into(),
+                checks_passed: 1,
+                checks_failed: 1,
+                checks_pending: 1,
+                failed_checks: vec!["ci / test".into()],
+                pending_checks: vec!["ci / lint".into()],
+                behind_by: 2,
+                blockers: vec![
+                    proto::MergeBlocker {
+                        code: "checks_failing".into(),
+                        message: "1 check failed (ci / test): fix it or re-run it, then ask again"
+                            .into(),
+                    },
+                    proto::MergeBlocker {
+                        code: "no_review".into(),
+                        message: "SDI has not reviewed this pull request yet: start a review"
+                            .into(),
+                    },
+                ],
+                can_merge: false,
+                ..common
+            }),
+            _ => Err(Status::not_found("no such pull request")),
+        }
+    }
+
+    fn vulnerability(
+        source: &str,
+        id: &str,
+        package: &str,
+        severity: &str,
+    ) -> proto::Vulnerability {
+        proto::Vulnerability {
+            source: source.to_owned(),
+            id: id.to_owned(),
+            ecosystem: "npm".into(),
+            package: package.to_owned(),
+            severity: severity.to_owned(),
+            summary: format!("{package} is vulnerable"),
+            manifest_path: "package.json".into(),
+            ..Default::default()
+        }
+    }
+
+    /// The security overview of a project: Dependabot's list, except for
+    /// `p-osv`, whose repository has alerts turned off.
+    pub fn security_overview(project_id: &str, refresh: bool) -> proto::SecurityOverview {
+        // `refresh` is echoed in `checked_at`.
+        let checked_at = at(if refresh {
+            1_700_000_100
+        } else {
+            1_700_000_000
+        });
+        if project_id == "p-osv" {
+            return proto::SecurityOverview {
+                project_id: project_id.to_owned(),
+                source: "osv".into(),
+                source_note: "Dependabot alerts are turned off for this repository, so these are the manifest versions looked up at OSV.".into(),
+                vulnerabilities: vec![proto::Vulnerability {
+                    current_version: "4.17.20".into(),
+                    ..vulnerability("osv", "GHSA-35jh-r3h4-6jhm", "lodash", "high")
+                }],
+                by_severity: vec![proto::SeverityCount { severity: "high".into(), count: 1 }],
+                alerts: "disabled".into(),
+                security_updates: "disabled".into(),
+                checked_at,
+                ..Default::default()
+            };
+        }
+        proto::SecurityOverview {
+            project_id: project_id.to_owned(),
+            source: "dependabot".into(),
+            vulnerabilities: vec![
+                proto::Vulnerability {
+                    cve_id: "CVE-2021-23337".into(),
+                    vulnerable_range: "< 4.17.21".into(),
+                    fixed_version: "4.17.21".into(),
+                    scope: "runtime".into(),
+                    url: "https://github.com/acme/repo/security/dependabot/7".into(),
+                    fix_pull_request: 2,
+                    detected_at: at(1_699_000_000),
+                    ..vulnerability("dependabot", "GHSA-35jh-r3h4-6jhm", "lodash", "critical")
+                },
+                proto::Vulnerability {
+                    vulnerable_range: "<= 1.2.5".into(),
+                    scope: "development".into(),
+                    url: "https://github.com/acme/repo/security/dependabot/9".into(),
+                    detected_at: at(1_699_500_000),
+                    ..vulnerability("dependabot", "GHSA-vh95-rmgr-6w4m", "minimist", "medium")
+                },
+            ],
+            by_severity: vec![
+                proto::SeverityCount {
+                    severity: "critical".into(),
+                    count: 1,
+                },
+                proto::SeverityCount {
+                    severity: "medium".into(),
+                    count: 1,
+                },
+            ],
+            truncated: false,
+            config_present: true,
+            config_path: ".github/dependabot.yml".into(),
+            config_ecosystems: vec!["npm".into()],
+            alerts: "enabled".into(),
+            security_updates: "paused".into(),
+            open_dependabot_pull_requests: 1,
+            configure_execution_id: String::new(),
+            checked_at,
             ..Default::default()
         }
     }
@@ -1159,6 +1336,24 @@ pub mod intelligence {
                 let mut settings = settings();
                 settings.auto_review = AUTO_REVIEW.load(Ordering::SeqCst);
                 Ok(Response::new(settings))
+            }
+
+            /// The model answered: what a working configuration reports.
+            async fn test_reasoner(
+                &self,
+                request: Request<proto::TestReasonerRequest>,
+            ) -> Result<Response<proto::ReasonerTest>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::ReasonerTest {
+                    status: "ok".into(),
+                    message: "The model answered in 412 ms.".into(),
+                    provider: "openai_compatible".into(),
+                    model: "test-model".into(),
+                    endpoint: "https://api.openai.com".into(),
+                    latency_ms: 412,
+                    input_tokens: 21,
+                    output_tokens: 3,
+                }))
             }
 
             async fn update_settings(
@@ -1311,6 +1506,140 @@ pub mod intelligence {
                 })];
                 Ok(Response::new(stream::iter(records).boxed()))
             }
+
+            // --- pull request autopilot (CONTRACT.md §23) -------------------
+
+            /// Drafts a replacement for any finding that has none. `f1` has
+            /// its mechanical suggestion already; `f-off` stands for a
+            /// workspace whose data controls keep source lines from the model.
+            async fn draft_fix(
+                &self,
+                request: Request<proto::DraftFixRequest>,
+            ) -> Result<Response<proto::Finding>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Member)?;
+                let id = request.into_inner().finding_id;
+                match id.as_str() {
+                    "missing" => return Err(Status::not_found("no such finding")),
+                    "f1" => {
+                        return Err(Status::failed_precondition(
+                            "this finding already has a suggestion",
+                        ));
+                    }
+                    "f-off" => {
+                        return Err(Status::failed_precondition(
+                            "drafting a fix sends source lines to the model: turn the reasoner on and set code_to_model to changed_lines in the data controls",
+                        ));
+                    }
+                    _ => {}
+                }
+                Ok(Response::new(proto::Finding {
+                    suggestion: "FROM node:22-slim".into(),
+                    suggestion_source: "model".into(),
+                    can_draft_fix: false,
+                    ..finding(&id)
+                }))
+            }
+
+            /// One execution for the accepted fixes of the review; `r-none`
+            /// has nothing to commit.
+            async fn apply_fixes(
+                &self,
+                request: Request<proto::ApplyFixesRequest>,
+            ) -> Result<Response<proto::Review>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Member)?;
+                let id = request.into_inner().review_id;
+                match id.as_str() {
+                    "missing" => return Err(Status::not_found("no such review")),
+                    "r-none" => {
+                        return Err(Status::failed_precondition(
+                            "no accepted finding has a suggestion left to commit",
+                        ));
+                    }
+                    _ => {}
+                }
+                let execution_id = format!("x-fix-{id}");
+                let mut review = review("r-ready", "p1", 1);
+                review.id = id;
+                review.fix_execution_id = execution_id.clone();
+                review.fixes_ready = 0;
+                review.findings[0].fix_execution_id = execution_id;
+                Ok(Response::new(review))
+            }
+
+            async fn get_merge_readiness(
+                &self,
+                request: Request<proto::GetMergeReadinessRequest>,
+            ) -> Result<Response<proto::MergeReadiness>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                readiness(&request.project_id, request.pr_number).map(Response::new)
+            }
+
+            /// Refuses with the first blocker's sentence; otherwise the
+            /// execution id says which method and branch handling arrived.
+            async fn merge_pull_request(
+                &self,
+                request: Request<proto::MergePullRequestRequest>,
+            ) -> Result<Response<proto::MergePullRequestResponse>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Approver)?;
+                let request = request.into_inner();
+                let mut readiness = readiness(&request.project_id, request.pr_number)?;
+                if let Some(blocker) = readiness.blockers.first() {
+                    return Err(Status::failed_precondition(blocker.message.clone()));
+                }
+                let execution_id = format!(
+                    "x-merge-{}-{}-{}",
+                    request.pr_number,
+                    if request.method.is_empty() { "default" } else { &request.method },
+                    if request.delete_branch { "delete" } else { "keep" },
+                );
+                readiness.merge_execution_id = execution_id.clone();
+                Ok(Response::new(proto::MergePullRequestResponse {
+                    execution_id,
+                    readiness: Some(readiness),
+                }))
+            }
+
+            async fn get_security_overview(
+                &self,
+                request: Request<proto::GetSecurityOverviewRequest>,
+            ) -> Result<Response<proto::SecurityOverview>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                if request.project_id == "missing" {
+                    return Err(Status::not_found("no such project"));
+                }
+                Ok(Response::new(security_overview(&request.project_id, request.refresh)))
+            }
+
+            /// The execution id names what was asked for.
+            async fn configure_dependabot(
+                &self,
+                request: Request<proto::ConfigureDependabotRequest>,
+            ) -> Result<Response<proto::ConfigureDependabotResponse>, Status> {
+                let caller = principal(&request)?;
+                caller.require(sdi_common::principal::Role::Admin)?;
+                let request = request.into_inner();
+                let asked: Vec<&str> = [
+                    (request.alerts, "alerts"),
+                    (request.security_updates, "updates"),
+                    (request.config_file, "config"),
+                ]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name))
+                .collect();
+                if asked.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "at least one of alerts, security_updates and config_file must be true",
+                    ));
+                }
+                Ok(Response::new(proto::ConfigureDependabotResponse {
+                    execution_id: format!("x-dependabot-{}-{}", request.project_id, asked.join("+")),
+                }))
+            }
         }
         unimplemented {
             // The delivery setup files are another service's to generate:
@@ -1336,7 +1665,10 @@ pub mod intelligence {
         }
     }
 
+    /// `f1` carries the analyzer's mechanical suggestion; every other
+    /// finding has none yet and can be drafted by the model.
     pub fn finding(id: &str) -> proto::Finding {
+        let mechanical = id == "f1";
         proto::Finding {
             id: id.to_owned(),
             review_id: "r1".into(),
@@ -1347,14 +1679,25 @@ pub mod intelligence {
             path: "Dockerfile".into(),
             line: 1,
             end_line: 1,
-            suggestion: "FROM node:22".into(),
+            suggestion: if mechanical { "FROM node:22" } else { "" }.into(),
+            suggestion_source: if mechanical { "rule" } else { "" }.into(),
+            can_draft_fix: !mechanical,
             rule: "docker.latest_tag".into(),
             decision: proto::FindingDecision::Pending as i32,
             ..Default::default()
         }
     }
 
+    /// A proposed review with two undecided findings. `r-ready` is the same
+    /// review after `f1` was accepted: one fix waits to be committed.
     pub fn review(id: &str, project_id: &str, pr_number: u64) -> proto::Review {
+        let ready = id == "r-ready";
+        let mut first = finding("f1");
+        if ready {
+            first.decision = proto::FindingDecision::Accepted as i32;
+            first.decided_by = "u1".into();
+            first.decided_at = at(1_700_000_200);
+        }
         proto::Review {
             id: id.to_owned(),
             project_id: project_id.to_owned(),
@@ -1375,10 +1718,11 @@ pub mod intelligence {
                 })
                 .collect(),
             summary: "## Intent\n\nAdds a Dockerfile.".into(),
-            findings: vec![finding("f1"), finding("f2")],
+            findings: vec![first, finding("f2")],
             files_reviewed: 1,
             findings_total: 2,
-            findings_accepted: 0,
+            findings_accepted: u32::from(ready),
+            fixes_ready: u32::from(ready),
             reasoner: "heuristic".into(),
             requested_by: "u-member".into(),
             created_at: at(1_700_000_000),
@@ -1414,6 +1758,8 @@ pub mod identity {
     pub struct Recorder {
         pub audits: AtomicUsize,
         pub last_action: std::sync::Mutex<String>,
+        /// Every recorded entry, oldest first.
+        pub entries: std::sync::Mutex<Vec<proto::AuditEntry>>,
         pub secrets: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
         /// Lengths of the values `SetSecret` was given: proof they arrived,
         /// without the fake keeping them.
@@ -1504,6 +1850,7 @@ pub mod identity {
             reasoner_key_hint: String::new(),
             audit_retention_days: 365,
             updated_at: at(1_700_000_000),
+            code_to_model: "off".into(),
         }
     }
 
@@ -1655,7 +2002,8 @@ pub mod identity {
                 if entry.workspace_id != WORKSPACE {
                     return Err(Status::invalid_argument("wrong workspace"));
                 }
-                *self.recorder.last_action.lock().unwrap() = entry.action;
+                *self.recorder.last_action.lock().unwrap() = entry.action.clone();
+                self.recorder.entries.lock().unwrap().push(entry);
                 self.recorder.audits.fetch_add(1, Ordering::SeqCst);
                 Ok(Response::new(proto::RecordAuditResponse {}))
             }
@@ -1691,15 +2039,27 @@ pub mod identity {
                 Ok(Response::new(controls()))
             }
 
+            /// Echoes what it was sent. `code_to_model` behaves as in the
+            /// real service: an unknown value is refused, an empty one
+            /// keeps what is stored.
             async fn update_data_controls(
                 &self,
                 request: Request<proto::UpdateDataControlsRequest>,
             ) -> Result<Response<proto::DataControls>, Status> {
-                request
+                let mut controls = request
                     .into_inner()
                     .controls
-                    .map(Response::new)
-                    .ok_or_else(|| Status::invalid_argument("controls missing"))
+                    .ok_or_else(|| Status::invalid_argument("controls missing"))?;
+                match controls.code_to_model.as_str() {
+                    "off" | "changed_lines" => {}
+                    "" => controls.code_to_model = self::controls().code_to_model,
+                    _ => {
+                        return Err(Status::invalid_argument(
+                            "code_to_model must be one of off, changed_lines",
+                        ));
+                    }
+                }
+                Ok(Response::new(controls))
             }
 
             async fn set_reasoner_key(

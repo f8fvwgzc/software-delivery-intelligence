@@ -13,7 +13,7 @@ import { hasRole } from '@/features/auth/lib/roles'
 
 import { useStartReview } from '../../api/mutations'
 import type { PullRequestSummary } from '../../api/types'
-import { prState, shortSha } from '../../lib/labels'
+import { prState, pullRequestFlags, shortSha } from '../../lib/labels'
 import { count } from '@/lib/intl'
 
 export function PullRequestRow({ pullRequest }: { pullRequest: PullRequestSummary }) {
@@ -42,7 +42,7 @@ export function PullRequestRow({ pullRequest }: { pullRequest: PullRequestSummar
         </Avatar>
       }
       title={
-        <span className="inline-flex min-w-0 items-baseline gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5">
           <span className="truncate">{pullRequest.title}</span>
           <a
             href={pullRequest.htmlUrl}
@@ -53,6 +53,12 @@ export function PullRequestRow({ pullRequest }: { pullRequest: PullRequestSummar
           >
             <ExternalLinkIcon className="size-3" />
           </a>
+          {/* Where it comes from, straight from the list: no request per row. */}
+          {pullRequestFlags(pullRequest).map((flag) => (
+            <Tag key={flag.key} variant="outline" title={flag.title}>
+              {flag.label}
+            </Tag>
+          ))}
         </span>
       }
       meta={

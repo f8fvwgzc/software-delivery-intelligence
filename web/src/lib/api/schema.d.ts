@@ -473,6 +473,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/findings/{id}/draft-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Asks the workspace's model to write the replacement for the lines the
+         *     finding points at (member). The answer is the finding with the draft as
+         *     its `suggestion` and `suggestionSource` = `model`; its decision does not
+         *     change, a person still accepts or dismisses it.
+         * @description 412 when the data controls do not allow it (`reasoner` off, or
+         *     `codeToModel` not `changed_lines`), when the finding cannot be drafted
+         *     (`canDraftFix` is false: it already has a suggestion, has no line, is
+         *     about a secret, ...), when the model's reply was unusable or when the
+         *     daily token cap is spent. Nothing is stored in those cases.
+         */
+        post: operations["draft_fix"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/github/account": {
         parameters: {
             query?: never;
@@ -1135,6 +1162,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/pull-requests/{number}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Asks for the pull request to be merged (approver): creates an execution
+         *     that verifies the head again, merges exactly that commit and, when
+         *     asked, deletes the branch. The merge step waits for approval unless the
+         *     workspace set the `repo.merge_pull_request` policy to `auto`.
+         * @description 412 with the first blocker's sentence unless the pull request is ready
+         *     (`GET .../merge-readiness`). The body may be left out.
+         */
+        post: operations["merge_pull_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/pull-requests/{number}/merge-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the pull request can be merged now and what stands in the way:
+         *     GitHub read at this moment (state, conflicts, checks, reviews, branch
+         *     protection) plus SDI's own gate (its review of the head commit).
+         */
+        get: operations["merge_readiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{id}/pull-requests/{number}/reviews": {
         parameters: {
             query?: never;
@@ -1207,6 +1279,51 @@ export interface paths {
         put?: never;
         /** Queues a new scan of the project's default branch. */
         post: operations["start_scan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/security": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The project's vulnerable dependencies: Dependabot's open alerts when
+         *     GitHub serves them, else the manifest versions looked up at OSV
+         *     (`source` says which, `sourceNote` why), with the state of Dependabot on
+         *     the repository. Cached 5 minutes; `refresh=true` asks again.
+         */
+        get: operations["security_overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/security/dependabot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turns Dependabot on for the repository (admin): alerts, security
+         *     updates and/or a pull request that adds `.github/dependabot.yml`,
+         *     through an execution. Changing repository settings needs a timed
+         *     `repository:admin` grant, so its first run pauses for access.
+         * @description 400 unless at least one of the three is true.
+         */
+        post: operations["configure_dependabot"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1513,6 +1630,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{id}/apply-fixes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Commits the suggestion of every accepted finding that no fix execution
+         *     carries yet to the pull request branch (approver, like every request that
+         *     writes to the repository): one commit on top of
+         *     the reviewed head, through an execution that waits for approval. The
+         *     answer is the review, whose `fixExecutionId` is that execution.
+         * @description 412 when no accepted finding has a suggestion left to commit, when the
+         *     pull request is not open, when its head moved since the review, when it
+         *     comes from a fork, or while a fix execution of this review is still open.
+         */
+        post: operations["apply_fixes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{id}/publish": {
         parameters: {
             query?: never;
@@ -1591,6 +1734,30 @@ export interface paths {
          *     A part that is not in the body is read back unchanged.
          */
         patch: operations["update_settings"];
+        trace?: never;
+    };
+    "/api/v1/settings/reasoner/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Makes one tiny call to the workspace's model and says what came back,
+         *     or names the setting that keeps the model from being called: the data
+         *     control, the reasoner choice, a missing key, a missing model name, the
+         *     daily cap, or what the provider answered (its status, never its body).
+         *     A misconfiguration is an answer here, not an error. Admin; the call
+         *     counts against the daily token cap.
+         */
+        post: operations["test_reasoner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/system/status": {
@@ -2023,6 +2190,23 @@ export interface components {
             /** @description The patch was larger than the limit (300 KB across the pull request) and was not read. */
             truncated: boolean;
         };
+        /**
+         * @description Body of `POST /projects/{id}/security/dependabot` (admin). At least one
+         *     of the three must be true.
+         */
+        ConfigureDependabotRequest: {
+            /** @description Turn on Dependabot alerts for the repository. */
+            alerts?: boolean | null;
+            /** @description Open a pull request that adds `.github/dependabot.yml`. */
+            configFile?: boolean | null;
+            /** @description Turn on Dependabot security updates (pull requests that fix alerts). */
+            securityUpdates?: boolean | null;
+        };
+        /** @description Response of `POST /projects/{id}/security/dependabot`. */
+        ConfigureDependabotResult: {
+            /** @description The execution that turns Dependabot on; changing repository settings pauses it for a timed `repository:admin` grant. */
+            executionId: string;
+        };
         /** @description Body of `POST /projects`. */
         ConnectProjectRequest: {
             /** @description `owner/name` of the repository to connect. */
@@ -2114,6 +2298,8 @@ export interface components {
              * @description Hours a `session` cache entry lives.
              */
             codeCacheTtlHours: number;
+            /** @description Whether source lines may be sent to the model so it can write a fix (CONTRACT.md §19, §23): `off` (default) or `changed_lines` (the lines a finding points at plus a few around them, never a whole file, never a line a secrets rule matched). Only has an effect while `reasoner` is not `off`. */
+            codeToModel: string;
             /** @description Semantic chunks keep only short excerpts when true. */
             minimalChunks: boolean;
             /** @description `off` or `claude`. Only `claude` with a workspace key sends structured context to the model API. */
@@ -2875,6 +3061,8 @@ export interface components {
         };
         /** @description One analyzer finding. */
         Finding: {
+            /** @description The model can be asked to draft a fix (`POST /findings/{id}/draft-fix`): the finding has no replacement yet (none, or only an example), points at lines of a text file and is not about a secret or a workflow file. */
+            canDraftFix: boolean;
             /** @description `secrets` | `security` | `dependencies` | `docker` | `ci` | `iac` | `tests` | `docs` | `correctness` | `maturity`. */
             category: string;
             /**
@@ -2895,6 +3083,8 @@ export interface components {
              * @description Last line of the range; equals `line` for a single line.
              */
             endLine: number;
+            /** @description The fix execution that carries this suggestion, once one was requested; null until then. */
+            fixExecutionId?: string | null;
             /** @description Finding id. */
             id: string;
             /**
@@ -2910,8 +3100,10 @@ export interface components {
             rule: string;
             /** @description Severity. */
             severity: components["schemas"]["FindingSeverity"];
-            /** @description Replacement for the referenced lines, when the fix is mechanical; becomes a GitHub suggestion. */
+            /** @description Code that goes with the finding; null when there is none. `suggestionSource` says what it is: with `rule` or `model` it is the exact replacement for lines `line..=endLine` (a GitHub suggestion when published, and what apply-fixes commits once the finding is accepted); with `example` it is an illustration to adapt by hand and is never committed. */
             suggestion?: string | null;
+            /** @description What `suggestion` is: `rule` (the analyzer's exact replacement for the lines), `model` (a replacement the workspace's model drafted on request) or `example` (the analyzer's illustration to adapt by hand: shown, never committed by apply-fixes); null when there is no suggestion. */
+            suggestionSource?: string | null;
             /** @description Short title. */
             title: string;
         };
@@ -3132,6 +3324,10 @@ export interface components {
         IntelligenceSettings: {
             /** @description True when `ANTHROPIC_API_KEY` is configured. Read-only. */
             apiKeyConfigured: boolean;
+            /** @description During a review, ask the model to draft a fix for findings without a mechanical suggestion, at most 10 per review (CONTRACT.md §23). Needs the reasoner and the `codeToModel` data control. Default off. */
+            autoDraftFixes: boolean;
+            /** @description Whose pull requests SDI asks to merge on its own once they are ready: `off` (default) or `dependabot`. The merge still runs as an execution, so the `repo.merge_pull_request` policy decides whether a person approves. */
+            autoMerge: string;
             /** @description `pull_request` webhooks (opened, synchronize) start a review that stops at `proposed` (CONTRACT.md §20). Default off. */
             autoReview: boolean;
             /**
@@ -3140,8 +3336,22 @@ export interface components {
              */
             costCeilingUsd: number;
             defaultWeights?: components["schemas"]["ScoreWeights"] | null;
+            /** @description A merge needs an SDI review of the current head with no undecided finding of severity high or critical. Default on. */
+            mergeRequiresReview: boolean;
             /** @description Model used by the `claude` reasoner. */
             model: string;
+            /**
+             * Format: int32
+             * @description Seconds between two looks of the pull request watcher (`SDI_PR_WATCH_SECONDS`); 0 means the operator turned it off. Read-only.
+             */
+            prWatchIntervalSeconds: number;
+            /** @description Why the watcher's last look at this workspace failed; null when it worked. Read-only. */
+            prWatchLastError?: string | null;
+            /**
+             * Format: date-time
+             * @description When the watcher last looked at this workspace; null before its first look. Read-only.
+             */
+            prWatchLastRunAt?: string | null;
             /** @description `heuristic` or `claude`. `claude` needs `ANTHROPIC_API_KEY` and falls back otherwise. */
             reasoner: string;
             /** @description Base URL of an OpenAI-compatible endpoint (e.g. `http://ollama:11434/v1`). Empty reads `LLM_BASE_URL`, else the provider's public endpoint. */
@@ -3158,9 +3368,14 @@ export interface components {
         };
         /**
          * @description The `intelligence` part of `PATCH /settings`: every field is optional and
-         *     unset fields keep their current value. `apiKeyConfigured` is read-only.
+         *     unset fields keep their current value. `apiKeyConfigured` and the three
+         *     `prWatch*` fields are read-only.
          */
         IntelligenceSettingsPatch: {
+            /** @description Whether a review drafts fixes with the model on its own. */
+            autoDraftFixes?: boolean | null;
+            /** @description `off` or `dependabot`. */
+            autoMerge?: string | null;
             /** @description Whether `pull_request` webhooks start a review. */
             autoReview?: boolean | null;
             /**
@@ -3169,6 +3384,8 @@ export interface components {
              */
             costCeilingUsd?: number | null;
             defaultWeights?: components["schemas"]["ScoreWeights"] | null;
+            /** @description Whether a merge needs an SDI review of the current head. */
+            mergeRequiresReview?: boolean | null;
             /** @description Model used by the `claude` reasoner. */
             model?: string | null;
             /** @description `heuristic` or `claude`. */
@@ -3432,6 +3649,128 @@ export interface components {
              * @description When GitHub was last read; null before the first sync.
              */
             syncedAt?: string | null;
+        };
+        /** @description One reason a pull request cannot be merged yet. */
+        MergeBlocker: {
+            /** @description `not_open` | `draft` | `conflicts` | `mergeability_unknown` | `checks_failing` | `checks_pending` | `changes_requested` | `blocked_by_github` | `no_review` | `review_outdated` | `review_running` | `findings_undecided` | `merge_in_progress`. */
+            code: string;
+            /** @description A sentence that says what to do about it. */
+            message: string;
+        };
+        /**
+         * @description How GitHub merges a pull request.
+         * @enum {string}
+         */
+        MergeMethod: "merge" | "squash" | "rebase";
+        /**
+         * @description Body of `POST /projects/{id}/pull-requests/{number}/merge` (approver).
+         *     The body may be left out altogether.
+         */
+        MergePullRequestRequest: {
+            /** @description Delete the head branch after the merge (same-repository branches only). Default false. */
+            deleteBranch?: boolean | null;
+            method?: components["schemas"]["MergeMethod"] | null;
+        };
+        /**
+         * @description Whether a pull request can be merged now: GitHub's state read at
+         *     `checkedAt` plus SDI's own gate (its review of the head commit).
+         */
+        MergeReadiness: {
+            /** @description What the repository allows: `merge` | `squash` | `rebase`. */
+            allowedMethods: string[];
+            /**
+             * Format: int32
+             * @description Approving reviews by people on GitHub, latest verdict per reviewer.
+             */
+            approvals: number;
+            /** @description The base branch is protected; GitHub enforces its rules at merge time. */
+            baseProtected: boolean;
+            /** @description Target branch. */
+            baseRef: string;
+            /**
+             * Format: int32
+             * @description Commits the head is behind its base.
+             */
+            behindBy: number;
+            /** @description What stands in the way, GitHub's reasons first; empty means `canMerge`. */
+            blockers: components["schemas"]["MergeBlocker"][];
+            /** @description True when nothing blocks the merge. */
+            canMerge: boolean;
+            /**
+             * Format: int32
+             * @description Reviewers on GitHub whose latest verdict requests changes.
+             */
+            changesRequested: number;
+            /**
+             * Format: date-time
+             * @description When GitHub was read.
+             */
+            checkedAt: string;
+            /**
+             * Format: int32
+             * @description Checks that failed.
+             */
+            checksFailed: number;
+            /**
+             * Format: int32
+             * @description Checks that passed.
+             */
+            checksPassed: number;
+            /**
+             * Format: int32
+             * @description Checks still queued or running.
+             */
+            checksPending: number;
+            /**
+             * Format: int32
+             * @description Check runs and commit statuses of the head commit, counted together.
+             */
+            checksTotal: number;
+            /** @description Names of the failed checks, at most 20. */
+            failedChecks: string[];
+            /** @description Source branch. */
+            headRef: string;
+            /** @description Head commit the answer is about; a merge is only ever of this commit. */
+            headSha: string;
+            /** @description The author is Dependabot. */
+            isDependabot: boolean;
+            /** @description The head branch lives in another repository. */
+            isFork: boolean;
+            /** @description An open merge execution for this pull request; null when none is running. */
+            mergeExecutionId?: string | null;
+            /** @description `mergeable` | `conflicting` | `unknown` (GitHub is still computing it: ask again). */
+            mergeable: string;
+            /** @description GitHub's own word: `clean` | `dirty` | `blocked` | `behind` | `unstable` | `has_hooks` | `draft` | `unknown`. */
+            mergeableState: string;
+            /** @description Names of the checks still queued or running, at most 20. */
+            pendingChecks: string[];
+            /**
+             * Format: int64
+             * @description GitHub number.
+             */
+            prNumber: number;
+            /** @description Project the pull request belongs to. */
+            projectId: string;
+            /** @description The SDI review of `headSha`; null when there is none. */
+            reviewId?: string | null;
+            /** @description That review's status (`context` | `analyzing` | `proposed` | `published` | `failed`); null when there is none. */
+            reviewStatus?: string | null;
+            /** @description `open` | `closed` | `merged` | `draft`. */
+            state: string;
+            /** @description Title. */
+            title: string;
+            /**
+             * Format: int32
+             * @description Findings of severity high or critical nobody decided yet.
+             */
+            undecidedBlockingFindings: number;
+        };
+        /** @description Response of `POST /projects/{id}/pull-requests/{number}/merge`. */
+        MergeResult: {
+            /** @description The execution that merges the pull request: its steps, its approval (the `repo.merge_pull_request` policy) and its outcome are there. */
+            executionId: string;
+            /** @description The readiness the merge was requested on. */
+            readiness: components["schemas"]["MergeReadiness"];
         };
         /** @description One turn of a negotiation. */
         Message: {
@@ -3762,7 +4101,9 @@ export interface components {
             };
             /**
              * @description `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,
-             *     or, for continuous delivery, `release`, `deployment` or `environment`.
+             *     for continuous delivery `release`, `deployment` or `environment`, and for code review
+             *     and the pull request autopilot `review` (also when a fix or merge execution is
+             *     attached to it) or `finding` (also when a fix was drafted for it).
              */
             entity: string;
             /** @description Id of the entity that changed. */
@@ -4045,10 +4386,18 @@ export interface components {
             deletions: number;
             /** @description Source branch. */
             headRef: string;
+            /** @description `owner/name` of the repository the head branch lives in; differs from the project's repository for a pull request from a fork. */
+            headRepo: string;
             /** @description Head commit; a review is identified by it. */
             headSha: string;
             /** @description Link to the pull request on GitHub. */
             htmlUrl: string;
+            /** @description The author is a bot account. */
+            isBot: boolean;
+            /** @description The author is Dependabot. */
+            isDependabot: boolean;
+            /** @description The head branch lives in another repository: SDI cannot commit fixes to it (CONTRACT.md §23). */
+            isFork: boolean;
             /** @description The latest SDI review of this pull request, if any. */
             latestReviewId?: string | null;
             /**
@@ -4116,6 +4465,41 @@ export interface components {
             prompt: string;
             /** @description Why the platform could not detect it on its own. */
             reason: string;
+        };
+        /**
+         * @description What one tiny call to the workspace's model reported, or which setting
+         *     keeps the model from being called (CONTRACT.md §19).
+         */
+        ReasonerTest: {
+            /** @description Scheme and host the call goes to, never a path or a query. */
+            endpoint?: string | null;
+            /**
+             * Format: int32
+             * @description Tokens the call spent; 0 when no call was made.
+             */
+            inputTokens: number;
+            /**
+             * Format: int32
+             * @description How long the provider took; 0 when no call was made.
+             */
+            latencyMs: number;
+            /** @description A sentence: what works, or what to change and where. */
+            message: string;
+            /** @description The model the call uses; null when none is named. */
+            model?: string | null;
+            /**
+             * Format: int32
+             * @description Tokens the reply spent; 0 when no call was made.
+             */
+            outputTokens: number;
+            /** @description `anthropic` or `openai_compatible`. */
+            provider: string;
+            /**
+             * @description `ok`, `off` (the data controls keep the reasoner off), `heuristic`
+             *     (the settings choose the built-in reasoner), `no_key`, `no_model`,
+             *     `cap_reached`, `provider_error` or `identity_unavailable`.
+             */
+            status: string;
         };
         /** @description Where images live. One per workspace is the default; GHCR needs no secret. */
         Registry: {
@@ -4289,10 +4673,19 @@ export interface components {
              * @description Findings proposed.
              */
             findingsTotal: number;
+            /** @description Latest execution that commits this review's fixes (CONTRACT.md §23); null when none was requested. */
+            fixExecutionId?: string | null;
+            /**
+             * Format: int32
+             * @description Accepted findings with a replacement (`suggestionSource` `rule` or `model`) that no fix execution carries yet: what `POST /reviews/{id}/apply-fixes` would commit. Examples never count.
+             */
+            fixesReady: number;
             /** @description Head commit reviewed. */
             headSha: string;
             /** @description Review id. */
             id: string;
+            /** @description Latest execution that merges this pull request; null when none was requested. */
+            mergeExecutionId?: string | null;
             /** @description Pull request author. */
             prAuthor: string;
             /**
@@ -4326,7 +4719,7 @@ export interface components {
         };
         /** @description One entry of the review activity log. */
         ReviewActivity: {
-            /** @description `review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed`. */
+            /** @description `review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed` | `fix.drafted` | `fixes.requested` | `merge.requested`. */
             action: string;
             /** @description Who did it (`system` for the pipeline). */
             actor: string;
@@ -4571,6 +4964,46 @@ export interface components {
             /** @description Login of whoever stored it last. */
             updatedBy?: string | null;
         };
+        /**
+         * @description A project's vulnerable dependencies and the state of Dependabot on its
+         *     repository. Computed per request (cached 5 minutes); nothing is stored.
+         */
+        SecurityOverview: {
+            /** @description Dependabot alerts: `enabled` | `disabled` | `unknown` (the token may not read the setting). */
+            alerts: string;
+            /** @description Counts per severity, most severe first. */
+            bySeverity: components["schemas"]["SeverityCount"][];
+            /**
+             * Format: date-time
+             * @description When GitHub was read.
+             */
+            checkedAt: string;
+            /** @description Ecosystems the configuration names. */
+            configEcosystems: string[];
+            /** @description Its path (`.github/dependabot.yml`); null when there is none. */
+            configPath?: string | null;
+            /** @description A Dependabot configuration file exists on the default branch. */
+            configPresent: boolean;
+            /** @description An open execution that turns Dependabot on for this project; null when none is running. */
+            configureExecutionId?: string | null;
+            /**
+             * Format: int32
+             * @description Open pull requests by Dependabot.
+             */
+            openDependabotPullRequests: number;
+            /** @description Project. */
+            projectId: string;
+            /** @description Dependabot security updates: `enabled` | `paused` | `disabled` | `unknown`. */
+            securityUpdates: string;
+            /** @description Where the list came from: `dependabot` (GitHub's open alerts), `osv` (the manifest versions looked up at OSV) or `none` (neither answered). */
+            source: string;
+            /** @description Why it is not Dependabot's list, as a sentence; null when it is. */
+            sourceNote?: string | null;
+            /** @description More exist than were read. */
+            truncated: boolean;
+            /** @description The vulnerabilities, most severe first. */
+            vulnerabilities: components["schemas"]["Vulnerability"][];
+        };
         /** @description Health of one backing service. */
         ServiceHealth: {
             /** @description Error text when the check failed. */
@@ -4618,6 +5051,16 @@ export interface components {
             intelligence: components["schemas"]["IntelligenceSettings"];
             /** @description Scanner limits (knowledge service). */
             knowledge: components["schemas"]["KnowledgeSettings"];
+        };
+        /** @description How many vulnerabilities have one severity. */
+        SeverityCount: {
+            /**
+             * Format: int32
+             * @description Vulnerabilities of that severity.
+             */
+            count: number;
+            /** @description `critical` | `high` | `medium` | `low` | `unknown`. */
+            severity: string;
         };
         /** @description A project that looks like the requested one. */
         SimilarProject: {
@@ -4802,6 +5245,8 @@ export interface components {
              * @description 1–8760.
              */
             codeCacheTtlHours?: number | null;
+            /** @description `off` or `changed_lines`. */
+            codeToModel?: string | null;
             /** @description Keep only short excerpts in semantic chunks. */
             minimalChunks?: boolean | null;
             /** @description `off` or `claude`. */
@@ -4901,6 +5346,45 @@ export interface components {
             login: string;
             /** @description Display name, when set on the profile. */
             name: string;
+        };
+        /** @description One vulnerable dependency. */
+        Vulnerability: {
+            /** @description The version the manifest names; null when the source does not say. */
+            currentVersion?: string | null;
+            /** @description CVE id; null when the advisory has none. */
+            cveId?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was detected; null when the source does not say (OSV lookups).
+             */
+            detectedAt?: string | null;
+            /** @description `npm` | `pip` | `cargo` | `go` | `maven` | `nuget` | `composer` | `rubygems` | `actions` | ... */
+            ecosystem: string;
+            /**
+             * Format: int64
+             * @description Number of an open pull request that fixes it; null when there is none.
+             */
+            fixPullRequest?: number | null;
+            /** @description First version with the fix; null when no fixed version exists yet. */
+            fixedVersion?: string | null;
+            /** @description GHSA id when there is one, else the advisory's own id. */
+            id: string;
+            /** @description Manifest that names the package; null when the source does not say. */
+            manifestPath?: string | null;
+            /** @description Package name. */
+            package: string;
+            /** @description `runtime` | `development`; null when the source does not say. */
+            scope?: string | null;
+            /** @description `critical` | `high` | `medium` | `low` | `unknown`. */
+            severity: string;
+            /** @description `dependabot` | `osv`. */
+            source: string;
+            /** @description What is wrong, in a line. */
+            summary: string;
+            /** @description The advisory or the alert on GitHub; null when there is no page for it. */
+            url?: string | null;
+            /** @description Versions the advisory affects; null when the source does not say. */
+            vulnerableRange?: string | null;
         };
         /** @description Response of `POST /webhooks/github`. */
         WebhookAck: {
@@ -7703,6 +8187,100 @@ export interface operations {
                 "application/json": components["schemas"]["DecideFindingRequest"];
             };
         };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Finding"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    draft_fix: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -11640,6 +12218,202 @@ export interface operations {
             };
         };
     };
+    merge_pull_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+                /** @description Pull request number */
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergePullRequestRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergeResult"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    merge_readiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+                /** @description Pull request number */
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergeReadiness"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     start_review: {
         parameters: {
             query?: never;
@@ -12145,6 +12919,201 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Scan"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    security_overview: {
+        parameters: {
+            query?: {
+                /** @description Ask GitHub (and OSV) again instead of answering from the 5-minute cache. */
+                refresh?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityOverview"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    configure_dependabot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigureDependabotRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigureDependabotResult"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */
@@ -14134,6 +15103,100 @@ export interface operations {
             };
         };
     };
+    apply_fixes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Review id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     publish_review: {
         parameters: {
             query?: never;
@@ -14531,6 +15594,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Settings"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    test_reasoner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReasonerTest"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */

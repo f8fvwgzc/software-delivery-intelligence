@@ -239,19 +239,63 @@ fn osv_ecosystem(file: &ChangedFile) -> Option<&'static str> {
     })
 }
 
-/// An exact version out of a spec: `1.2.3`, `=1.2.3`, `==1.2.3`, `v1.2.3`;
-/// `^1.2.3`, `~1.2`, `>=1`, `*` and `latest` are not.
-fn exact_version(spec: &str) -> Option<String> {
-    let s = spec
-        .trim()
-        .trim_start_matches("==")
-        .trim_start_matches('=')
-        .trim_start_matches('v')
-        .trim();
-    (!s.is_empty()
-        && s.chars().next().is_some_and(|c| c.is_ascii_digit())
-        && !s.contains(['*', ' ', ',', '<', '>', '^', '~', '|', 'x', 'X']))
-    .then(|| s.to_owned())
+/// The single version `spec` pins in `ecosystem` (an OSV ecosystem name),
+/// or `None` when it names a range. What pins a version differs by package
+/// manager, and getting it wrong reports vulnerabilities a project does
+/// not have: `regex = "1"` in a `Cargo.toml` is the range `>=1.0.0, <2.0.0`
+/// and resolves to the newest 1.x, not to 1.0.0.
+///
+/// | ecosystem | pins | does not |
+/// |---|---|---|
+/// | crates.io | `=1.2.3` | `1.2.3`, `1`, `^1.2`, `~1.2`, `=1.2` (all ranges) |
+/// | npm | `1.2.3`, `=1.2.3`, `v1.2.3` | `1`, `1.2` (x-ranges), `^`, `~`, `>=`, `*`, `latest` |
+/// | PyPI | `==1.2.3` | a bare `1.2.3` (a caret in Poetry), `>=`, `~=`, `==1.2.*` |
+/// | Go | `1.2.3` (go.mod names the selected version) | anything shorter |
+/// | RubyGems, Packagist, Hex, Maven, NuGet | a bare or `=` version | `~>`, `^`, `>=`, ranges |
+///
+/// An ecosystem that is not listed is never looked up.
+pub(crate) fn exact_version(ecosystem: &str, spec: &str) -> Option<String> {
+    let spec = spec.trim();
+    let (pinned, rest) = match spec
+        .strip_prefix("===")
+        .or_else(|| spec.strip_prefix("=="))
+        .or_else(|| spec.strip_prefix('='))
+    {
+        Some(rest) => (true, rest.trim()),
+        None => (false, spec),
+    };
+    let version = rest.strip_prefix('v').unwrap_or(rest);
+    let parts = numeric_parts(version)?;
+    let exact = match ecosystem {
+        "crates.io" => pinned && parts == 3,
+        "npm" | "Go" => parts == 3,
+        "PyPI" => pinned,
+        "RubyGems" | "Packagist" | "Hex" | "Maven" | "NuGet" => true,
+        _ => false,
+    };
+    exact.then(|| version.to_owned())
+}
+
+/// How many dot-separated numbers open `version` (`1.2.3-rc.1` has three),
+/// or `None` when it is not one plain version: empty, a wildcard (`1.x`,
+/// `1.*`), an operator, a list, or anything with a character a version
+/// never has.
+fn numeric_parts(version: &str) -> Option<usize> {
+    if !version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+    {
+        return None;
+    }
+    let core = version.split(['-', '+']).next().unwrap_or_default();
+    let mut parts = 0;
+    for part in core.split('.') {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        parts += 1;
+    }
+    (parts > 0).then_some(parts)
 }
 
 /// Every exactly pinned dependency the pull request adds (sorted, unique).
@@ -266,7 +310,7 @@ pub fn added_dependencies(input: &ReviewInput) -> Vec<AddedDependency> {
                 "go.mod" => GO_DEP
                     .captures(line)
                     .filter(|_| is_dependency_line(file, line))
-                    .map(|c| (c[1].to_owned(), c[2].trim_start_matches('v').to_owned())),
+                    .and_then(|c| exact_version(ecosystem, &c[2]).map(|v| (c[1].to_owned(), v))),
                 "Gemfile" => {
                     let parts: Vec<&str> = line
                         .trim()
@@ -276,7 +320,7 @@ pub fn added_dependencies(input: &ReviewInput) -> Vec<AddedDependency> {
                         .collect();
                     match parts.as_slice() {
                         [name, version, ..] if !name.is_empty() => {
-                            exact_version(version).map(|v| ((*name).to_owned(), v))
+                            exact_version(ecosystem, version).map(|v| ((*name).to_owned(), v))
                         }
                         _ => None,
                     }
@@ -286,7 +330,7 @@ pub fn added_dependencies(input: &ReviewInput) -> Vec<AddedDependency> {
                         is_dependency_line(file, line)
                             || file.file_name().starts_with("requirements")
                     })
-                    .and_then(|(name, spec)| exact_version(&spec).map(|v| (name, v))),
+                    .and_then(|(name, spec)| exact_version(ecosystem, &spec).map(|v| (name, v))),
             };
             if let Some((name, version)) = coords {
                 out.push(AddedDependency {
@@ -448,7 +492,8 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
                                     file.path
                                 ),
                             )
-                            .with_suggestion(removed_line.to_owned()),
+                            // Putting the removed line back is the whole fix.
+                            .with_replacement(removed_line.to_owned()),
                         );
                         break;
                     }
@@ -545,11 +590,102 @@ mod tests {
                 ("PyPI", "requests", "2.31.0"),
                 ("RubyGems", "rails", "7.0.0"),
                 ("crates.io", "serde", "1.0.200"),
-                ("crates.io", "tokio", "1"),
                 ("npm", "left-pad", "1.3.0"),
             ]
         );
         assert_eq!(deps.iter().find(|d| d.name == "requests").unwrap().line, 1);
+    }
+
+    /// What pins one version depends on the package manager. A bare
+    /// version in a `Cargo.toml` is a caret range, a short one in a
+    /// `package.json` an x-range, a bare one for PyPI no pin at all: asking
+    /// OSV about a range's lower bound reports vulnerabilities the project
+    /// very likely does not have.
+    #[test]
+    fn exact_versions_are_judged_per_package_manager() {
+        let exact = |ecosystem: &str, spec: &str| exact_version(ecosystem, spec);
+        let pinned = |v: &str| Some(v.to_owned());
+
+        // Cargo: only `=x.y.z`.
+        assert_eq!(exact("crates.io", "=1.0.200"), pinned("1.0.200"));
+        assert_eq!(exact("crates.io", " = 1.0.200 "), pinned("1.0.200"));
+        for range in [
+            "1", "1.0", "1.0.200", "^1.2.3", "~1.2", ">=1.2.3", "=1.2", "=1", "*", "",
+        ] {
+            assert_eq!(exact("crates.io", range), None, "cargo {range:?}");
+        }
+
+        // npm: a full version with or without `=` / `v`; anything shorter is an x-range.
+        for (spec, version) in [
+            ("1.3.0", "1.3.0"),
+            ("=1.3.0", "1.3.0"),
+            ("v1.3.0", "1.3.0"),
+            ("19.0.0-rc.1", "19.0.0-rc.1"),
+            ("1.0.0-next.3+build.7", "1.0.0-next.3+build.7"),
+        ] {
+            assert_eq!(exact("npm", spec), pinned(version), "npm {spec:?}");
+        }
+        for range in [
+            "1",
+            "1.2",
+            "^1.3.0",
+            "~1.3.0",
+            ">=1.3.0",
+            "1.x",
+            "1.2.x",
+            "1.2.*",
+            "*",
+            "latest",
+            "1.2.3 - 2.0.0",
+            "1.2.3 || 2.0.0",
+            "<2",
+            "workspace:*",
+            "npm:other@1.0.0",
+            "github:owner/repo",
+            "file:../x",
+        ] {
+            assert_eq!(exact("npm", range), None, "npm {range:?}");
+        }
+
+        // PyPI: only `==` (PEP 440); a bare version is a caret in Poetry.
+        assert_eq!(exact("PyPI", "==2.31.0"), pinned("2.31.0"));
+        assert_eq!(exact("PyPI", "===2.31.0"), pinned("2.31.0"));
+        assert_eq!(exact("PyPI", "==8"), pinned("8"));
+        for range in [
+            "2.31.0", ">=2.31.0", "~=2.31", "==2.31.*", "<3,>=2", "^2.31", "*", "",
+        ] {
+            assert_eq!(exact("PyPI", range), None, "pip {range:?}");
+        }
+
+        // Go: go.mod names the selected version, with or without the `v`.
+        assert_eq!(exact("Go", "v1.9.0"), pinned("1.9.0"));
+        assert_eq!(exact("Go", "1.9.0"), pinned("1.9.0"));
+        assert_eq!(
+            exact("Go", "v0.0.0-20240102150405-abcdef123456"),
+            pinned("0.0.0-20240102150405-abcdef123456")
+        );
+        assert_eq!(exact("Go", "v1.9"), None);
+
+        // Bundler, Composer, Hex, Maven: a bare version means exactly that one.
+        for ecosystem in ["RubyGems", "Packagist", "Hex", "Maven"] {
+            assert_eq!(exact(ecosystem, "7.0.0"), pinned("7.0.0"), "{ecosystem}");
+            assert_eq!(exact(ecosystem, "== 7.0.0"), pinned("7.0.0"), "{ecosystem}");
+            for range in [
+                "~> 7.0",
+                "^7.0",
+                ">= 7.0.0",
+                "7.0.*",
+                "[1.0,2.0)",
+                "7.0 || 8.0",
+                "",
+            ] {
+                assert_eq!(exact(ecosystem, range), None, "{ecosystem} {range:?}");
+            }
+        }
+
+        // An ecosystem OSV is not asked about is never looked up.
+        assert_eq!(exact("Docker", "22.0.0"), None);
+        assert_eq!(exact("", "1.2.3"), None);
     }
 
     #[test]

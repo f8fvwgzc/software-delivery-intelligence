@@ -58,6 +58,19 @@ export const REASONER_OPTIONS = [
 
 export type ReasonerMode = (typeof REASONER_OPTIONS)[number]['value']
 
+/** `DataControls.codeToModel` (CONTRACT.md §19, §23): whether source lines may reach the model so it can write a fix. */
+export const CODE_TO_MODEL_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'changed_lines', label: 'Lines a finding points at' },
+] as const
+
+export type CodeToModelMode = (typeof CODE_TO_MODEL_OPTIONS)[number]['value']
+
+/** The stored mode; anything else (an identity service from before §23 answers nothing) reads as off, the default. */
+export function codeToModelMode(value: string | null | undefined): CodeToModelMode {
+  return value === 'changed_lines' ? 'changed_lines' : 'off'
+}
+
 export interface StorageRow {
   what: string
   where: string
@@ -107,6 +120,13 @@ export const STORAGE_ROWS: StorageRow[] = [
     what: 'LLM requests',
     where: 'None stored; sent only with the reasoner on and the workspace’s own key; structured context, never raw files',
     retention: '—',
+    control: 'Yes (off by default)',
+  },
+  {
+    what: 'Source lines sent to the model to draft a fix',
+    where:
+      'None stored; sent only with the reasoner on and “Source lines to the model” set: the lines one finding points at and at most 20 either side, 120 at most. Never a whole file, never a finding about a secret; a line that looks like a secret is replaced by <redacted>',
+    retention: 'The drafted fix lives with the review; the request is not stored',
     control: 'Yes (off by default)',
   },
   {

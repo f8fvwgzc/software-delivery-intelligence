@@ -203,11 +203,22 @@ pub fn cost_line(line: &CostLineData) -> CostLine {
     }
 }
 
+/// The read-only half of the settings: how the pull request watcher is
+/// configured and what it last saw in this workspace (CONTRACT.md §23.6).
+#[derive(Debug, Clone, Default)]
+pub struct WatcherView {
+    /// `SDI_PR_WATCH_SECONDS`; 0 = the operator turned the watcher off.
+    pub interval_seconds: u32,
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: String,
+}
+
 pub fn settings(
     row: &SettingsRow,
     api_key_configured: bool,
     effective_model: String,
     provider: &str,
+    watcher: &WatcherView,
 ) -> IntelligenceSettings {
     IntelligenceSettings {
         default_weights: Some(weights(&row.default_weights.0)),
@@ -220,6 +231,12 @@ pub fn settings(
         reasoner_base_url: row.reasoner_base_url.clone(),
         reasoner_model: effective_model,
         reasoner_daily_token_cap: row.daily_token_cap(),
+        auto_draft_fixes: row.auto_draft_fixes,
+        auto_merge: row.auto_merge.clone(),
+        merge_requires_review: row.merge_requires_review,
+        pr_watch_interval_seconds: watcher.interval_seconds,
+        pr_watch_last_run_at: time::opt_to_proto(watcher.last_run_at),
+        pr_watch_last_error: watcher.last_error.clone(),
     }
 }
 
@@ -481,6 +498,13 @@ pub fn finding(row: &FindingRow) -> Finding {
         decision_note: row.decision_note.clone(),
         decided_by: row.decided_by.clone(),
         decided_at: time::opt_to_proto(row.decided_at),
+        suggestion_source: if row.suggestion.is_empty() {
+            String::new()
+        } else {
+            row.suggestion_source.clone()
+        },
+        fix_execution_id: row.fix_execution_id.clone(),
+        can_draft_fix: crate::domain::fixes::can_draft_fix(row),
     }
 }
 
@@ -518,13 +542,21 @@ pub fn review(row: &ReviewRow, findings: &[FindingRow]) -> Review {
         requested_by: row.requested_by.clone(),
         created_at: Some(time::to_proto(row.created_at)),
         updated_at: Some(time::to_proto(row.updated_at)),
+        fix_execution_id: row.fix_execution_id.clone(),
+        merge_execution_id: row.merge_execution_id.clone(),
+        fixes_ready: row.fixes_ready.max(0) as u32,
     }
 }
 
 pub fn review_activity(row: &ActivityRow) -> ReviewActivity {
     ReviewActivity {
         id: row.id.to_string(),
-        review_id: row.review_id.to_string(),
+        // A merge asked for without a review (the gate is off) has none.
+        review_id: if row.review_id.is_nil() {
+            String::new()
+        } else {
+            row.review_id.to_string()
+        },
         project_id: row.project_id.clone(),
         project_name: row.project_name.clone(),
         pr_number: row.pr_number.max(0) as u64,

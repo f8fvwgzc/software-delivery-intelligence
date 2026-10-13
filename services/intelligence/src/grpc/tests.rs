@@ -36,10 +36,10 @@ use crate::{
 
 /// The two workspaces the tests play in. Every call carries one of them as
 /// metadata, the way the gateway forwards it (CONTRACT.md §18).
-const WS_A: &str = "00000000-0000-7000-8000-00000000000a";
-const WS_B: &str = "00000000-0000-7000-8000-00000000000b";
+pub(super) const WS_A: &str = "00000000-0000-7000-8000-00000000000a";
+pub(super) const WS_B: &str = "00000000-0000-7000-8000-00000000000b";
 
-fn principal(role: Role, workspace: &str) -> Principal {
+pub(super) fn principal(role: Role, workspace: &str) -> Principal {
     Principal {
         user_id: format!("user-{}", role.as_str()),
         workspace_id: workspace.to_owned(),
@@ -47,19 +47,19 @@ fn principal(role: Role, workspace: &str) -> Principal {
     }
 }
 
-fn as_role<T>(role: Role, workspace: &str, message: T) -> Request<T> {
+pub(super) fn as_role<T>(role: Role, workspace: &str, message: T) -> Request<T> {
     gateway::outgoing(&principal(role, workspace), message)
 }
 
 /// The default caller: an admin of workspace A.
-fn req<T>(message: T) -> Request<T> {
+pub(super) fn req<T>(message: T) -> Request<T> {
     as_role(Role::Admin, WS_A, message)
 }
 
-struct Peers {
-    knowledge: Arc<FakeKnowledge>,
-    execution: Arc<FakeExecution>,
-    identity: Arc<FakeIdentity>,
+pub(super) struct Peers {
+    pub knowledge: Arc<FakeKnowledge>,
+    pub execution: Arc<FakeExecution>,
+    pub identity: Arc<FakeIdentity>,
 }
 
 /// One schema per test so they can run in parallel without truncating each other.
@@ -68,7 +68,7 @@ async fn service(schema: &str) -> (IntelligenceGrpc, Arc<FakeKnowledge>, Arc<Fak
     (svc, peers.knowledge, peers.execution)
 }
 
-async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
+pub(super) async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
     let url = sdi_common::config::database_url();
     let pool = sdi_common::db::connect(&url, schema)
         .await
@@ -78,6 +78,8 @@ async fn service_with_peers(schema: &str) -> (IntelligenceGrpc, Peers) {
         .await
         .expect("migrations");
     for table in [
+        "autopilot_executions",
+        "pr_watch_state",
         "review_learnings",
         "reasoner_usage",
         "osv_cache",
@@ -1482,7 +1484,10 @@ async fn reasoner_follows_the_workspace_data_controls() {
 
 /// A pull request against the fixture project: a new Dockerfile with a
 /// floating tag and a source change without tests.
-fn pull_request_fixture(number: u64, head_sha: &str) -> sdi_proto::knowledge::v1::PullRequest {
+pub(super) fn pull_request_fixture(
+    number: u64,
+    head_sha: &str,
+) -> sdi_proto::knowledge::v1::PullRequest {
     use sdi_proto::knowledge::v1::{ChangedFile, DiffHunk, PullRequestSummary};
     sdi_proto::knowledge::v1::PullRequest {
         summary: Some(PullRequestSummary {
@@ -1545,7 +1550,7 @@ async fn review_pipeline_proposes_decides_and_refuses_to_publish_without_github(
     let knowledge = Arc::new(FakeKnowledge {
         context: Some(context),
         patterns: fixtures::catalog(),
-        pull_requests: [(7, pull_request_fixture(7, "abc123"))].into(),
+        pull_requests: std::sync::Mutex::new([(7, pull_request_fixture(7, "abc123"))].into()),
         ..Default::default()
     });
     let svc = IntelligenceGrpc::new(
@@ -1824,7 +1829,7 @@ async fn review_pipeline_proposes_decides_and_refuses_to_publish_without_github(
     let knowledge2 = Arc::new(FakeKnowledge {
         context: knowledge.context.clone(),
         patterns: fixtures::catalog(),
-        pull_requests: [(7, pull_request_fixture(7, "def456"))].into(),
+        pull_requests: std::sync::Mutex::new([(7, pull_request_fixture(7, "def456"))].into()),
         ..Default::default()
     });
     let svc2 = IntelligenceGrpc::new(
@@ -1878,7 +1883,10 @@ async fn review_pipeline_proposes_decides_and_refuses_to_publish_without_github(
 }
 
 /// Reviews until the pipeline has proposed (or failed).
-async fn wait_for_review(svc: &IntelligenceGrpc, id: &str) -> sdi_proto::intelligence::v1::Review {
+pub(super) async fn wait_for_review(
+    svc: &IntelligenceGrpc,
+    id: &str,
+) -> sdi_proto::intelligence::v1::Review {
     for _ in 0..200 {
         let review = svc
             .get_review(req(GetReviewRequest { id: id.to_owned() }))
@@ -1902,11 +1910,12 @@ fn review_service(svc: &IntelligenceGrpc, peers: &Peers, shas: &[&str]) -> Intel
     let knowledge = Arc::new(FakeKnowledge {
         context: Some(context),
         patterns: fixtures::catalog(),
-        pull_requests: shas
-            .iter()
-            .enumerate()
-            .map(|(i, sha)| (i as u64 + 1, pull_request_fixture(i as u64 + 1, sha)))
-            .collect(),
+        pull_requests: std::sync::Mutex::new(
+            shas.iter()
+                .enumerate()
+                .map(|(i, sha)| (i as u64 + 1, pull_request_fixture(i as u64 + 1, sha)))
+                .collect(),
+        ),
         ..Default::default()
     });
     IntelligenceGrpc::new(

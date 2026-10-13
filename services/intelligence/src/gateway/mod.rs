@@ -10,7 +10,7 @@ use sdi_proto::{
     execution::v1::{
         CreateExecutionRequest, DeliveryStats, Environment, Execution, GetDeliveryStatsRequest,
         GetExecutionRequest, ListEnvironmentsRequest, ListRegistriesRequest, Registry,
-        execution_service_client::ExecutionServiceClient,
+        StartExecutionRequest, execution_service_client::ExecutionServiceClient,
     },
     identity::v1::{
         AuditEntry, DataControls, GetDataControlsRequest, GetInstallationTokenRequest,
@@ -18,10 +18,13 @@ use sdi_proto::{
         identity_service_client::IdentityServiceClient,
     },
     knowledge::v1::{
-        GetGraphRequest, GetProjectContextRequest, GetPullRequestRequest, GetRepoFileRequest,
-        GetRepoTreeRequest, Graph, IndexKnowledgeRequest, ListPatternsRequest,
-        ListPipelineRunsRequest, ListSimilarProjectsRequest, Pattern, PipelineRun, ProjectContext,
-        PullRequest, RepoFile, RepoTree, SimilarProject,
+        GetGraphRequest, GetProjectContextRequest, GetProjectRequest, GetPullRequestRequest,
+        GetPullRequestStatusRequest, GetRepoFileRequest, GetRepoTreeRequest,
+        GetRepositorySecurityRequest, Graph, IndexKnowledgeRequest, ListDependenciesRequest,
+        ListDependenciesResponse, ListPatternsRequest, ListPipelineRunsRequest,
+        ListProjectsRequest, ListPullRequestsRequest, ListSimilarProjectsRequest, Pattern,
+        PipelineRun, Project, ProjectContext, PullRequest, PullRequestStatus, PullRequestSummary,
+        RepoFile, RepoTree, RepositorySecurity, SimilarProject,
         knowledge_service_client::KnowledgeServiceClient,
     },
 };
@@ -128,6 +131,55 @@ pub trait KnowledgeGateway: Send + Sync {
         project_id: &str,
         number: u64,
     ) -> Result<PullRequest, GatewayError>;
+
+    // --- Pull request autopilot (CONTRACT.md §23) ---------------------------
+
+    /// One file's text at `git_ref` (a pull request's head commit, a full
+    /// SHA) instead of the scanned commit. Knowledge never caches it.
+    async fn repo_file_at(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<RepoFile, GatewayError>;
+    /// One connected project: its repository and default branch.
+    async fn project(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<Project, GatewayError>;
+    /// Every project of the principal's workspace.
+    async fn list_projects(&self, principal: &Principal) -> Result<Vec<Project>, GatewayError>;
+    /// The project's pull requests in `state`; `refresh` asks GitHub again.
+    async fn list_pull_requests(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        state: &str,
+        refresh: bool,
+        limit: u32,
+    ) -> Result<Vec<PullRequestSummary>, GatewayError>;
+    /// Whether one pull request can be merged, read from GitHub now.
+    async fn pull_request_status(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        number: u64,
+    ) -> Result<PullRequestStatus, GatewayError>;
+    /// Dependabot's state for the repository and its open alerts.
+    async fn repository_security(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        refresh: bool,
+    ) -> Result<RepositorySecurity, GatewayError>;
+    /// The dependencies the last scan found in the manifests.
+    async fn list_dependencies(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<ListDependenciesResponse, GatewayError>;
 }
 
 #[async_trait]
@@ -138,6 +190,13 @@ pub trait ExecutionGateway: Send + Sync {
         request: CreateExecutionRequest,
     ) -> Result<Execution, GatewayError>;
     async fn get_execution(
+        &self,
+        principal: &Principal,
+        id: &str,
+    ) -> Result<Execution, GatewayError>;
+    /// Sets a created execution going: it runs until its first approval
+    /// (or to the end when the workspace's policies ask for none).
+    async fn start_execution(
         &self,
         principal: &Principal,
         id: &str,
@@ -358,6 +417,7 @@ impl KnowledgeGateway for GrpcKnowledge {
                 GetRepoFileRequest {
                     project_id: project_id.to_owned(),
                     path: path.to_owned(),
+                    r#ref: String::new(),
                 },
             ))
             .await
@@ -378,6 +438,137 @@ impl KnowledgeGateway for GrpcKnowledge {
                 GetPullRequestRequest {
                     project_id: project_id.to_owned(),
                     number,
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn repo_file_at(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<RepoFile, GatewayError> {
+        self.client
+            .clone()
+            .get_repo_file(outgoing(
+                principal,
+                GetRepoFileRequest {
+                    project_id: project_id.to_owned(),
+                    path: path.to_owned(),
+                    r#ref: git_ref.to_owned(),
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn project(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<Project, GatewayError> {
+        self.client
+            .clone()
+            .get_project(outgoing(
+                principal,
+                GetProjectRequest {
+                    id: project_id.to_owned(),
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn list_projects(&self, principal: &Principal) -> Result<Vec<Project>, GatewayError> {
+        self.client
+            .clone()
+            .list_projects(outgoing(principal, ListProjectsRequest {}))
+            .await
+            .map(|r| r.into_inner().projects)
+            .map_err(knowledge_err)
+    }
+
+    async fn list_pull_requests(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        state: &str,
+        refresh: bool,
+        limit: u32,
+    ) -> Result<Vec<PullRequestSummary>, GatewayError> {
+        self.client
+            .clone()
+            .list_pull_requests(outgoing(
+                principal,
+                ListPullRequestsRequest {
+                    project_id: project_id.to_owned(),
+                    state: state.to_owned(),
+                    refresh,
+                    limit,
+                },
+            ))
+            .await
+            .map(|r| r.into_inner().pull_requests)
+            .map_err(knowledge_err)
+    }
+
+    async fn pull_request_status(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        number: u64,
+    ) -> Result<PullRequestStatus, GatewayError> {
+        self.client
+            .clone()
+            .get_pull_request_status(outgoing(
+                principal,
+                GetPullRequestStatusRequest {
+                    project_id: project_id.to_owned(),
+                    number,
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn repository_security(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        refresh: bool,
+    ) -> Result<RepositorySecurity, GatewayError> {
+        self.client
+            .clone()
+            .get_repository_security(outgoing(
+                principal,
+                GetRepositorySecurityRequest {
+                    project_id: project_id.to_owned(),
+                    refresh,
+                },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(knowledge_err)
+    }
+
+    async fn list_dependencies(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> Result<ListDependenciesResponse, GatewayError> {
+        self.client
+            .clone()
+            .list_dependencies(outgoing(
+                principal,
+                ListDependenciesRequest {
+                    project_id: project_id.to_owned(),
                 },
             ))
             .await
@@ -424,6 +615,25 @@ impl ExecutionGateway for GrpcExecution {
             .get_execution(outgoing(
                 principal,
                 GetExecutionRequest { id: id.to_owned() },
+            ))
+            .await
+            .map(|r| r.into_inner())
+            .map_err(execution_err)
+    }
+
+    async fn start_execution(
+        &self,
+        principal: &Principal,
+        id: &str,
+    ) -> Result<Execution, GatewayError> {
+        self.client
+            .clone()
+            .start_execution(outgoing(
+                principal,
+                StartExecutionRequest {
+                    id: id.to_owned(),
+                    fault: None,
+                },
             ))
             .await
             .map(|r| r.into_inner())
@@ -556,9 +766,15 @@ impl IdentityGateway for GrpcIdentity {
 
 #[cfg(test)]
 pub mod fake {
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
-    use sdi_proto::knowledge::v1::RepoTreeEntry;
+    use sdi_proto::{execution::v1::ExecutionStatus, knowledge::v1::RepoTreeEntry};
 
     use super::*;
 
@@ -573,17 +789,64 @@ pub mod fake {
         pub indexed: Mutex<Vec<IndexKnowledgeRequest>>,
         pub tree: Vec<RepoTreeEntry>,
         pub files: BTreeMap<String, String>,
-        /// Pull requests by number; `None` for every number otherwise.
-        pub pull_requests: BTreeMap<u64, PullRequest>,
+        /// Pull requests by number; `None` for every number otherwise. A
+        /// test changes a head or a state between two calls through the lock.
+        pub pull_requests: Mutex<BTreeMap<u64, PullRequest>>,
         /// Paths asked for through `repo_file`, in order.
         pub files_read: Mutex<Vec<String>>,
         /// The principal every call arrived with, in order.
         pub callers: Mutex<Vec<Principal>>,
+        /// Contexts of further projects, by project id (`context` is tried first).
+        pub contexts: Mutex<BTreeMap<String, ProjectContext>>,
+        /// The projects `ListProjects` answers, per workspace id.
+        pub projects: Mutex<BTreeMap<String, Vec<Project>>>,
+        /// Calls that fail: `ws:<workspace id>` fails `ListProjects`,
+        /// `project:<project id>` fails `ListPullRequests`, with this code.
+        pub failing: Mutex<BTreeMap<String, Code>>,
+        /// Every `ListPullRequests` call: `(project, state, refresh, limit)`.
+        pub list_calls: Mutex<Vec<(String, String, bool, u32)>>,
+        /// Files at a commit, by `(ref, path)`.
+        pub files_at: Mutex<BTreeMap<(String, String), RepoFile>>,
+        /// `(ref, path)` of every `repo_file_at` call, in order.
+        pub refs_read: Mutex<Vec<(String, String)>>,
+        /// What GitHub says about a pull request, by number. Without an
+        /// entry the pull request is clean and mergeable with every method.
+        pub statuses: Mutex<BTreeMap<u64, PullRequestStatus>>,
+        /// Pull request numbers `GetPullRequestStatus` was asked for.
+        pub status_calls: Mutex<Vec<u64>>,
+        /// `None` answers `UNAVAILABLE`.
+        pub security: Mutex<Option<RepositorySecurity>>,
+        /// The `refresh` flag of every `GetRepositorySecurity` call.
+        pub security_calls: Mutex<Vec<bool>>,
+        /// `None` answers `UNAVAILABLE`.
+        pub dependencies: Mutex<Option<ListDependenciesResponse>>,
     }
 
     impl FakeKnowledge {
         fn saw(&self, principal: &Principal) {
             self.callers.lock().unwrap().push(principal.clone());
+        }
+
+        fn failure(&self, key: &str) -> Option<GatewayError> {
+            self.failing
+                .lock()
+                .unwrap()
+                .get(key)
+                .map(|code| knowledge_err(Status::new(*code, format!("{key} is failing"))))
+        }
+
+        /// Stores a file at a commit for `repo_file_at`.
+        pub fn put_file(&self, git_ref: &str, path: &str, content: &str) {
+            self.files_at.lock().unwrap().insert(
+                (git_ref.to_owned(), path.to_owned()),
+                RepoFile {
+                    path: path.to_owned(),
+                    commit_sha: git_ref.to_owned(),
+                    content: content.to_owned(),
+                    size: content.len() as u64,
+                    ..Default::default()
+                },
+            );
         }
     }
 
@@ -598,6 +861,7 @@ pub mod fake {
             self.context
                 .clone()
                 .filter(|c| c.project.as_ref().is_some_and(|p| p.id == project_id))
+                .or_else(|| self.contexts.lock().unwrap().get(project_id).cloned())
                 .ok_or_else(|| knowledge_err(Status::not_found("project not found")))
         }
 
@@ -704,11 +968,184 @@ pub mod fake {
             number: u64,
         ) -> Result<PullRequest, GatewayError> {
             self.project_context(principal, project_id).await?;
-            self.pull_requests.get(&number).cloned().ok_or_else(|| {
-                knowledge_err(Status::not_found(format!(
+            self.pull_requests
+                .lock()
+                .unwrap()
+                .get(&number)
+                .filter(|pr| {
+                    pr.summary
+                        .as_ref()
+                        .is_none_or(|s| s.project_id.is_empty() || s.project_id == project_id)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    knowledge_err(Status::not_found(format!(
+                        "pull request #{number} not found"
+                    )))
+                })
+        }
+
+        async fn repo_file_at(
+            &self,
+            principal: &Principal,
+            _project_id: &str,
+            path: &str,
+            git_ref: &str,
+        ) -> Result<RepoFile, GatewayError> {
+            self.saw(principal);
+            self.refs_read
+                .lock()
+                .unwrap()
+                .push((git_ref.to_owned(), path.to_owned()));
+            self.files_at
+                .lock()
+                .unwrap()
+                .get(&(git_ref.to_owned(), path.to_owned()))
+                .cloned()
+                .ok_or_else(|| {
+                    knowledge_err(Status::not_found(format!("{path} not found at {git_ref}")))
+                })
+        }
+
+        async fn project(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+        ) -> Result<Project, GatewayError> {
+            let listed = self
+                .projects
+                .lock()
+                .unwrap()
+                .get(&principal.workspace_id)
+                .and_then(|projects| projects.iter().find(|p| p.id == project_id).cloned());
+            match listed {
+                Some(project) => {
+                    self.saw(principal);
+                    Ok(project)
+                }
+                None => self
+                    .project_context(principal, project_id)
+                    .await?
+                    .project
+                    .ok_or_else(|| knowledge_err(Status::not_found("project not found"))),
+            }
+        }
+
+        async fn list_projects(&self, principal: &Principal) -> Result<Vec<Project>, GatewayError> {
+            self.saw(principal);
+            if let Some(error) = self.failure(&format!("ws:{}", principal.workspace_id)) {
+                return Err(error);
+            }
+            Ok(self
+                .projects
+                .lock()
+                .unwrap()
+                .get(&principal.workspace_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        async fn list_pull_requests(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+            state: &str,
+            refresh: bool,
+            limit: u32,
+        ) -> Result<Vec<PullRequestSummary>, GatewayError> {
+            self.saw(principal);
+            self.list_calls.lock().unwrap().push((
+                project_id.to_owned(),
+                state.to_owned(),
+                refresh,
+                limit,
+            ));
+            if let Some(error) = self.failure(&format!("project:{project_id}")) {
+                return Err(error);
+            }
+            Ok(self
+                .pull_requests
+                .lock()
+                .unwrap()
+                .values()
+                .filter_map(|pr| pr.summary.clone())
+                .filter(|s| s.project_id == project_id)
+                // GitHub's "open" includes drafts; knowledge names them apart.
+                .filter(|s| match state {
+                    "" | "open" => matches!(s.state.as_str(), "open" | "draft"),
+                    "all" => true,
+                    other => s.state == other,
+                })
+                .take(if limit == 0 {
+                    usize::MAX
+                } else {
+                    limit as usize
+                })
+                .collect())
+        }
+
+        async fn pull_request_status(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+            number: u64,
+        ) -> Result<PullRequestStatus, GatewayError> {
+            self.saw(principal);
+            self.status_calls.lock().unwrap().push(number);
+            let summary = self
+                .pull_requests
+                .lock()
+                .unwrap()
+                .get(&number)
+                .and_then(|pr| pr.summary.clone())
+                .filter(|s| s.project_id == project_id);
+            let scripted = self.statuses.lock().unwrap().get(&number).cloned();
+            match (scripted, summary) {
+                (Some(mut status), summary) => {
+                    if status.summary.is_none() {
+                        status.summary = summary;
+                    }
+                    Ok(status)
+                }
+                (None, Some(summary)) => Ok(PullRequestStatus {
+                    summary: Some(summary),
+                    mergeable: "mergeable".into(),
+                    mergeable_state: "clean".into(),
+                    allowed_methods: vec!["merge".into(), "squash".into(), "rebase".into()],
+                    ..Default::default()
+                }),
+                (None, None) => Err(knowledge_err(Status::not_found(format!(
                     "pull request #{number} not found"
-                )))
-            })
+                )))),
+            }
+        }
+
+        async fn repository_security(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+            refresh: bool,
+        ) -> Result<RepositorySecurity, GatewayError> {
+            self.project_context(principal, project_id).await?;
+            self.security_calls.lock().unwrap().push(refresh);
+            self.security
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| knowledge_err(Status::unavailable("connection refused")))
+        }
+
+        async fn list_dependencies(
+            &self,
+            principal: &Principal,
+            project_id: &str,
+        ) -> Result<ListDependenciesResponse, GatewayError> {
+            self.project_context(principal, project_id).await?;
+            self.dependencies
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| knowledge_err(Status::unavailable("connection refused")))
         }
     }
 
@@ -723,6 +1160,19 @@ pub mod fake {
         pub environments: Mutex<Vec<Environment>>,
         /// The delivery RPCs answer `UNAVAILABLE` while set.
         pub delivery_down: std::sync::atomic::AtomicBool,
+        /// The status `GetExecution` answers per execution id; an execution
+        /// without an entry is still `PLANNING` (created, not started).
+        pub statuses: Mutex<BTreeMap<String, ExecutionStatus>>,
+        /// Ids `GetExecution` was asked for, in order.
+        pub fetched: Mutex<Vec<String>>,
+        /// Ids `GetExecution` answers `NOT_FOUND` for.
+        pub missing: Mutex<Vec<String>>,
+        /// `CreateExecution` and `GetExecution` answer `UNAVAILABLE` while set.
+        pub down: AtomicBool,
+        /// Ids `StartExecution` was asked for, with the principal that asked.
+        pub started: Mutex<Vec<(String, Principal)>>,
+        /// `StartExecution` answers `UNAVAILABLE` while set.
+        pub start_down: AtomicBool,
     }
 
     impl FakeExecution {
@@ -732,6 +1182,19 @@ pub mod fake {
             } else {
                 Ok(())
             }
+        }
+
+        fn up(&self) -> Result<(), GatewayError> {
+            if self.down.load(Ordering::SeqCst) {
+                Err(execution_err(Status::unavailable("connection refused")))
+            } else {
+                Ok(())
+            }
+        }
+
+        /// What `GetExecution` answers for `id` from now on.
+        pub fn set_status(&self, id: &str, status: ExecutionStatus) {
+            self.statuses.lock().unwrap().insert(id.to_owned(), status);
         }
     }
 
@@ -743,6 +1206,7 @@ pub mod fake {
             request: CreateExecutionRequest,
         ) -> Result<Execution, GatewayError> {
             self.callers.lock().unwrap().push(principal.clone());
+            self.up()?;
             let mut created = self.created.lock().unwrap();
             created.push(request.clone());
             Ok(Execution {
@@ -752,6 +1216,7 @@ pub mod fake {
                 proposal_id: request.proposal_id,
                 pattern_id: request.pattern_id,
                 title: request.title,
+                status: ExecutionStatus::Planning as i32,
                 ..Default::default()
             })
         }
@@ -762,8 +1227,40 @@ pub mod fake {
             id: &str,
         ) -> Result<Execution, GatewayError> {
             self.callers.lock().unwrap().push(principal.clone());
+            self.up()?;
+            self.fetched.lock().unwrap().push(id.to_owned());
+            if self.missing.lock().unwrap().iter().any(|m| m == id) {
+                return Err(execution_err(Status::not_found("not found")));
+            }
+            let status = self
+                .statuses
+                .lock()
+                .unwrap()
+                .get(id)
+                .copied()
+                .unwrap_or(ExecutionStatus::Planning);
             Ok(Execution {
                 id: id.to_owned(),
+                status: status as i32,
+                ..Default::default()
+            })
+        }
+
+        async fn start_execution(
+            &self,
+            principal: &Principal,
+            id: &str,
+        ) -> Result<Execution, GatewayError> {
+            if self.start_down.load(Ordering::SeqCst) {
+                return Err(execution_err(Status::unavailable("connection refused")));
+            }
+            self.started
+                .lock()
+                .unwrap()
+                .push((id.to_owned(), principal.clone()));
+            Ok(Execution {
+                id: id.to_owned(),
+                status: ExecutionStatus::WaitingForApproval as i32,
                 ..Default::default()
             })
         }
@@ -812,19 +1309,24 @@ pub mod fake {
         pub audit: Mutex<Vec<(Principal, AuditEntry)>>,
         /// GitHub access per workspace: `(token, api base url)`.
         pub tokens: Mutex<BTreeMap<String, (String, String)>>,
+        /// `GetDataControls` answers `UNAVAILABLE` while set.
+        pub down: AtomicBool,
     }
 
     impl FakeIdentity {
         pub fn set_reasoner(&self, workspace_id: &str, reasoner: &str, key: Option<&str>) {
-            self.controls.lock().unwrap().insert(
-                workspace_id.to_owned(),
-                DataControls {
-                    workspace_id: workspace_id.to_owned(),
-                    reasoner: reasoner.to_owned(),
-                    reasoner_key_configured: key.is_some(),
-                    ..Default::default()
-                },
-            );
+            {
+                let mut controls = self.controls.lock().unwrap();
+                let entry =
+                    controls
+                        .entry(workspace_id.to_owned())
+                        .or_insert_with(|| DataControls {
+                            workspace_id: workspace_id.to_owned(),
+                            ..Default::default()
+                        });
+                entry.reasoner = reasoner.to_owned();
+                entry.reasoner_key_configured = key.is_some();
+            }
             let mut keys = self.keys.lock().unwrap();
             match key {
                 Some(key) => {
@@ -842,6 +1344,20 @@ pub mod fake {
             }
         }
 
+        /// The `code_to_model` data control: "off" | "changed_lines".
+        pub fn set_code_to_model(&self, workspace_id: &str, value: &str) {
+            self.controls
+                .lock()
+                .unwrap()
+                .entry(workspace_id.to_owned())
+                .or_insert_with(|| DataControls {
+                    workspace_id: workspace_id.to_owned(),
+                    reasoner: "off".to_owned(),
+                    ..Default::default()
+                })
+                .code_to_model = value.to_owned();
+        }
+
         pub fn actions(&self) -> Vec<String> {
             self.audit
                 .lock()
@@ -855,6 +1371,9 @@ pub mod fake {
     #[async_trait]
     impl IdentityGateway for FakeIdentity {
         async fn data_controls(&self, principal: &Principal) -> Result<DataControls, GatewayError> {
+            if self.down.load(Ordering::SeqCst) {
+                return Err(identity_err(Status::unavailable("connection refused")));
+            }
             Ok(self
                 .controls
                 .lock()

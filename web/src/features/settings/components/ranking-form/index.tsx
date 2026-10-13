@@ -3,7 +3,6 @@ import { useId, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 
@@ -21,13 +20,13 @@ import {
   type Reasoner,
   type WeightKey,
 } from '../../lib/settings'
+import { ReasonerTest } from '../reasoner-test'
 import { ReasonerFields, type ReasonerDraft } from './reasoner-fields'
 
 interface Draft extends ReasonerDraft {
   weights: Record<WeightKey, string>
   reasoner: string
   costCeilingUsd: string
-  autoReview: boolean
 }
 
 function toDraft(settings: IntelligenceSettings): Draft {
@@ -43,7 +42,6 @@ function toDraft(settings: IntelligenceSettings): Draft {
     reasonerModel: settings.reasonerModel || settings.model,
     reasonerDailyTokenCap: settings.reasonerDailyTokenCap ? String(settings.reasonerDailyTokenCap) : '',
     costCeilingUsd: String(settings.costCeilingUsd),
-    autoReview: settings.autoReview,
   }
 }
 
@@ -83,7 +81,6 @@ function toPatch(draft: Draft, settings: IntelligenceSettings): IntelligenceSett
   if (model !== settings.reasonerModel) patch.reasonerModel = model
   if (cap !== settings.reasonerDailyTokenCap) patch.reasonerDailyTokenCap = cap
   if (cost !== settings.costCeilingUsd) patch.costCeilingUsd = cost
-  if (draft.autoReview !== settings.autoReview) patch.autoReview = draft.autoReview
   return patch
 }
 
@@ -95,11 +92,11 @@ interface RankingFormProps {
   tokensToday?: number
 }
 
-/** Ranking defaults of the intelligence service: the seven weights, the reasoner and its provider, the cost ceiling and auto review. */
+/** Ranking defaults of the intelligence service: the seven weights, the reasoner and its provider, and the cost ceiling. */
 export function RankingForm({ settings, tokensToday }: RankingFormProps) {
   const id = useId()
   const [draft, setDraft] = useState<Draft>(() => toDraft(settings))
-  const update = useUpdateSettings()
+  const update = useUpdateSettings('Ranking')
 
   const weights = parseWeights(draft.weights)
   const inRange = weightsInRange(weights)
@@ -188,8 +185,8 @@ export function RankingForm({ settings, tokensToday }: RankingFormProps) {
           </ToggleGroup>
           <FieldDescription className="text-xs">
             {claudeAvailable
-              ? 'Claude negotiates in plain language; heuristic ranks without a model.'
-              : 'Claude needs ANTHROPIC_API_KEY on the intelligence service. Until then, heuristic.'}
+              ? 'The model negotiates in plain language; heuristic ranks without a model.'
+              : 'The model needs the reasoner switched on under Data & privacy and a key (stored there, or LLM_API_KEY on the intelligence service). Until then, heuristic. Test connection says what is missing.'}
           </FieldDescription>
         </Field>
 
@@ -199,6 +196,8 @@ export function RankingForm({ settings, tokensToday }: RankingFormProps) {
           onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
           tokensToday={tokensToday}
         />
+
+        <ReasonerTest />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field data-invalid={parseCost(draft.costCeilingUsd) === null || undefined}>
@@ -217,20 +216,6 @@ export function RankingForm({ settings, tokensToday }: RankingFormProps) {
             <FieldDescription className="text-xs">USD per month. Options above it lose ranking unless a budget says otherwise.</FieldDescription>
           </Field>
         </div>
-
-        <Field orientation="horizontal">
-          <Switch
-            id={`${id}-auto-review`}
-            checked={draft.autoReview}
-            onCheckedChange={(checked) => setDraft((current) => ({ ...current, autoReview: checked }))}
-          />
-          <div className="flex flex-col gap-0.5">
-            <FieldLabel htmlFor={`${id}-auto-review`} className="font-normal">
-              Auto review pull requests
-            </FieldLabel>
-            <FieldDescription className="text-xs">Starts a review when a PR is opened or pushed; never publishes.</FieldDescription>
-          </div>
-        </Field>
       </FieldGroup>
 
       <div className="flex items-center justify-end gap-3">

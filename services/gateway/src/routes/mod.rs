@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod approvals;
 pub mod auth;
+pub mod autopilot;
 pub mod code;
 pub mod decisions;
 pub mod delivery;
@@ -46,6 +47,7 @@ pub fn rest() -> OpenApiRouter<AppState> {
         .merge(documents::router())
         .merge(diagrams::router())
         .merge(reviews::router())
+        .merge(autopilot::router())
         .merge(executions::router())
         .merge(delivery::router())
         .merge(approvals::router())

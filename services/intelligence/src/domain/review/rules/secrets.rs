@@ -104,6 +104,12 @@ fn is_config_file(file: &crate::domain::review::input::ChangedFile) -> bool {
     {
         return false;
     }
+    config_format(file)
+}
+
+/// A file in a configuration format, example files included.
+fn config_format(file: &crate::domain::review::input::ChangedFile) -> bool {
+    let name = file.file_name();
     matches!(
         file.extension(),
         "yml" | "yaml" | "json" | "toml" | "ini" | "cfg" | "conf" | "properties" | "env"
@@ -162,6 +168,29 @@ fn placeholder(value: &str) -> bool {
         || lower.contains("redacted")
         || lower.contains("secret-name")
         || lower.chars().all(|c| c == '*' || c == 'x')
+}
+
+fn config_path(path: &str) -> bool {
+    config_format(&crate::domain::review::input::ChangedFile {
+        path: path.to_owned(),
+        ..Default::default()
+    })
+}
+
+/// Whether a line of `path` may hold a secret, for redaction before source
+/// lines leave the service (CONTRACT.md §19, §23.2). Deliberately wider
+/// than the findings: every line a secrets rule would report matches, and
+/// so does a credential-looking assignment whose value only looks like a
+/// placeholder. Hiding one line too many costs a little context; showing
+/// one too many cannot be undone.
+pub fn line_may_hold_secret(path: &str, line: &str) -> bool {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    PATTERNS.iter().any(|p| p.regex.is_match(line))
+        || ASSIGNMENT.is_match(line)
+        || (config_path(path)
+            && CONFIG_KEY
+                .captures(line)
+                .is_some_and(|c| c[1].trim().len() >= 4 && !reference(&c[1])))
 }
 
 pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
@@ -257,6 +286,61 @@ pub fn analyze(input: &ReviewInput) -> Vec<Finding> {
 mod tests {
     use super::super::fixtures::*;
     use super::*;
+
+    #[test]
+    fn redaction_covers_every_reported_line_and_more() {
+        // Whatever the rules report is hidden.
+        let lines = [
+            ("config/aws.py", "ACCESS = \"AKIAIOSFODNN7EXAMPLE\""),
+            ("deploy/server.go", "password := \"hunter2hunter2\""),
+            (
+                "deploy/server.go",
+                "const key = `-----BEGIN RSA PRIVATE KEY-----`",
+            ),
+            ("config/app.yaml", "db_password: s3cr3t-value"),
+            (
+                "src/db.ts",
+                "const url = 'postgres://app:s3cretpass@db.internal/app'",
+            ),
+        ];
+        for (path, line) in lines {
+            let reported = !analyze(&input(vec![added(path, &[line])])).is_empty();
+            assert!(reported, "{line} should be a finding");
+            assert!(line_may_hold_secret(path, line), "{line}");
+            assert!(
+                line_may_hold_secret(path, &format!("{line}\r")),
+                "CRLF {line}"
+            );
+        }
+        // A value that only looks like a placeholder is hidden all the same.
+        assert!(line_may_hold_secret(
+            "src/a.py",
+            "password = \"changeme-but-real\""
+        ));
+        // References and ordinary code are not.
+        for (path, line) in [
+            ("config/app.yaml", "db_password: ${DB_PASSWORD}"),
+            ("config/app.yaml", "replicas: 3"),
+            ("src/a.rs", "let token = read_token(path)?;"),
+            ("src/a.rs", "fn main() {"),
+            // The config rule only reads configuration files.
+            ("src/a.rs", "password: hunter2"),
+        ] {
+            assert!(!line_may_hold_secret(path, line), "{path}: {line}");
+        }
+        // An example file is not reported, but its lines are still hidden.
+        assert!(
+            analyze(&input(vec![added(
+                ".env.example",
+                &["API_TOKEN=abcd1234efgh"]
+            )]))
+            .is_empty()
+        );
+        assert!(line_may_hold_secret(
+            ".env.example",
+            "API_TOKEN=abcd1234efgh"
+        ));
+    }
 
     #[test]
     fn flags_cloud_keys_and_tokens() {

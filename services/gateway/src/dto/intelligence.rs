@@ -411,6 +411,18 @@ pub struct IntelligenceSettings {
     pub reasoner_model: String,
     /// Tokens (input + output) the workspace may spend per UTC day before the reasoner falls back to the heuristic. Default 200000.
     pub reasoner_daily_token_cap: u64,
+    /// During a review, ask the model to draft a fix for findings without a mechanical suggestion, at most 10 per review (CONTRACT.md §23). Needs the reasoner and the `codeToModel` data control. Default off.
+    pub auto_draft_fixes: bool,
+    /// Whose pull requests SDI asks to merge on its own once they are ready: `off` (default) or `dependabot`. The merge still runs as an execution, so the `repo.merge_pull_request` policy decides whether a person approves.
+    pub auto_merge: String,
+    /// A merge needs an SDI review of the current head with no undecided finding of severity high or critical. Default on.
+    pub merge_requires_review: bool,
+    /// Seconds between two looks of the pull request watcher (`SDI_PR_WATCH_SECONDS`); 0 means the operator turned it off. Read-only.
+    pub pr_watch_interval_seconds: u32,
+    /// When the watcher last looked at this workspace; null before its first look. Read-only.
+    pub pr_watch_last_run_at: Option<DateTime<Utc>>,
+    /// Why the watcher's last look at this workspace failed; null when it worked. Read-only.
+    pub pr_watch_last_error: Option<String>,
 }
 
 impl From<proto::IntelligenceSettings> for IntelligenceSettings {
@@ -426,6 +438,12 @@ impl From<proto::IntelligenceSettings> for IntelligenceSettings {
             reasoner_base_url: settings.reasoner_base_url,
             reasoner_model: settings.reasoner_model,
             reasoner_daily_token_cap: settings.reasoner_daily_token_cap,
+            auto_draft_fixes: settings.auto_draft_fixes,
+            auto_merge: settings.auto_merge,
+            merge_requires_review: settings.merge_requires_review,
+            pr_watch_interval_seconds: settings.pr_watch_interval_seconds,
+            pr_watch_last_run_at: opt_timestamp(settings.pr_watch_last_run_at.as_ref()),
+            pr_watch_last_error: opt_string(settings.pr_watch_last_error),
         }
     }
 }
@@ -443,12 +461,22 @@ impl From<IntelligenceSettings> for proto::IntelligenceSettings {
             reasoner_base_url: settings.reasoner_base_url,
             reasoner_model: settings.reasoner_model,
             reasoner_daily_token_cap: settings.reasoner_daily_token_cap,
+            auto_draft_fixes: settings.auto_draft_fixes,
+            auto_merge: settings.auto_merge,
+            merge_requires_review: settings.merge_requires_review,
+            // Read-only: sent back as they were read; the service ignores them.
+            pr_watch_interval_seconds: settings.pr_watch_interval_seconds,
+            pr_watch_last_run_at: settings
+                .pr_watch_last_run_at
+                .map(sdi_common::time::to_proto),
+            pr_watch_last_error: settings.pr_watch_last_error.unwrap_or_default(),
         }
     }
 }
 
 /// The `intelligence` part of `PATCH /settings`: every field is optional and
-/// unset fields keep their current value. `apiKeyConfigured` is read-only.
+/// unset fields keep their current value. `apiKeyConfigured` and the three
+/// `prWatch*` fields are read-only.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IntelligenceSettingsPatch {
@@ -470,24 +498,86 @@ pub struct IntelligenceSettingsPatch {
     pub reasoner_model: Option<String>,
     /// Daily token budget of the reasoner.
     pub reasoner_daily_token_cap: Option<u64>,
+    /// Whether a review drafts fixes with the model on its own.
+    pub auto_draft_fixes: Option<bool>,
+    /// `off` or `dependabot`.
+    pub auto_merge: Option<String>,
+    /// Whether a merge needs an SDI review of the current head.
+    pub merge_requires_review: Option<bool>,
+}
+
+/// What one tiny call to the workspace's model reported, or which setting
+/// keeps the model from being called (CONTRACT.md §19).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasonerTest {
+    /// `ok`, `off` (the data controls keep the reasoner off), `heuristic`
+    /// (the settings choose the built-in reasoner), `no_key`, `no_model`,
+    /// `cap_reached`, `provider_error` or `identity_unavailable`.
+    pub status: String,
+    /// A sentence: what works, or what to change and where.
+    pub message: String,
+    /// `anthropic` or `openai_compatible`.
+    pub provider: String,
+    /// The model the call uses; null when none is named.
+    pub model: Option<String>,
+    /// Scheme and host the call goes to, never a path or a query.
+    pub endpoint: Option<String>,
+    /// How long the provider took; 0 when no call was made.
+    pub latency_ms: u32,
+    /// Tokens the call spent; 0 when no call was made.
+    pub input_tokens: u32,
+    /// Tokens the reply spent; 0 when no call was made.
+    pub output_tokens: u32,
+}
+
+impl From<proto::ReasonerTest> for ReasonerTest {
+    fn from(test: proto::ReasonerTest) -> Self {
+        Self {
+            status: test.status,
+            message: test.message,
+            provider: test.provider,
+            model: crate::dto::opt_string(test.model),
+            endpoint: crate::dto::opt_string(test.endpoint),
+            latency_ms: test.latency_ms,
+            input_tokens: test.input_tokens,
+            output_tokens: test.output_tokens,
+        }
+    }
 }
 
 impl IntelligenceSettingsPatch {
     /// The current settings with the patched fields replaced.
+    ///
+    /// Provider, endpoint and model are different: what `GetSettings`
+    /// returns for them is the *effective* value, which may come from the
+    /// environment (`LLM_PROVIDER`, `LLM_MODEL`) or from the workspace key.
+    /// Echoing that back would store it as the workspace's own choice and
+    /// make it deaf to the environment from then on, so an unpatched one of
+    /// these travels as empty, which the service reads as "keep what is
+    /// stored".
     pub fn apply(self, current: IntelligenceSettings) -> IntelligenceSettings {
         IntelligenceSettings {
             default_weights: self.default_weights.or(current.default_weights),
             reasoner: self.reasoner.unwrap_or(current.reasoner),
-            model: self.model.unwrap_or(current.model),
+            model: self.model.unwrap_or_default(),
             api_key_configured: current.api_key_configured,
             cost_ceiling_usd: self.cost_ceiling_usd.unwrap_or(current.cost_ceiling_usd),
             auto_review: self.auto_review.unwrap_or(current.auto_review),
-            reasoner_provider: self.reasoner_provider.unwrap_or(current.reasoner_provider),
-            reasoner_base_url: self.reasoner_base_url.unwrap_or(current.reasoner_base_url),
-            reasoner_model: self.reasoner_model.unwrap_or(current.reasoner_model),
+            reasoner_provider: self.reasoner_provider.unwrap_or_default(),
+            reasoner_base_url: self.reasoner_base_url.unwrap_or_default(),
+            reasoner_model: self.reasoner_model.unwrap_or_default(),
             reasoner_daily_token_cap: self
                 .reasoner_daily_token_cap
                 .unwrap_or(current.reasoner_daily_token_cap),
+            auto_draft_fixes: self.auto_draft_fixes.unwrap_or(current.auto_draft_fixes),
+            auto_merge: self.auto_merge.unwrap_or(current.auto_merge),
+            merge_requires_review: self
+                .merge_requires_review
+                .unwrap_or(current.merge_requires_review),
+            pr_watch_interval_seconds: current.pr_watch_interval_seconds,
+            pr_watch_last_run_at: current.pr_watch_last_run_at,
+            pr_watch_last_error: current.pr_watch_last_error,
         }
     }
 }
@@ -841,6 +931,12 @@ mod tests {
             reasoner_base_url: "https://llm.example".into(),
             reasoner_model: "m".into(),
             reasoner_daily_token_cap: 42,
+            auto_draft_fixes: false,
+            auto_merge: "off".into(),
+            merge_requires_review: true,
+            pr_watch_interval_seconds: 60,
+            pr_watch_last_run_at: None,
+            pr_watch_last_error: None,
         };
         let patch: IntelligenceSettingsPatch = serde_json::from_str(
             r#"{"reasoner": "claude", "apiKeyConfigured": false, "autoReview": true}"#,
@@ -848,13 +944,19 @@ mod tests {
         .unwrap();
         let merged = patch.apply(current);
         assert_eq!(merged.reasoner, "claude");
-        assert_eq!(merged.model, "m");
         assert!(merged.api_key_configured);
         assert_eq!(merged.cost_ceiling_usd, 500.0);
         assert!(merged.auto_review);
-        // Unpatched reasoner fields keep their value; patched ones change.
-        assert_eq!(merged.reasoner_base_url, "https://llm.example");
         assert_eq!(merged.reasoner_daily_token_cap, 42);
+        // Provider, endpoint and model are read as their *effective* values
+        // (the environment's or the key's when the workspace chose none).
+        // Unpatched, they travel as empty, which the service reads as "keep
+        // what is stored": echoing them would turn an inherited value into
+        // the workspace's own choice.
+        assert_eq!(merged.model, "");
+        assert_eq!(merged.reasoner_model, "");
+        assert_eq!(merged.reasoner_provider, "");
+        assert_eq!(merged.reasoner_base_url, "");
         let patch: IntelligenceSettingsPatch = serde_json::from_str(
             r#"{"reasonerProvider": "openai_compatible", "reasonerBaseUrl": "http://ollama:11434/v1", "reasonerDailyTokenCap": 7}"#,
         )
@@ -863,6 +965,76 @@ mod tests {
         assert_eq!(merged.reasoner_provider, "openai_compatible");
         assert_eq!(merged.reasoner_base_url, "http://ollama:11434/v1");
         assert_eq!(merged.reasoner_daily_token_cap, 7);
-        assert_eq!(merged.reasoner_model, "m");
+        assert_eq!(merged.reasoner_model, "", "not patched, so not sent");
+        let patch: IntelligenceSettingsPatch =
+            serde_json::from_str(r#"{"reasonerModel": "my-model"}"#).unwrap();
+        assert_eq!(patch.apply(merged).reasoner_model, "my-model");
+    }
+
+    /// CONTRACT.md §23.6: the three autopilot switches are patched one by
+    /// one; what the watcher reports about itself is never written.
+    #[test]
+    fn autopilot_settings_patch_field_by_field_and_the_watcher_fields_are_read_only() {
+        let ran_at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let current = IntelligenceSettings::from(proto::IntelligenceSettings {
+            auto_merge: "off".into(),
+            merge_requires_review: true,
+            pr_watch_interval_seconds: 60,
+            pr_watch_last_run_at: Some(sdi_common::time::to_proto(ran_at)),
+            pr_watch_last_error: "GitHub answered 502".into(),
+            ..Default::default()
+        });
+        assert!(!current.auto_draft_fixes);
+        assert_eq!(current.pr_watch_last_run_at, Some(ran_at));
+        assert_eq!(
+            current.pr_watch_last_error.as_deref(),
+            Some("GitHub answered 502")
+        );
+
+        let patch: IntelligenceSettingsPatch = serde_json::from_str(
+            r#"{"autoMerge": "dependabot", "prWatchIntervalSeconds": 5, "prWatchLastRunAt": null, "prWatchLastError": "edited"}"#,
+        )
+        .unwrap();
+        let merged = patch.apply(current);
+        assert_eq!(merged.auto_merge, "dependabot");
+        assert!(
+            merged.merge_requires_review,
+            "an unset switch keeps its value"
+        );
+        assert!(!merged.auto_draft_fixes);
+        assert_eq!(merged.pr_watch_interval_seconds, 60);
+        assert_eq!(merged.pr_watch_last_run_at, Some(ran_at));
+        assert_eq!(
+            merged.pr_watch_last_error.as_deref(),
+            Some("GitHub answered 502")
+        );
+
+        let patch: IntelligenceSettingsPatch =
+            serde_json::from_str(r#"{"autoDraftFixes": true, "mergeRequiresReview": false}"#)
+                .unwrap();
+        let merged = patch.apply(merged);
+        assert!(merged.auto_draft_fixes);
+        assert!(
+            !merged.merge_requires_review,
+            "false is a value, not \"unset\""
+        );
+        assert_eq!(merged.auto_merge, "dependabot");
+
+        // What travels to the service carries the read-only fields as read.
+        let sent = proto::IntelligenceSettings::from(merged);
+        assert!(sent.auto_draft_fixes);
+        assert_eq!(sent.auto_merge, "dependabot");
+        assert!(!sent.merge_requires_review);
+        assert_eq!(sent.pr_watch_interval_seconds, 60);
+        assert_eq!(sent.pr_watch_last_error, "GitHub answered 502");
+
+        // A watcher that never ran and never failed reads as two nulls.
+        let quiet = serde_json::to_value(IntelligenceSettings::from(
+            proto::IntelligenceSettings::default(),
+        ))
+        .unwrap();
+        assert!(quiet["prWatchLastRunAt"].is_null());
+        assert!(quiet["prWatchLastError"].is_null());
+        assert_eq!(quiet["prWatchIntervalSeconds"], 0);
     }
 }

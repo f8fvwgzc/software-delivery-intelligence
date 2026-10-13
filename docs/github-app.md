@@ -80,6 +80,21 @@ never needed and is a bug if SDI asks for it.
 | Repository | Pull requests | Read and write | The `github` execution adapter opens pull requests; nothing else writes |
 | Organization | Members | Read-only | Membership and teams → workspace roles |
 
+Add these only for the features that need them. A step whose permission
+is missing pauses and says which one; nothing falls back to a broader
+credential.
+
+| Section | Permission | Access | Needed for |
+|---|---|---|---|
+| Repository | Contents | Read and write | Committing review fixes to a pull request branch, merging, GitOps commits and setup-file pull requests |
+| Repository | Checks | Read-only | Merge readiness (check runs of the head commit) |
+| Repository | Commit statuses | Read-only | Merge readiness (commit statuses of the head commit) |
+| Repository | Dependabot alerts | Read-only | The Security tab |
+| Repository | Administration | Read and write | Only "Turn on Dependabot": switching alerts and security updates on |
+| Repository | Actions | Read and write | Continuous delivery: dispatching the deploy workflow |
+| Repository | Deployments | Read and write | Continuous delivery: recording a deployment |
+| Organization or repository | Packages | Read-only | Continuous delivery: verifying an image in GHCR |
+
 ### Subscribe to events
 
 | Event | SDI uses it for |
@@ -87,7 +102,7 @@ never needed and is a bug if SDI asks for it.
 | Installation | create the workspace; remove it (and everything in it) on uninstall |
 | Installation repositories | keep the list of connectable projects equal to the App's repository selection |
 | Push | mark the project stale and schedule a rescan on the default branch |
-| Pull request | keep delivery facts and pattern memory fresh |
+| Pull request | keep delivery facts and pattern memory fresh; start a review when automatic review is on (without the App, the pull request watcher does this by polling) |
 | Member | re-derive a member's role when org membership changes |
 | Team | re-derive roles when `sdi-admins` / `sdi-approvers` membership changes |
 

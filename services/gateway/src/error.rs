@@ -101,6 +101,18 @@ impl From<tonic::Status> for ApiError {
                 );
             }
             Code::DeadlineExceeded => (StatusCode::GATEWAY_TIMEOUT, "deadline_exceeded"),
+            // The service behind this route is an older build than the
+            // gateway (a partial restart or a rolling upgrade). Saying so
+            // is the whole remedy; "internal error" would hide it.
+            Code::Unimplemented => {
+                tracing::warn!(error = %message, "upstream service does not implement the call");
+                return Self::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "unimplemented",
+                    "the service behind this request is an older version than the gateway: \
+                     restart or upgrade the services so they all run the same version",
+                );
+            }
             other => {
                 tracing::error!(code = ?other, error = %message, "upstream service failed");
                 return Self::new(
@@ -275,6 +287,11 @@ mod tests {
                 "deadline_exceeded",
             ),
             (
+                tonic::Code::Unimplemented,
+                StatusCode::NOT_IMPLEMENTED,
+                "unimplemented",
+            ),
+            (
                 tonic::Code::Internal,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
@@ -290,6 +307,14 @@ mod tests {
             assert_eq!(error.status, http, "{grpc:?}");
             assert_eq!(error.code, code, "{grpc:?}");
         }
+    }
+
+    #[test]
+    fn a_call_an_older_service_lacks_says_so() {
+        let error = ApiError::from(tonic::Status::unimplemented("unknown method DraftFix"));
+        assert_eq!(error.status, StatusCode::NOT_IMPLEMENTED);
+        assert!(error.message.contains("older version"), "{}", error.message);
+        assert!(!error.message.contains("DraftFix"), "{}", error.message);
     }
 
     #[test]

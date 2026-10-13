@@ -15,8 +15,11 @@ use sdi_proto::knowledge::v1::PullRequest;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::fixes::Drafter;
 use crate::{
-    db::reviews::{self as repo, ActivityRow, FindingRow, ReviewRow, StepRecord},
+    db::reviews::{
+        self as repo, ActivityRow, FindingRow, ReviewRow, SOURCE_EXAMPLE, SOURCE_RULE, StepRecord,
+    },
     domain::review::{
         self, ReviewInput,
         input::{ReviewConfig, RuleLearning},
@@ -42,6 +45,9 @@ pub(super) struct ReviewRun {
     pub review: ReviewRow,
     pub pull_request: PullRequest,
     pub osv: Option<Arc<OsvClient>>,
+    /// Present when the review drafts fixes on its own (`auto_draft_fixes`
+    /// with both data controls on and a model configured).
+    pub drafter: Option<Drafter>,
 }
 
 /// The repository's `.sdi.yml` `review:` section at the scanned commit,
@@ -157,13 +163,34 @@ pub(super) fn emit(events: &EventBus, review: &ReviewRow, action: &str, status: 
     );
 }
 
+/// Whether the lines of `path` can be replaced at the head commit, as far
+/// as the pull request tells: not for a binary, removed or truncated file.
+fn patchable(input: &ReviewInput, path: &str) -> bool {
+    input
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .is_none_or(|f| !(f.is_removed() || f.is_binary() || f.truncated))
+}
+
 fn finding_row(
     workspace_id: Uuid,
     review_id: Uuid,
     position: usize,
     finding: &Finding,
+    patchable: bool,
 ) -> FindingRow {
+    let suggestion = finding.suggestion.clone().unwrap_or_default();
     FindingRow {
+        suggestion_source: if suggestion.trim().is_empty() {
+            String::new()
+        } else if finding.suggestion_exact {
+            SOURCE_RULE.to_owned()
+        } else {
+            SOURCE_EXAMPLE.to_owned()
+        },
+        fix_execution_id: String::new(),
+        patchable,
         id: Uuid::now_v7(),
         workspace_id,
         review_id,
@@ -175,7 +202,7 @@ fn finding_row(
         path: finding.path.clone(),
         line: finding.line as i32,
         end_line: finding.end_line.max(finding.line) as i32,
-        suggestion: finding.suggestion.clone().unwrap_or_default(),
+        suggestion,
         rule: finding.rule.clone(),
         decision: "pending".to_owned(),
         decision_note: String::new(),
@@ -205,6 +232,7 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
         mut review,
         pull_request,
         osv,
+        drafter,
     } = run;
     let mut steps = review.steps.0.clone();
 
@@ -305,7 +333,7 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
     let rows: Vec<FindingRow> = findings
         .iter()
         .enumerate()
-        .map(|(i, f)| finding_row(workspace, review.id, i, f))
+        .map(|(i, f)| finding_row(workspace, review.id, i, f, patchable(&input, &f.path)))
         .collect();
     if let Err(error) = repo::insert_findings(&pool, &rows).await {
         return fail(
@@ -342,6 +370,13 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // With `auto_draft_fixes`: the model drafts what the rules could not
+    // fix mechanically, most severe first, a bounded number of times
+    // (CONTRACT.md §23.2). It fails soft: the review goes on either way.
+    let drafted = match &drafter {
+        Some(drafter) if !rows.is_empty() => drafter.draft_for_review(&review, &rows).await,
+        _ => 0,
+    };
     set_step(
         &mut steps,
         "analyze",
@@ -351,10 +386,18 @@ async fn execute(run: ReviewRun) -> Result<(), String> {
         } else {
             let suppressed = findings.iter().filter(|f| f.suppressed).count();
             format!(
-                "{} findings: {by_severity}{}",
+                "{} findings: {by_severity}{}{}",
                 findings.len(),
                 if suppressed > 0 {
                     format!(" ({suppressed} suppressed by project learnings)")
+                } else {
+                    String::new()
+                },
+                if drafted > 0 {
+                    format!(
+                        ", {drafted} fix{} drafted by the model",
+                        if drafted == 1 { "" } else { "es" }
+                    )
                 } else {
                     String::new()
                 }
@@ -502,9 +545,37 @@ mod tests {
             "t",
             "d",
         )
-        .with_suggestion("x");
-        let row = finding_row(Uuid::nil(), Uuid::nil(), 2, &finding);
+        .with_replacement("x");
+        let row = finding_row(Uuid::nil(), Uuid::nil(), 2, &finding, true);
         assert_eq!(row.position, 2);
+        assert_eq!(row.suggestion_source, "rule", "an exact replacement");
+        // An illustration keeps its text and says what it is.
+        let example = Finding::new(
+            "docker",
+            "latest_tag",
+            review::rules::Severity::Medium,
+            "Dockerfile",
+            1,
+            "t",
+            "d",
+        )
+        .with_suggestion("FROM node:<version>");
+        let row_example = finding_row(Uuid::nil(), Uuid::nil(), 1, &example, true);
+        assert_eq!(row_example.suggestion_source, "example");
+        assert_eq!(row_example.suggestion, "FROM node:<version>");
+        assert!(row.patchable && row.fix_execution_id.is_empty());
+        let plain = Finding::new(
+            "correctness",
+            "todo",
+            review::rules::Severity::Low,
+            "a.rs",
+            3,
+            "t",
+            "d",
+        );
+        let row_plain = finding_row(Uuid::nil(), Uuid::nil(), 0, &plain, false);
+        assert_eq!(row_plain.suggestion_source, "", "no suggestion, no source");
+        assert!(!row_plain.patchable);
         assert_eq!(row.severity, "critical");
         assert_eq!(row.rule, "secrets.aws_key");
         assert_eq!(row.end_line, 3);

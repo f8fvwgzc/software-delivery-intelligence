@@ -19,12 +19,18 @@ use tonic::{Code, Status};
 use uuid::Uuid;
 
 use super::{
-    Caller, IntelligenceGrpc, parse_id, require,
+    Caller, IntelligenceGrpc,
+    autopilot::{self, Liveness},
+    fixes::Drafter,
+    parse_id, require,
     review_runner::{self, ReviewRun, activity, emit, initial_steps, set_step},
 };
 use crate::{
     convert,
-    db::reviews::{self as repo, FindingRow, ReviewRow},
+    db::{
+        autopilot as autopilot_repo,
+        reviews::{self as repo, FindingRow, ReviewRow},
+    },
     github::{ReviewComment, ReviewPost, review_event},
 };
 
@@ -36,6 +42,30 @@ pub(super) async fn start(
     caller: &Caller,
     request: StartReviewRequest,
 ) -> Result<Review, Status> {
+    let actor = caller.principal.user_id.clone();
+    start_as(svc, caller, request, &actor, true)
+        .await
+        .map(|started| started.review)
+}
+
+/// What [`start_as`] did: the review of the pull request's head, and
+/// whether this call created it (false: it was there already).
+pub(super) struct Started {
+    pub review: Review,
+    pub created: bool,
+}
+
+/// The one way a review starts, for a person (`StartReview`) and for the
+/// watcher alike. `actor` is who the activity log names; `retry_failed`
+/// replaces a failed review of the same head with a new attempt (a person
+/// asked again), where the watcher leaves it alone.
+pub(super) async fn start_as(
+    svc: &IntelligenceGrpc,
+    caller: &Caller,
+    request: StartReviewRequest,
+    actor: &str,
+    retry_failed: bool,
+) -> Result<Started, Status> {
     let project_id = require("project_id", &request.project_id)?;
     if request.pr_number == 0 {
         return Err(Status::invalid_argument("pr_number is required"));
@@ -66,11 +96,14 @@ pub(super) async fn start(
     .await
     .map_err(db_status)?
     {
-        if existing.status != "failed" {
+        if existing.status != "failed" || !retry_failed {
             let findings = repo::findings_of(&svc.pool, caller.workspace, existing.id)
                 .await
                 .map_err(db_status)?;
-            return Ok(convert::review(&existing, &findings));
+            return Ok(Started {
+                review: convert::review(&existing, &findings),
+                created: false,
+            });
         }
         // A failed review is retried under a fresh id; its activity stays.
         repo::delete(&svc.pool, caller.workspace, existing.id)
@@ -108,14 +141,39 @@ pub(super) async fn start(
         previous_review_id: previous.clone(),
         created_at: now,
         updated_at: now,
+        fix_execution_id: String::new(),
+        merge_execution_id: String::new(),
+        fixes_ready: 0,
     };
-    repo::insert(&svc.pool, &row).await.map_err(db_status)?;
+    match repo::insert(&svc.pool, &row).await {
+        Ok(()) => {}
+        // Reviews are unique per (project, pull request, head): whoever
+        // else started this one (a webhook, another replica) won, and
+        // theirs is the review.
+        Err(error) if unique_violation(&error) => {
+            let existing = repo::find_by_head(
+                &svc.pool,
+                caller.workspace,
+                &project_id,
+                pr_number,
+                &summary.head_sha,
+            )
+            .await
+            .map_err(db_status)?
+            .ok_or_else(|| Status::aborted("the review was started twice at once; ask again"))?;
+            return Ok(Started {
+                review: convert::review(&existing, &[]),
+                created: false,
+            });
+        }
+        Err(error) => return Err(db_status(error)),
+    }
     repo::insert_activity(
         &svc.pool,
         &activity(
             &row,
             "review.started",
-            &principal.user_id,
+            actor,
             format!(
                 "{} @ {}{}",
                 row.pr_title,
@@ -137,6 +195,23 @@ pub(super) async fn start(
     let settings = svc.settings(caller).await?;
     let access = svc.reasoner_access(caller, &settings).await;
     let reasoner = svc.reasoner_for(caller, &settings, &access);
+    // Drafting fixes during the review needs the setting, both data
+    // controls and a model (CONTRACT.md §23.2); otherwise it simply does
+    // not happen.
+    let drafter = (settings.auto_draft_fixes
+        && access.code_to_model
+        && reasoner.name() != "heuristic")
+        .then(|| {
+            Drafter::new(
+                svc.pool.clone(),
+                Arc::clone(&svc.knowledge),
+                Arc::clone(&svc.identity),
+                svc.events.clone(),
+                Arc::clone(&reasoner),
+                principal.clone(),
+                caller.workspace,
+            )
+        });
     review_runner::spawn(ReviewRun {
         pool: svc.pool.clone(),
         knowledge: Arc::clone(&svc.knowledge),
@@ -147,8 +222,18 @@ pub(super) async fn start(
         review: row.clone(),
         pull_request,
         osv: svc.osv.clone(),
+        drafter,
     });
-    Ok(convert::review(&row, &[]))
+    Ok(Started {
+        review: convert::review(&row, &[]),
+        created: true,
+    })
+}
+
+fn unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|e| e.is_unique_violation())
 }
 
 pub(super) async fn list(
@@ -176,9 +261,25 @@ pub(super) async fn get(
     request: GetReviewRequest,
 ) -> Result<Review, Status> {
     let id = parse_id("id", &request.id)?;
-    let row = repo::get(&svc.pool, caller.workspace, id)
+    let mut row = repo::get(&svc.pool, caller.workspace, id)
         .await
         .map_err(db_status)?;
+    // A fix execution that ended without a commit gives its findings back
+    // (CONTRACT.md §23.2). Asked once per execution: the answer is kept.
+    // Best effort: a read never fails because execution cannot be reached.
+    if !row.fix_execution_id.is_empty()
+        && let Ok(Some(recorded)) =
+            autopilot_repo::by_execution(&svc.pool, caller.workspace, &row.fix_execution_id).await
+        && !recorded.settled()
+        && matches!(
+            autopilot::liveness(svc, caller, &recorded).await,
+            Liveness::Ended(_)
+        )
+    {
+        row = repo::get(&svc.pool, caller.workspace, id)
+            .await
+            .map_err(db_status)?;
+    }
     let findings = repo::findings_of(&svc.pool, caller.workspace, id)
         .await
         .map_err(db_status)?;
@@ -448,10 +549,20 @@ pub(crate) fn build_post(review: &ReviewRow, accepted: &[&FindingRow], event: &s
                 text.push_str(&format!("\n\n_Reviewer note: {}_", f.decision_note.trim()));
             }
             if !f.suggestion.trim().is_empty() {
-                text.push_str(&format!(
-                    "\n\n```suggestion\n{}\n```",
-                    f.suggestion.trim_end()
-                ));
+                // GitHub's "commit suggestion" replaces the commented lines
+                // with the block, so only an exact replacement may be one.
+                // An example is shown as plain code for a person to adapt.
+                if repo::source_applies(&f.suggestion_source) {
+                    text.push_str(&format!(
+                        "\n\n```suggestion\n{}\n```",
+                        f.suggestion.trim_end()
+                    ));
+                } else {
+                    text.push_str(&format!(
+                        "\n\nExample to adapt:\n\n```\n{}\n```",
+                        f.suggestion.trim_end()
+                    ));
+                }
             }
             let multi = f.end_line > f.line;
             ReviewComment {
@@ -520,6 +631,9 @@ mod tests {
             previous_review_id: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            fix_execution_id: String::new(),
+            merge_execution_id: String::new(),
+            fixes_ready: 0,
         }
     }
 
@@ -542,6 +656,9 @@ mod tests {
             decision_note: "please".into(),
             decided_by: "u".into(),
             decided_at: None,
+            suggestion_source: if suggestion.is_empty() { "" } else { "rule" }.into(),
+            fix_execution_id: String::new(),
+            patchable: true,
         }
     }
 
@@ -575,6 +692,31 @@ mod tests {
         assert_eq!(second.start_line, Some(4));
         assert_eq!(second.start_side.as_deref(), Some("RIGHT"));
         assert!(!second.body.contains("```suggestion"));
+    }
+
+    /// GitHub's "commit suggestion" replaces the commented lines with the
+    /// block. An example to adapt (a placeholder, a line to add) must never
+    /// become one: it is posted as plain code under its own heading.
+    #[test]
+    fn an_example_is_posted_as_plain_code_never_as_a_suggestion_block() {
+        let mut example = finding(1, 1, "FROM node:<version>");
+        example.suggestion_source = "example".into();
+        let mut drafted = finding(3, 3, "RUN npm ci --omit=dev");
+        drafted.suggestion_source = "model".into();
+        let post = build_post(&review(), &[&example, &drafted], "COMMENT");
+        assert_eq!(post.comments.len(), 2);
+        let first = &post.comments[0].body;
+        assert!(!first.contains("```suggestion"), "{first}");
+        assert!(
+            first.ends_with("Example to adapt:\n\n```\nFROM node:<version>\n```"),
+            "{first}"
+        );
+        // A replacement the model drafted and a person accepted is exact.
+        assert!(
+            post.comments[1]
+                .body
+                .ends_with("```suggestion\nRUN npm ci --omit=dev\n```")
+        );
     }
 
     #[test]

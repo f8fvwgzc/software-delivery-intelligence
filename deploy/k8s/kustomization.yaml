@@ -53,6 +53,15 @@ configMapGenerator:
       - WEBHOOK_QUEUE_MAX=256
       - SCAN_STAGE_TIMEOUT_SECS=600
       - SCAN_TIMEOUT_SECS=1800
+      # Pull request watcher (CONTRACT.md §23): seconds between two looks at
+      # open pull requests for workspaces with automatic review on. 0 = off.
+      - SDI_PR_WATCH_SECONDS=60
+      # Optional instance-wide model fallback (CONTRACT.md §19); the key is
+      # LLM_API_KEY in secrets.env. A workspace's own key in the app wins.
+      # Uncomment and fill in; LLM_MODEL is required for anything but anthropic.
+      # - LLM_PROVIDER=openai
+      # - LLM_MODEL=
+      # - LLM_BASE_URL=
 
 secretGenerator:
   # DATABASE_URL, SDI_SESSION_SECRET, GITHUB_* (see secrets.example.env).

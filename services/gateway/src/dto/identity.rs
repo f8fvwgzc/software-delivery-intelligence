@@ -310,6 +310,8 @@ pub struct DataControls {
     pub audit_retention_days: u32,
     /// Last change.
     pub updated_at: DateTime<Utc>,
+    /// Whether source lines may be sent to the model so it can write a fix (CONTRACT.md §19, §23): `off` (default) or `changed_lines` (the lines a finding points at plus a few around them, never a whole file, never a line a secrets rule matched). Only has an effect while `reasoner` is not `off`.
+    pub code_to_model: String,
 }
 
 impl From<proto::DataControls> for DataControls {
@@ -323,6 +325,7 @@ impl From<proto::DataControls> for DataControls {
             reasoner_key_hint: opt_string(c.reasoner_key_hint),
             audit_retention_days: c.audit_retention_days,
             updated_at: timestamp(c.updated_at.as_ref()),
+            code_to_model: c.code_to_model,
         }
     }
 }
@@ -341,6 +344,8 @@ pub struct UpdateDataControlsRequest {
     pub reasoner: Option<String>,
     /// 0–3650; 0 keeps forever.
     pub audit_retention_days: Option<u32>,
+    /// `off` or `changed_lines`.
+    pub code_to_model: Option<String>,
 }
 
 impl UpdateDataControlsRequest {
@@ -355,6 +360,7 @@ impl UpdateDataControlsRequest {
             audit_retention_days: self
                 .audit_retention_days
                 .unwrap_or(current.audit_retention_days),
+            code_to_model: self.code_to_model.unwrap_or(current.code_to_model),
             ..current
         }
     }
@@ -509,5 +515,36 @@ mod tests {
         assert_eq!(patched.code_cache, "session");
         assert_eq!(patched.audit_retention_days, 365);
         assert_eq!(patched.workspace_id, "w1");
+    }
+
+    #[test]
+    fn code_to_model_is_patched_on_its_own_and_kept_by_other_patches() {
+        let current = proto::DataControls {
+            workspace_id: "w1".into(),
+            code_cache: "session".into(),
+            reasoner: "claude".into(),
+            code_to_model: "off".into(),
+            ..Default::default()
+        };
+        let on = UpdateDataControlsRequest {
+            code_to_model: Some("changed_lines".into()),
+            ..Default::default()
+        }
+        .apply(current);
+        assert_eq!(on.code_to_model, "changed_lines");
+        assert_eq!(on.reasoner, "claude");
+        let other = UpdateDataControlsRequest {
+            minimal_chunks: Some(true),
+            ..Default::default()
+        }
+        .apply(on);
+        assert_eq!(
+            other.code_to_model, "changed_lines",
+            "an unrelated patch keeps it"
+        );
+        assert_eq!(
+            serde_json::to_value(DataControls::from(other)).unwrap()["codeToModel"],
+            "changed_lines"
+        );
     }
 }

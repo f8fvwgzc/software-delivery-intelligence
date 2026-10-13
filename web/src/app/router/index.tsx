@@ -22,6 +22,7 @@ const UnderstandingPage = lazy(() => import('@/features/understanding/pages/unde
 const ArchitecturePage = lazy(() => import('@/features/graph/pages/architecture-page'))
 const CodePage = lazy(() => import('@/features/code/pages/code-page'))
 const DependenciesPage = lazy(() => import('@/features/dependencies/pages/dependencies-page'))
+const SecurityPage = lazy(() => import('@/features/security/pages/security-page'))
 const DeliveryPage = lazy(() => import('@/features/delivery/pages/delivery-page'))
 const PipelinePage = lazy(() => import('@/features/delivery-cd/pages/pipeline-page'))
 const ProjectProposalsPage = lazy(() => import('@/features/proposals/pages/project-proposals-page'))
@@ -90,6 +91,7 @@ const shellRoutes: RouteObject[] = [
           { path: 'code', Component: CodePage, handle: crumb('Code') },
           { path: 'code/*', Component: CodePage, handle: crumb('Code') },
           { path: 'dependencies', Component: DependenciesPage, handle: crumb('Dependencies') },
+          { path: 'security', Component: SecurityPage, handle: crumb('Security') },
           { path: 'delivery', Component: DeliveryPage, handle: crumb('Delivery') },
           { path: 'pipeline', Component: PipelinePage, handle: crumb('Pipeline') },
           { path: 'proposals', Component: ProjectProposalsPage, handle: crumb('Proposals') },

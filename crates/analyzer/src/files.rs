@@ -322,7 +322,11 @@ fn priority(path: &str) -> Option<u8> {
             P_SUPPORTING
         });
     }
-    if is_workflow(path) || path == ".gitlab-ci.yml" || path == ".github/dependabot.yml" {
+    if is_workflow(path)
+        || path == ".gitlab-ci.yml"
+        || path == ".github/dependabot.yml"
+        || path == ".github/dependabot.yaml"
+    {
         return Some(P_PIPELINE);
     }
     if is_jenkinsfile(path) || is_azure_pipelines(path) {

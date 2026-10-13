@@ -617,6 +617,10 @@ pub fn pull_request_summary(row: PullRequestRow) -> PullRequestSummary {
         created_at: opt_to_proto(row.pr_created_at),
         updated_at: opt_to_proto(row.pr_updated_at),
         latest_review_id: String::new(),
+        head_repo: row.head_repo,
+        is_fork: row.is_fork,
+        is_bot: row.is_bot,
+        is_dependabot: row.is_dependabot,
     }
 }
 

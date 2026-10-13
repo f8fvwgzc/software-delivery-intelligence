@@ -18,6 +18,7 @@ use super::{
     Reasoner, ReasonerRequest,
     budget::{self, CONTEXT_TOKENS},
     diagrams::RefineRequest,
+    fixes::{self, FixRefusal, FixRequest},
 };
 use crate::db::usage::UsageLedger;
 
@@ -73,6 +74,24 @@ impl Provider {
             Provider::OpenAiCompatible { .. } => "openai_compatible",
         }
     }
+
+    /// Where calls go, as something safe to show: scheme and host (and a
+    /// non-default port) of the endpoint, never its path or query, which
+    /// for some providers carry a deployment name or a key.
+    pub fn endpoint(&self) -> String {
+        let base = match self {
+            Provider::Anthropic => ANTHROPIC_BASE_URL,
+            Provider::OpenAiCompatible { base_url } => base_url.as_str(),
+        };
+        match reqwest::Url::parse(base) {
+            Ok(url) => match (url.host_str(), url.port()) {
+                (Some(host), Some(port)) => format!("{}://{host}:{port}", url.scheme()),
+                (Some(host), None) => format!("{}://{host}", url.scheme()),
+                (None, _) => String::new(),
+            },
+            Err(_) => String::new(),
+        }
+    }
 }
 
 /// `https://x/v1` → `https://x/v1/chat/completions`; an Azure deployment
@@ -108,9 +127,36 @@ pub struct Usage {
 /// A reply with the usage the provider reported (estimated when it did not).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
+    /// The reply, trimmed.
     pub text: String,
     pub usage: Usage,
+    /// The reply exactly as the provider sent it: leading whitespace is
+    /// indentation when the reply is code.
+    pub raw: String,
+    /// The provider stopped at `max_tokens`: the reply is incomplete.
+    pub truncated: bool,
 }
+
+/// The workspace's daily token cap would be crossed, so no call was made.
+/// A type of its own so a caller can tell it from a provider failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapReached {
+    pub used: u64,
+    pub cap: u64,
+    pub needed: u64,
+}
+
+impl std::fmt::Display for CapReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "daily token cap reached ({} used of {} today; this call needs about {})",
+            self.used, self.cap, self.needed
+        )
+    }
+}
+
+impl std::error::Error for CapReached {}
 
 pub struct LlmReasoner {
     http: reqwest::Client,
@@ -192,10 +238,11 @@ impl LlmReasoner {
         let used = self.ledger.used_today(self.workspace_id).await;
         let needed = estimated_input + u64::from(request.max_tokens);
         if used.saturating_add(needed) > self.daily_token_cap {
-            anyhow::bail!(
-                "daily token cap reached ({used} used of {} today; this call needs about {needed})",
-                self.daily_token_cap
-            );
+            return Err(anyhow::Error::new(CapReached {
+                used,
+                cap: self.daily_token_cap,
+                needed,
+            }));
         }
         let result = self.send(request, &content).await;
         match &result {
@@ -243,7 +290,7 @@ impl LlmReasoner {
                 }
                 Err(Transient(message)) if attempt < ATTEMPTS => {
                     let delay = self.retry_base * 2u32.pow(attempt - 1);
-                    tracing::debug!(attempt, %message, "reasoner call retried");
+                    tracing::debug!(attempt, reason = %without_body(&message), "reasoner call retried");
                     tokio::time::sleep(delay).await;
                 }
                 Err(Transient(message)) => anyhow::bail!("{message} (after {attempt} attempts)"),
@@ -314,6 +361,7 @@ impl LlmReasoner {
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
             }),
+            reply.stop_reason.as_deref() == Some("max_tokens"),
         )
     }
 
@@ -384,6 +432,7 @@ impl LlmReasoner {
                 "openai-compatible endpoint filtered the reply".into(),
             ));
         }
+        let truncated = choice.finish_reason.as_deref() == Some("length");
         // `content` is a string, or an array of `{type: "text", text}` parts.
         let text = match choice.message.content {
             Some(Value::String(s)) => s,
@@ -401,8 +450,23 @@ impl LlmReasoner {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
             }),
+            truncated,
         )
     }
+}
+
+/// A provider error without the response body: which provider and which
+/// HTTP status, which is enough to tell a bad key from an outage. A body
+/// can echo the request (some proxies do), and a draft-fix request carries
+/// source lines, so the body is neither logged nor shown for that call.
+pub(crate) fn without_body(message: &str) -> String {
+    message
+        .split(": ")
+        .next()
+        .unwrap_or(message)
+        .chars()
+        .take(120)
+        .collect()
 }
 
 enum CallError {
@@ -441,13 +505,20 @@ async fn parse_response<T: serde::de::DeserializeOwned>(
         .map_err(|e| Fatal(format!("{provider} reply is not JSON: {e}")))
 }
 
-fn finish(provider: &str, text: String, usage: Option<Usage>) -> Result<Completion, CallError> {
+fn finish(
+    provider: &str,
+    text: String,
+    usage: Option<Usage>,
+    truncated: bool,
+) -> Result<Completion, CallError> {
     if text.trim().is_empty() {
         return Err(Fatal(format!("{provider} returned no text")));
     }
     Ok(Completion {
         text: text.trim().to_owned(),
         usage: usage.unwrap_or_default(),
+        raw: text,
+        truncated,
     })
 }
 
@@ -494,6 +565,27 @@ impl Reasoner for LlmReasoner {
                 tracing::warn!(%error, "reasoner failed; keeping the templated summary");
                 draft.to_owned()
             }
+        }
+    }
+
+    async fn draft_fix(&self, request: &FixRequest) -> Result<String, FixRefusal> {
+        let call = ReasonerRequest {
+            system: fixes::SYSTEM_PROMPT,
+            context_json: request.context_json(),
+            instruction: request.instruction(),
+            max_tokens: budget::FIX_MAX_TOKENS,
+            json: false,
+        };
+        match self.complete(&call).await {
+            Ok(completion) if completion.truncated => Err(FixRefusal::Truncated),
+            Ok(completion) => Ok(completion.raw),
+            Err(error) => Err(match error.downcast_ref::<CapReached>() {
+                Some(cap) => FixRefusal::CapSpent(format!(
+                    "{} of {} tokens used today, this call needs about {}",
+                    cap.used, cap.cap, cap.needed
+                )),
+                None => FixRefusal::Provider(without_body(&error.to_string())),
+            }),
         }
     }
 
@@ -830,6 +922,111 @@ mod tests {
         let error = reasoner.complete(&request(json!({}))).await.unwrap_err();
         assert!(error.to_string().contains("after 3 attempts"), "{error}");
         assert_eq!(seen.lock().unwrap().requests.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn draft_fix_sends_the_fix_prompt_capped_and_keeps_the_reply_raw() {
+        use crate::reasoner::fixes::{FixRefusal, FixRequest, SYSTEM_PROMPT};
+        let (url, seen) = fake_server(vec![
+            (
+                StatusCode::OK,
+                anthropic_reply("    let raw = read(path)?;\n"),
+            ),
+            (
+                StatusCode::OK,
+                json!({"content": [{"type": "text", "text": "    let raw = match read(path) {"}],
+                       "stop_reason": "max_tokens", "usage": {"input_tokens": 90, "output_tokens": 800}}),
+            ),
+            (
+                StatusCode::UNAUTHORIZED,
+                json!({"error": {"message": "echo: let raw = read(path).unwrap();"}}),
+            ),
+        ])
+        .await;
+        let ledger = Arc::new(MemoryLedger::default());
+        let ws = Uuid::now_v7();
+        let reasoner = LlmReasoner::new(
+            Provider::Anthropic,
+            "sk-test".into(),
+            "claude-x".into(),
+            ws,
+            100_000,
+            ledger.clone(),
+        )
+        .with_anthropic_base_url(&url);
+        let request = FixRequest {
+            rule: "correctness.unwrap".into(),
+            title: "unwrap outside tests".into(),
+            detail: "Line 2 panics.".into(),
+            path: "src/a.rs".into(),
+            language: "rust".into(),
+            start_line: 2,
+            end_line: 2,
+            before: vec!["fn load() {".into()],
+            flagged: vec!["    let raw = read(path).unwrap();".into()],
+            after: vec!["}".into()],
+        };
+        // The reply comes back as written: its indentation is the code's.
+        assert_eq!(
+            reasoner.draft_fix(&request).await.unwrap(),
+            "    let raw = read(path)?;\n"
+        );
+        {
+            let seen = seen.lock().unwrap();
+            let body = &seen.requests[0].2;
+            assert_eq!(body["system"], SYSTEM_PROMPT);
+            assert_eq!(body["max_tokens"], budget::FIX_MAX_TOKENS);
+            assert_eq!(body["max_tokens"], 800);
+            let content = body["messages"][0]["content"].as_str().unwrap();
+            assert!(content.contains("\"rule\":\"correctness.unwrap\""));
+            assert!(content.contains("<replace>\n    let raw = read(path).unwrap();\n</replace>"));
+        }
+        assert_eq!(ledger.used.lock().unwrap()[&ws], (120, 30, 1));
+        // Cut at the cap: refused, and the tokens it cost are still counted.
+        assert_eq!(
+            reasoner.draft_fix(&request).await,
+            Err(FixRefusal::Truncated)
+        );
+        assert_eq!(ledger.used.lock().unwrap()[&ws], (210, 830, 2));
+        // A provider error names the provider and the status, never the
+        // body (which here echoes the request).
+        match reasoner.draft_fix(&request).await {
+            Err(FixRefusal::Provider(detail)) => {
+                assert_eq!(detail, "anthropic returned 401 Unauthorized");
+            }
+            other => panic!("expected a provider refusal, got {other:?}"),
+        }
+        // A workspace whose day is spent: refused before any call.
+        let spent = LlmReasoner::new(
+            Provider::Anthropic,
+            "sk-test".into(),
+            "claude-x".into(),
+            ws,
+            1_500,
+            ledger.clone(),
+        )
+        .with_anthropic_base_url(&url);
+        let before = seen.lock().unwrap().requests.len();
+        match spent.draft_fix(&request).await {
+            Err(FixRefusal::CapSpent(detail)) => {
+                assert!(detail.contains("of 1500 tokens used today"), "{detail}");
+            }
+            other => panic!("expected the cap, got {other:?}"),
+        }
+        assert_eq!(seen.lock().unwrap().requests.len(), before);
+        // The heuristic has nobody to ask.
+        assert_eq!(
+            crate::reasoner::HeuristicReasoner.draft_fix(&request).await,
+            Err(FixRefusal::NoModel)
+        );
+        assert_eq!(
+            without_body("openai-compatible returned 502 Bad Gateway: <html>secret</html>"),
+            "openai-compatible returned 502 Bad Gateway"
+        );
+        assert_eq!(
+            without_body("request failed: connection refused"),
+            "request failed"
+        );
     }
 
     #[test]

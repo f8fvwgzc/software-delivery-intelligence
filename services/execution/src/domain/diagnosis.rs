@@ -24,9 +24,19 @@ pub const DEPLOYER_FAILED: &str = "DEPLOYER_FAILED";
 pub const DEPLOYER_TIMEOUT: &str = "DEPLOYER_TIMEOUT";
 /// The GitOps repository changed underneath the commit.
 pub const GITOPS_CONFLICT: &str = "GITOPS_CONFLICT";
+/// A pull request's branch is no longer at the commit the plan was made
+/// for (CONTRACT.md §23).
+pub const HEAD_MOVED: &str = "HEAD_MOVED";
+/// GitHub cannot merge the pull request: it conflicts with its base.
+pub const MERGE_CONFLICT: &str = "MERGE_CONFLICT";
+/// A check of the pull request's head failed or is still running.
+pub const CHECKS_FAILING: &str = "CHECKS_FAILING";
+/// GitHub will not merge the pull request for a reason other than the
+/// three above (a branch protection rule, a draft, a closed pull request).
+pub const MERGE_BLOCKED: &str = "MERGE_BLOCKED";
 pub const UNKNOWN: &str = "UNKNOWN";
 
-pub const CODES: [&str; 14] = [
+pub const CODES: [&str; 18] = [
     PERMISSION_DENIED,
     POLICY_BLOCKED,
     SKU_UNAVAILABLE,
@@ -40,6 +50,10 @@ pub const CODES: [&str; 14] = [
     DEPLOYER_FAILED,
     DEPLOYER_TIMEOUT,
     GITOPS_CONFLICT,
+    HEAD_MOVED,
+    MERGE_CONFLICT,
+    CHECKS_FAILING,
+    MERGE_BLOCKED,
     UNKNOWN,
 ];
 
@@ -109,9 +123,36 @@ fn is_delivery_action(action_type: &str) -> bool {
     action_type.starts_with("deploy.") || action_type.starts_with("registry.")
 }
 
+/// Whether a step is one of the pull request operations of CONTRACT.md
+/// §23. Their adapter words every failure as a sentence, so the diagnosis
+/// quotes it instead of pointing at the raw output.
+fn is_pull_request_action(action_type: &str) -> bool {
+    matches!(
+        action_type,
+        "repo.commit_fixes"
+            | "repo.verify_mergeable"
+            | "repo.merge_pull_request"
+            | "repo.delete_branch"
+            | "repo.enable_security_updates"
+    )
+}
+
 /// A sentence ending without a period, for embedding in another one.
 fn clause(text: &str) -> &str {
     text.trim().trim_end_matches('.')
+}
+
+/// `text` as a sentence of its own: capitalised, with a closing period.
+fn sentence(text: &str) -> String {
+    let mut chars = text.trim().chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut sentence: String = first.to_uppercase().chain(chars).collect();
+    if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    sentence
 }
 
 fn option(
@@ -209,6 +250,19 @@ pub fn diagnose(
 
     let refused_by_tool = step.refused_by_tool;
     let delivery = is_delivery_action(step.action_type);
+    let needs_admin = missing_permissions
+        .iter()
+        .any(|p| p == super::policy::REPOSITORY_ADMIN);
+    // The pull request codes of §23: the adapter's first line already is
+    // a sentence a person can act on (which pull request, which commit,
+    // which checks), so it is the diagnosis.
+    let told = |fallback: String| {
+        if step.detail.is_empty() {
+            fallback
+        } else {
+            sentence(step.detail)
+        }
+    };
     let rollback = |recommended: bool| {
         option(
             ROLLBACK_TO_PREVIOUS,
@@ -245,6 +299,8 @@ pub fn diagnose(
                     "Request access",
                     if refused_by_tool && delivery {
                         "Fix the credentials the raw output names (a token scope or a workspace secret), then retry."
+                    } else if refused_by_tool && needs_admin {
+                        "Give the connected GitHub access admin rights on the repository (a token of a repository admin; Administration read and write for the GitHub App), then retry."
                     } else if refused_by_tool {
                         "Re-issue GITHUB_TOKEN with write access to the repository (the `repo` scope, or Contents + Pull requests read and write on a fine-grained token), restart the service, then retry."
                     } else {
@@ -455,6 +511,66 @@ pub fn diagnose(
                 options
             },
         ),
+        // CONTRACT.md §23.3. Nothing was committed or merged in any of
+        // the four; none of them offers to skip the step, because a run
+        // that skips its commit or its merge must not end as a success.
+        HEAD_MOVED => (
+            format!(
+                "{} This run was planned for the old head, so it cannot simply run again.",
+                told(format!(
+                    "The pull request's branch is no longer at the commit '{}' was planned for.",
+                    step.title
+                ))
+            ),
+            // The plan names the old head, so running it again cannot
+            // succeed: the new head has to be looked at first.
+            vec![option(
+                "give_up",
+                "Review the new head and ask again",
+                "End this run. Review the pull request's new head, then ask for the fixes or the merge again; that makes a new run for the commit that is there now.",
+                "The execution ends as FAILED. Nothing was committed or merged.",
+                true,
+            )],
+        ),
+        MERGE_CONFLICT => (
+            told(format!(
+                "GitHub cannot merge the pull request of '{}': it conflicts with its base branch. Nothing was merged.",
+                step.title
+            )),
+            vec![option(
+                "retry",
+                "Retry after the branch is updated",
+                "Resolve the conflict on GitHub, then check the pull request again. If resolving it adds a commit to the branch, the retry stops with HEAD_MOVED so the new head is reviewed first.",
+                "The step returns to PENDING and reads the pull request again.",
+                true,
+            )],
+        ),
+        CHECKS_FAILING => (
+            told(format!(
+                "The checks of the pull request of '{}' are not green: at least one failed or is still running. Nothing was merged.",
+                step.title
+            )),
+            vec![option(
+                "retry",
+                "Retry when the checks are green",
+                "Wait for the running checks, or re-run the failed ones on GitHub, then check the pull request again.",
+                "The step returns to PENDING and reads the checks again.",
+                true,
+            )],
+        ),
+        MERGE_BLOCKED => (
+            told(format!(
+                "GitHub will not merge the pull request of '{}' yet: a rule on GitHub is not satisfied. Nothing was merged.",
+                step.title
+            )),
+            vec![option(
+                "retry",
+                "Retry after the rule is satisfied on GitHub",
+                "Do what GitHub asks for (a required review, a draft marked ready, a branch protection rule), then try again.",
+                "The step returns to PENDING and asks GitHub again.",
+                true,
+            )],
+        ),
         HEALTH_CHECK_FAILED => (
             format!(
                 "'{}' completed but its health check never turned green.",
@@ -514,7 +630,7 @@ pub fn diagnose(
             ],
         ),
         _ => (
-            if delivery && !step.detail.is_empty() {
+            if (delivery || is_pull_request_action(step.action_type)) && !step.detail.is_empty() {
                 format!("'{}' failed: {}.", step.title, clause(step.detail))
             } else if step.message.is_empty() {
                 format!(
@@ -532,10 +648,24 @@ pub fn diagnose(
         ),
     };
 
-    if can_skip {
+    // Skipping a step ends the run as SUCCEEDED without it. That is never
+    // offered for the pull request codes, nor, whatever the code, for the
+    // step that is the whole point of its run: a run that did not commit
+    // the fixes or did not merge must not read as one that did.
+    let pull_request_code = matches!(
+        code,
+        HEAD_MOVED | MERGE_CONFLICT | CHECKS_FAILING | MERGE_BLOCKED
+    );
+    let is_the_run = matches!(
+        step.action_type,
+        "repo.commit_fixes" | "repo.merge_pull_request"
+    );
+    if can_skip && !pull_request_code && !is_the_run {
         options.push(skip);
     }
-    options.push(give_up(false));
+    if !options.iter().any(|o| o.id == "give_up") {
+        options.push(give_up(false));
+    }
     options.push(cancel);
     if !options.iter().any(|o| o.recommended) {
         // POLICY_BLOCKED: the only safe default is to stop.
@@ -821,6 +951,180 @@ mod tests {
             "'Record deployment' failed: POST /repos/acme/api/deployments -> 403 Forbidden."
         );
         assert!(options.iter().any(|o| o.id == "skip_step"));
+    }
+
+    /// CONTRACT.md §23.3: what each pull request failure offers, in the
+    /// contract's words, and never a way to call a run that did not commit
+    /// or merge a success.
+    #[test]
+    fn pull_request_failures_offer_what_the_contract_says() {
+        let params = BTreeMap::new();
+        let failed = |action_type: &'static str, detail: &'static str| FailedStep {
+            title: "Merge #12",
+            action_type,
+            detail,
+            ..step(&params)
+        };
+        let cases = [
+            (
+                HEAD_MOVED,
+                "pull request #12 is at 9f8e7d6 now; this merge was requested for a1b2c3d. Nothing was merged.",
+                vec!["give_up", "cancel"],
+                "Review the new head and ask again",
+            ),
+            (
+                MERGE_CONFLICT,
+                "pull request #12 conflicts with main: fix/lint cannot be merged into it until the conflicts are resolved. Nothing was merged.",
+                vec!["retry", "give_up", "cancel"],
+                "Retry after the branch is updated",
+            ),
+            (
+                CHECKS_FAILING,
+                "pull request #12 is not ready to merge at a1b2c3d: 1 check failed (unit) and 1 check is still running (e2e). Nothing was merged.",
+                vec!["retry", "give_up", "cancel"],
+                "Retry when the checks are green",
+            ),
+            (
+                MERGE_BLOCKED,
+                "GitHub refused to merge pull request #12: At least 1 approving review is required by reviewers with write access. Nothing was merged.",
+                vec!["retry", "give_up", "cancel"],
+                "Retry after the rule is satisfied on GitHub",
+            ),
+        ];
+        for (code, detail, ids, label) in cases {
+            // Nothing depends on the step: skipping would still be wrong.
+            let (diagnosis, options) =
+                diagnose(code, &failed("repo.merge_pull_request", detail), &[], &[]);
+            assert_eq!(
+                options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+                ids,
+                "{code}"
+            );
+            assert_eq!(options[0].label, label, "{code}");
+            assert!(options[0].recommended, "{code}");
+            assert_eq!(options.iter().filter(|o| o.recommended).count(), 1);
+            // The adapter's sentence is the diagnosis, as a sentence.
+            assert!(
+                diagnosis.starts_with(&sentence(detail)),
+                "{code}: {diagnosis}"
+            );
+            assert!(
+                diagnosis.starts_with("Pull request #12") || diagnosis.starts_with("GitHub"),
+                "{code}: {diagnosis}"
+            );
+            assert!(!diagnosis.contains(".."), "{code}: {diagnosis}");
+            // Without the tool's words there is still a sentence naming the step.
+            let (bare, _) = diagnose(code, &failed("repo.merge_pull_request", ""), &[], &[]);
+            assert!(bare.contains("'Merge #12'"), "{code}: {bare}");
+
+            let failure = record(code, options, &[]);
+            assert_eq!(
+                resolve("cancel", "", &failure, &params),
+                Ok(Resolution::Cancel)
+            );
+            assert_eq!(
+                resolve("give_up", "", &failure, &params),
+                Ok(Resolution::GiveUp)
+            );
+            assert_eq!(
+                resolve("skip_step", "", &failure, &params),
+                Err(ResolveError::UnknownOption("skip_step".into()))
+            );
+            // The free-text path stays open for every code.
+            assert!(matches!(
+                resolve(
+                    "",
+                    "the checks are flaky, run them again",
+                    &failure,
+                    &params
+                ),
+                Ok(Resolution::Retry { .. })
+            ));
+            if code == HEAD_MOVED {
+                // "Review the new head and ask again" ends the run: the
+                // plan names the old head, so retrying it is not offered.
+                assert!(diagnosis.contains("cannot simply run again"), "{diagnosis}");
+                assert!(failure.options[0].effect.contains("FAILED"));
+                assert_eq!(
+                    resolve("retry", "", &failure, &params),
+                    Err(ResolveError::UnknownOption("retry".into()))
+                );
+            } else {
+                assert_eq!(
+                    resolve("retry", "", &failure, &params),
+                    Ok(Resolution::Retry {
+                        patch: BTreeMap::new(),
+                        note: "retry (retry)".into(),
+                    })
+                );
+            }
+        }
+        for code in [HEAD_MOVED, MERGE_CONFLICT, CHECKS_FAILING, MERGE_BLOCKED] {
+            assert_eq!(normalize_code(&code.to_ascii_lowercase()), code);
+        }
+
+        // A plan the adapter refused (code UNKNOWN) is quoted too, instead
+        // of "failed with UNKNOWN".
+        let refused = FailedStep {
+            message: "'Commit fixes' failed with UNKNOWN",
+            ..failed(
+                "repo.commit_fixes",
+                "refusing to commit review fixes to main: it is the default branch of acme/api. No commit was created.",
+            )
+        };
+        let (diagnosis, _) = diagnose(UNKNOWN, &refused, &[], &[]);
+        assert_eq!(
+            diagnosis,
+            "'Merge #12' failed: refusing to commit review fixes to main: it is the default branch of acme/api. No commit was created."
+        );
+
+        // Whatever went wrong, the commit and the merge are never skipped:
+        // the run would end as a success without them. Leaving a merged
+        // branch in place is a fair thing to skip.
+        for code in [UNKNOWN, TIMEOUT, PERMISSION_DENIED, QUOTA_EXCEEDED] {
+            for action_type in ["repo.commit_fixes", "repo.merge_pull_request"] {
+                let (_, options) = diagnose(
+                    code,
+                    &failed(action_type, ""),
+                    &[],
+                    &["repository:write".into()],
+                );
+                assert!(
+                    !options.iter().any(|o| o.id == "skip_step"),
+                    "{code} on {action_type}"
+                );
+                assert!(options.len() >= 2, "{code} on {action_type}");
+            }
+            let (_, options) = diagnose(
+                code,
+                &failed("repo.delete_branch", ""),
+                &[],
+                &["repository:write".into()],
+            );
+            assert!(options.iter().any(|o| o.id == "skip_step"), "{code}");
+        }
+
+        // GitHub refusing a repository setting names admin rights, not the
+        // write scope.
+        let settings = FailedStep {
+            refused_by_tool: true,
+            ..failed(
+                "repo.enable_security_updates",
+                "PUT /repos/acme/api/vulnerability-alerts -> 404 Not Found: Not Found",
+            )
+        };
+        let (_, options) = diagnose(
+            PERMISSION_DENIED,
+            &settings,
+            &[],
+            &["repository:admin".into()],
+        );
+        assert_eq!(options[0].id, "request_access");
+        assert!(
+            options[0].description.contains("admin rights"),
+            "{options:?}"
+        );
+        assert!(!options[0].description.contains("`repo` scope"));
     }
 
     #[test]

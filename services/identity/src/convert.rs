@@ -130,6 +130,7 @@ pub fn controls_to_proto(row: ControlsRow) -> DataControls {
         reasoner_key_hint: hint,
         audit_retention_days: u32::try_from(row.audit_retention_days.max(0)).unwrap_or(0),
         updated_at: Some(time::to_proto(row.updated_at)),
+        code_to_model: row.code_to_model,
     }
 }
 

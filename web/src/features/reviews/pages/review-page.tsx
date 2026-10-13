@@ -10,15 +10,29 @@ import { Tag } from '@/components/system/tag'
 import { Skeleton } from '@/components/ui/skeleton'
 
 import { reviewQueries } from '../api/queries'
+import { ApplyFixesDialog } from '../components/apply-fixes-dialog'
 import { FindingsList } from '../components/findings-list'
+import { MergeFrame } from '../components/merge-frame'
+import { MergeSkeleton } from '../components/merge-frame/skeleton'
 import { PublishDialog } from '../components/publish-dialog'
 import { ReviewHeader } from '../components/review-header'
 import { ReviewRail } from '../components/review-rail'
 import { isReviewRunning } from '../lib/labels'
 
-const GRID_CLASS = 'grid items-start gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]'
+const GRID_CLASS = 'grid items-start gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[20rem_minmax(0,1fr)]'
+/**
+ * The aside stays on screen while the findings scroll. On a short window it
+ * scrolls by itself, so the merge controls are always reachable; the 1px
+ * padding keeps the frames' hairlines from being clipped.
+ */
+const ASIDE_CLASS =
+  'flex min-w-0 flex-col gap-4 lg:sticky lg:top-[calc(var(--header-h)+1rem)] lg:-m-px lg:max-h-[calc(100svh-var(--header-h)-2rem)] lg:overflow-y-auto lg:p-px'
 
-/** /reviews/:reviewId — the rail at the left, findings and summary at the right. */
+/**
+ * /reviews/:reviewId — the rail and the merge frame at the left, findings and
+ * summary at the right. Two requests: the review, and the pull request's
+ * merge readiness behind its own boundary.
+ */
 export default function ReviewPage() {
   const { reviewId = '' } = useParams()
 
@@ -36,12 +50,23 @@ function ReviewView({ reviewId }: { reviewId: string }) {
 
   return (
     <Page>
-      <ReviewHeader review={review} actions={<PublishDialog review={review} />} />
+      <ReviewHeader
+        review={review}
+        actions={
+          <>
+            <ApplyFixesDialog review={review} />
+            <PublishDialog review={review} />
+          </>
+        }
+      />
 
       <div className={GRID_CLASS}>
-        <Frame title="Steps" className="lg:sticky lg:top-[calc(var(--header-h)+1rem)]">
-          <ReviewRail review={review} />
-        </Frame>
+        <div className={ASIDE_CLASS}>
+          <Frame title="Steps">
+            <ReviewRail review={review} />
+          </Frame>
+          <MergeFrame review={review} />
+        </div>
 
         <div className="flex min-w-0 flex-col gap-4">
           <Frame
@@ -88,9 +113,14 @@ function ReviewPageSkeleton() {
         <Skeleton className="h-3 w-96 max-w-full" />
       </div>
       <div className={GRID_CLASS}>
-        <Frame title="Steps">
-          <PanelSkeleton rows={5} />
-        </Frame>
+        <div className="flex flex-col gap-4">
+          <Frame title="Steps">
+            <PanelSkeleton rows={5} />
+          </Frame>
+          <Frame title="Merge">
+            <MergeSkeleton />
+          </Frame>
+        </div>
         <div className="flex flex-col gap-4">
           <Frame title="Findings" padding="none">
             <PanelSkeleton rows={4} />

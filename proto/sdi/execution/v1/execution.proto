@@ -195,7 +195,8 @@ message Execution {
   google.protobuf.Timestamp updated_at = 16;
   google.protobuf.Timestamp started_at = 17;
   google.protobuf.Timestamp finished_at = 18;
-  // Things the run produced: "pull_request_url", "image", "container_url", "workdir".
+  // Things the run produced: "pull_request_url", "image", "container_url", "workdir",
+  // "commit_sha", "commit_url", "merge_commit_sha" (CONTRACT.md §23).
   map<string, string> outputs = 19;
 }
 
@@ -207,7 +208,8 @@ message CreateExecutionRequest {
   repeated sdi.common.v1.PlanStep steps = 5;
   // "simulated" (default) | "docker" | "github". See CONTRACT.md §5.4.
   string adapter = 6;
-  // Files a `repo.open_pull_request` step commits, keyed by repository path.
+  // Files a `repo.open_pull_request` or `repo.commit_fixes` step commits,
+  // keyed by repository path (full contents).
   map<string, string> artifacts = 7;
 }
 

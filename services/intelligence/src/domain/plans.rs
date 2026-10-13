@@ -258,6 +258,239 @@ fn pull_request_body(
     body
 }
 
+// --- Pull request autopilot (CONTRACT.md §23.5) ---------------------------------
+//
+// Step keys, action types, permissions and params are fixed by the
+// contract's table so intelligence and execution agree without sharing
+// code. Every step runs on the `github` adapter and depends on the one
+// before it. Each also names the repository (`owner/name`): that is how the
+// adapter learns which repository a step is about.
+
+pub const GITHUB: &str = "github";
+/// The branch the Dependabot configuration pull request is opened from.
+pub const DEPENDABOT_BRANCH: &str = "sdi/dependabot";
+pub const DEPENDABOT_CONFIG_PATH: &str = ".github/dependabot.yml";
+
+fn params(repository: &str, pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if !repository.trim().is_empty() {
+        out.insert("repository".to_owned(), repository.trim().to_owned());
+    }
+    for (key, value) in pairs {
+        out.insert((*key).to_owned(), (*value).to_owned());
+    }
+    out
+}
+
+fn checkout_step(repository: &str) -> PlanStepData {
+    step(
+        "checkout",
+        if repository.trim().is_empty() {
+            "Read the repository".to_owned()
+        } else {
+            format!("Read {repository}")
+        },
+        "repo.checkout",
+        GITHUB,
+        &[],
+        &["repository:read"],
+        params(repository, &[]),
+        "the repository answers and its branches are known",
+    )
+}
+
+/// What a fix execution commits and where (CONTRACT.md §23.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixPlan<'a> {
+    pub repository: &'a str,
+    /// The pull request's head branch.
+    pub branch: &'a str,
+    /// The commit the fixes were computed against.
+    pub expected_head_sha: &'a str,
+    pub message: &'a str,
+    pub pr_number: u64,
+    pub fixes: usize,
+    pub files: usize,
+}
+
+/// `checkout` → `commit_fixes`: one commit on top of `expected_head_sha`.
+pub fn fix_plan(plan: &FixPlan<'_>) -> Vec<PlanStepData> {
+    vec![
+        checkout_step(plan.repository),
+        step(
+            "commit_fixes",
+            format!(
+                "Commit {} review fix{} in {} file{} to {}",
+                plan.fixes,
+                if plan.fixes == 1 { "" } else { "es" },
+                plan.files,
+                if plan.files == 1 { "" } else { "s" },
+                plan.branch
+            ),
+            "repo.commit_fixes",
+            GITHUB,
+            &["checkout"],
+            &["repository:write"],
+            params(
+                plan.repository,
+                &[
+                    ("branch", plan.branch),
+                    ("expected_head_sha", plan.expected_head_sha),
+                    ("message", plan.message),
+                    ("pull_request", &plan.pr_number.to_string()),
+                ],
+            ),
+            "the branch points at a new commit whose parent is the expected head",
+        ),
+    ]
+}
+
+/// What a merge execution does (CONTRACT.md §23.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergePlan<'a> {
+    pub repository: &'a str,
+    pub pr_number: u64,
+    pub expected_head_sha: &'a str,
+    /// "merge" | "squash" | "rebase"
+    pub method: &'a str,
+    /// The head branch to delete after the merge. `None` when it was not
+    /// asked for or the branch lives in another repository (a fork).
+    pub delete_branch: Option<&'a str>,
+}
+
+/// `verify_mergeable` → `merge` → `delete_branch` (only with a branch).
+pub fn merge_plan(plan: &MergePlan<'_>) -> Vec<PlanStepData> {
+    let number = plan.pr_number.to_string();
+    let mut steps = vec![
+        step(
+            "verify_mergeable",
+            format!("Check that #{number} can still be merged"),
+            "repo.verify_mergeable",
+            GITHUB,
+            &[],
+            &["repository:read"],
+            params(
+                plan.repository,
+                &[
+                    ("pull_request", &number),
+                    ("expected_head_sha", plan.expected_head_sha),
+                ],
+            ),
+            "the head is the expected commit, there is no conflict and no check failed or is still running",
+        ),
+        step(
+            "merge",
+            format!("Merge #{number} ({})", plan.method),
+            "repo.merge_pull_request",
+            GITHUB,
+            &["verify_mergeable"],
+            &["repository:write"],
+            params(
+                plan.repository,
+                &[
+                    ("pull_request", &number),
+                    ("expected_head_sha", plan.expected_head_sha),
+                    ("merge_method", plan.method),
+                ],
+            ),
+            "GitHub reports the pull request as merged",
+        ),
+    ];
+    if let Some(branch) = plan.delete_branch.filter(|b| !b.trim().is_empty()) {
+        steps.push(step(
+            "delete_branch",
+            format!("Delete the merged branch {branch}"),
+            "repo.delete_branch",
+            GITHUB,
+            &["merge"],
+            &["repository:write"],
+            params(
+                plan.repository,
+                &[("branch", branch), ("pull_request", &number)],
+            ),
+            "the branch no longer exists",
+        ));
+    }
+    steps
+}
+
+/// What a Dependabot setup execution does (CONTRACT.md §23.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependabotPlan<'a> {
+    pub repository: &'a str,
+    pub default_branch: &'a str,
+    pub alerts: bool,
+    pub security_updates: bool,
+    /// Title and body of the pull request that adds the configuration
+    /// file; `None` when the file was not asked for.
+    pub config_pull_request: Option<(&'a str, &'a str)>,
+}
+
+/// `checkout` → `enable_security_updates` (alerts or security updates) →
+/// `open_pull_request` (the configuration file).
+pub fn dependabot_plan(plan: &DependabotPlan<'_>) -> Vec<PlanStepData> {
+    let mut steps = vec![checkout_step(plan.repository)];
+    let mut previous = "checkout";
+    if plan.alerts || plan.security_updates {
+        steps.push(step(
+            "enable_security_updates",
+            match (plan.alerts, plan.security_updates) {
+                (true, true) => "Turn on Dependabot alerts and security updates",
+                (true, false) => "Turn on Dependabot alerts",
+                _ => "Turn on Dependabot security updates",
+            }
+            .to_owned(),
+            "repo.enable_security_updates",
+            GITHUB,
+            &[previous],
+            &["repository:admin"],
+            params(
+                plan.repository,
+                &[
+                    ("alerts", if plan.alerts { "true" } else { "false" }),
+                    (
+                        "security_updates",
+                        if plan.security_updates {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    ),
+                ],
+            ),
+            "GitHub reports the settings as enabled",
+        ));
+        previous = "enable_security_updates";
+    }
+    if let Some((title, body)) = plan.config_pull_request {
+        let base = if plan.default_branch.trim().is_empty() {
+            "main"
+        } else {
+            plan.default_branch.trim()
+        };
+        steps.push(step(
+            "open_pull_request",
+            format!("Open a pull request that adds {DEPENDABOT_CONFIG_PATH}"),
+            "repo.open_pull_request",
+            GITHUB,
+            &[previous],
+            &["repository:write"],
+            params(
+                plan.repository,
+                &[
+                    ("branch", DEPENDABOT_BRANCH),
+                    ("base_branch", base),
+                    ("title", title),
+                    ("body", body),
+                    ("skip_if_exists", DEPENDABOT_CONFIG_PATH),
+                ],
+            ),
+            "the pull request exists, or the file was already there and nothing was opened",
+        ));
+    }
+    steps
+}
+
 /// `{path: content}` for `CreateExecutionRequest.artifacts`.
 pub fn artifact_map(artifacts: &[ArtifactData]) -> std::collections::HashMap<String, String> {
     artifacts
@@ -279,6 +512,198 @@ mod tests {
             ..Default::default()
         });
         ctx
+    }
+
+    fn shape(plan: &[PlanStepData]) -> Vec<(&str, &str, Vec<&str>, Vec<&str>)> {
+        plan.iter()
+            .map(|s| {
+                (
+                    s.key.as_str(),
+                    s.action_type.as_str(),
+                    s.depends_on.iter().map(String::as_str).collect(),
+                    s.required_permissions.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn param<'a>(step: &'a PlanStepData, key: &str) -> Option<&'a str> {
+        step.params.get(key).map(String::as_str)
+    }
+
+    fn keys(step: &PlanStepData) -> Vec<&str> {
+        step.params.keys().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn fix_plan_is_checkout_then_commit_fixes() {
+        let plan = fix_plan(&FixPlan {
+            repository: "o/repo",
+            branch: "feat/docker",
+            expected_head_sha: "abc123",
+            message: "Apply 2 review fixes to #7\n",
+            pr_number: 7,
+            fixes: 2,
+            files: 1,
+        });
+        assert_eq!(
+            shape(&plan),
+            vec![
+                ("checkout", "repo.checkout", vec![], vec!["repository:read"]),
+                (
+                    "commit_fixes",
+                    "repo.commit_fixes",
+                    vec!["checkout"],
+                    vec!["repository:write"]
+                ),
+            ]
+        );
+        assert!(plan.iter().all(|s| s.adapter == "github"));
+        assert_eq!(keys(&plan[0]), ["repository"]);
+        assert_eq!(
+            keys(&plan[1]),
+            [
+                "branch",
+                "expected_head_sha",
+                "message",
+                "pull_request",
+                "repository"
+            ]
+        );
+        assert_eq!(param(&plan[1], "branch"), Some("feat/docker"));
+        assert_eq!(param(&plan[1], "expected_head_sha"), Some("abc123"));
+        assert_eq!(param(&plan[1], "pull_request"), Some("7"));
+        assert_eq!(
+            param(&plan[1], "message"),
+            Some("Apply 2 review fixes to #7\n")
+        );
+        assert_eq!(param(&plan[1], "repository"), Some("o/repo"));
+        assert!(plan[1].title.contains("2 review fixes in 1 file"));
+    }
+
+    #[test]
+    fn merge_plan_deletes_the_branch_only_when_given_one() {
+        let mut request = MergePlan {
+            repository: "o/repo",
+            pr_number: 12,
+            expected_head_sha: "abc123",
+            method: "squash",
+            delete_branch: None,
+        };
+        let plan = merge_plan(&request);
+        assert_eq!(
+            shape(&plan),
+            vec![
+                (
+                    "verify_mergeable",
+                    "repo.verify_mergeable",
+                    vec![],
+                    vec!["repository:read"]
+                ),
+                (
+                    "merge",
+                    "repo.merge_pull_request",
+                    vec!["verify_mergeable"],
+                    vec!["repository:write"]
+                ),
+            ]
+        );
+        assert_eq!(
+            keys(&plan[0]),
+            ["expected_head_sha", "pull_request", "repository"]
+        );
+        assert_eq!(
+            keys(&plan[1]),
+            [
+                "expected_head_sha",
+                "merge_method",
+                "pull_request",
+                "repository"
+            ]
+        );
+        assert_eq!(param(&plan[1], "merge_method"), Some("squash"));
+        assert_eq!(param(&plan[1], "pull_request"), Some("12"));
+        assert_eq!(param(&plan[0], "expected_head_sha"), Some("abc123"));
+
+        request.delete_branch = Some("feat/x");
+        let plan = merge_plan(&request);
+        assert_eq!(plan.len(), 3);
+        assert_eq!(
+            shape(&plan)[2],
+            (
+                "delete_branch",
+                "repo.delete_branch",
+                vec!["merge"],
+                vec!["repository:write"]
+            )
+        );
+        assert_eq!(keys(&plan[2]), ["branch", "pull_request", "repository"]);
+        assert_eq!(param(&plan[2], "branch"), Some("feat/x"));
+        request.delete_branch = Some("  ");
+        assert_eq!(merge_plan(&request).len(), 2);
+    }
+
+    #[test]
+    fn dependabot_plan_follows_the_flags() {
+        let plan_for = |alerts, security_updates, config: bool| {
+            dependabot_plan(&DependabotPlan {
+                repository: "o/repo",
+                default_branch: "trunk",
+                alerts,
+                security_updates,
+                config_pull_request: config.then_some(("Add Dependabot", "Body")),
+            })
+        };
+        let key_list =
+            |plan: &[PlanStepData]| -> Vec<String> { plan.iter().map(|s| s.key.clone()).collect() };
+        assert_eq!(
+            key_list(&plan_for(true, false, false)),
+            ["checkout", "enable_security_updates"]
+        );
+        assert_eq!(
+            key_list(&plan_for(false, true, false)),
+            ["checkout", "enable_security_updates"]
+        );
+        assert_eq!(
+            key_list(&plan_for(false, false, true)),
+            ["checkout", "open_pull_request"]
+        );
+        let full = plan_for(true, true, true);
+        assert_eq!(
+            shape(&full),
+            vec![
+                ("checkout", "repo.checkout", vec![], vec!["repository:read"]),
+                (
+                    "enable_security_updates",
+                    "repo.enable_security_updates",
+                    vec!["checkout"],
+                    vec!["repository:admin"]
+                ),
+                (
+                    "open_pull_request",
+                    "repo.open_pull_request",
+                    vec!["enable_security_updates"],
+                    vec!["repository:write"]
+                ),
+            ]
+        );
+        assert_eq!(keys(&full[1]), ["alerts", "repository", "security_updates"]);
+        assert_eq!(param(&full[1], "alerts"), Some("true"));
+        assert_eq!(param(&full[1], "security_updates"), Some("true"));
+        let only_updates = plan_for(false, true, false);
+        assert_eq!(param(&only_updates[1], "alerts"), Some("false"));
+        assert_eq!(param(&only_updates[1], "security_updates"), Some("true"));
+        assert_eq!(param(&full[2], "branch"), Some("sdi/dependabot"));
+        assert_eq!(
+            param(&full[2], "skip_if_exists"),
+            Some(".github/dependabot.yml")
+        );
+        assert_eq!(param(&full[2], "base_branch"), Some("trunk"));
+        assert_eq!(param(&full[2], "title"), Some("Add Dependabot"));
+        assert_eq!(param(&full[2], "body"), Some("Body"));
+        // Without the settings step the pull request follows the checkout.
+        assert_eq!(plan_for(false, false, true)[1].depends_on, ["checkout"]);
+        assert!(full.iter().all(|s| s.adapter == "github"));
     }
 
     #[test]

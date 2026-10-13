@@ -40,11 +40,23 @@ async fn main() -> Result<()> {
         &settings.identity_url,
     )?));
     if settings.reasoner.api_key.is_some() || !settings.reasoner.base_url.is_empty() {
-        tracing::info!(
-            provider = %crate::reasoner::Provider::parse(&settings.reasoner.provider, &settings.reasoner.base_url).label(),
-            model = %settings.reasoner.model,
-            "LLM_* / ANTHROPIC_* set: dev fallback for workspaces that allow the reasoner but configured none"
+        let provider = crate::reasoner::Provider::parse(
+            &settings.reasoner.provider,
+            &settings.reasoner.base_url,
         );
+        let model = settings.reasoner.model_for(&provider);
+        if model.is_empty() {
+            tracing::warn!(
+                provider = %provider.label(),
+                "LLM_PROVIDER is set without LLM_MODEL: there is no default model for this provider, so the model is not called until one is named (LLM_MODEL, or Settings in the app)"
+            );
+        } else {
+            tracing::info!(
+                provider = %provider.label(),
+                model = %model,
+                "LLM_* / ANTHROPIC_* set: dev fallback for workspaces that allow the reasoner but configured none"
+            );
+        }
     }
     let reasoner = grpc::ReasonerConfig {
         env: settings.reasoner.clone(),
@@ -63,7 +75,11 @@ async fn main() -> Result<()> {
     }
     let service = grpc::IntelligenceGrpc::new(pool, knowledge, execution, identity, reasoner)
         .with_github_dev_token(github_token)
-        .with_osv(osv);
+        .with_osv(osv)
+        .with_pr_watch_seconds(settings.pr_watch_seconds);
+    // The pull request watcher (CONTRACT.md §23.1) runs on a clone of the
+    // service: same pool, same peers, same event bus. It ends with the process.
+    let _watcher = grpc::watcher::spawn(service.clone(), settings.pr_watch_seconds);
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<IntelligenceServiceServer<grpc::IntelligenceGrpc>>()
@@ -76,5 +92,9 @@ async fn main() -> Result<()> {
         .serve_with_shutdown(settings.listen, sdi_common::shutdown::signal())
         .await
         .context("gRPC server failed")?;
+
+    // The watcher stops at the shutdown signal; a look in flight is dropped.
+    let abandoned = sdi_common::tasks::shutdown(sdi_common::config::shutdown_grace()).await;
+    tracing::info!(abandoned, "intelligence service stopped");
     Ok(())
 }

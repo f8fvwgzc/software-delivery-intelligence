@@ -13,6 +13,7 @@ export const routes = {
       ? `/projects/${projectId}/code/${path.split('/').map(encodeURIComponent).join('/')}`
       : `/projects/${projectId}/code`,
   projectDependencies: (projectId: string) => `/projects/${projectId}/dependencies`,
+  projectSecurity: (projectId: string) => `/projects/${projectId}/security`,
   projectDelivery: (projectId: string) => `/projects/${projectId}/delivery`,
   projectPipeline: (projectId: string) => `/projects/${projectId}/pipeline`,
   projectProposals: (projectId: string) => `/projects/${projectId}/proposals`,

@@ -7,13 +7,16 @@ import { applySettingsPatch } from '../lib/settings'
 import { settingsKeys } from './keys'
 import type { Settings, UpdateSettingsRequest } from './queries'
 
+/** The sections of the page; each one's save says which one it was. */
+export type SettingsSection = 'Scanner' | 'Ranking' | 'Automation'
+
 /**
- * `PATCH /settings` for one section (or both). The cache flips at once and
- * rolls back if the gateway refuses; the response then replaces it, since
- * a service may normalise what it was sent. Each form calls this hook
- * itself so its Save button has its own `isPending`.
+ * `PATCH /settings` for one section. The cache flips at once and rolls back
+ * if the gateway refuses; the response then replaces it, since a service
+ * may normalise what it was sent. Each form calls this hook itself so its
+ * Save button has its own `isPending`.
  */
-export function useUpdateSettings() {
+export function useUpdateSettings(section: SettingsSection) {
   const queryClient = useQueryClient()
   const key = settingsKeys.settings()
 
@@ -28,10 +31,9 @@ export function useUpdateSettings() {
     onError: (_error, _patch, context) => {
       if (context?.previous) queryClient.setQueryData(key, context.previous)
     },
-    onSuccess: (settings, patch) => {
+    onSuccess: (settings) => {
       queryClient.setQueryData(key, settings)
-      const section = patch.knowledge && patch.intelligence ? 'Settings' : patch.knowledge ? 'Scanner settings' : 'Ranking settings'
-      toast.success(`${section} saved`)
+      toast.success(`${section} settings saved`)
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: settingsKeys.all })

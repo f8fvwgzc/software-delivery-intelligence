@@ -96,19 +96,8 @@ export function formatLeadTime(seconds: number) {
   return hours > 0 ? `${days}d ${hours}h` : `${days}d`
 }
 
-/**
- * Environment and deployer URLs are typed by people: only `http(s)` ones
- * become links, so nothing like `javascript:` ever reaches an `href`.
- */
-export function safeHttpUrl(value: string | null | undefined): string | undefined {
-  if (!value) return undefined
-  try {
-    const url = new URL(value)
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined
-  } catch {
-    return undefined
-  }
-}
+/** Environment and deployer URLs are typed by people: only `http(s)` ones become links. */
+export { safeHttpUrl } from '@/lib/urls'
 
 /** `https://staging.example.com/app` → `staging.example.com`. */
 export function hostOf(url: string) {

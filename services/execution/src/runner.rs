@@ -59,6 +59,9 @@ const LOG_WINDOW: Duration = Duration::from_millis(50);
 const LOG_CHANNEL: usize = 4096;
 /// Outputs a step may report while it runs before the oldest waits.
 const PROGRESS_CHANNEL: usize = 16;
+/// Characters of the tool's first line a diagnosis may quote: enough for a
+/// sentence that names a pull request, a commit and ten checks.
+const DETAIL_CHARS: usize = 600;
 
 pub type Reply = oneshot::Sender<Result<(), Status>>;
 
@@ -139,8 +142,9 @@ pub struct Runtime {
     pub platform: PlatformEvents,
     /// How long the simulated verification phase takes.
     pub verify_delay: Duration,
-    /// Whether `GITHUB_TOKEN` is configured: decides if a new workspace gets
-    /// the `github-token` identity (CONTRACT.md §5.3).
+    /// Whether `GITHUB_TOKEN` is configured. With it every workspace gets
+    /// the `github-token` identity; without it a workspace gets one when it
+    /// has GitHub access of its own (CONTRACT.md §5.3).
     pub github_token: bool,
     /// Per-workspace GitHub access for the real adapters (CONTRACT.md §18).
     pub github_access: Arc<dyn GithubAccessSource>,
@@ -148,13 +152,27 @@ pub struct Runtime {
     pub delivery: Delivery,
     runners: Mutex<HashMap<Uuid, mpsc::Sender<Command>>>,
     /// Workspaces whose policy and identity seed was checked this process.
-    /// Bounded: past `SEEDED_MAX` entries the set is cleared, and the seed
+    /// Bounded: past `SEEDED_MAX` entries the map is cleared, and the seed
     /// (idempotent) simply runs again for the next request.
-    seeded: Mutex<HashSet<Uuid>>,
+    seeded: Mutex<HashMap<Uuid, Seeded>>,
 }
 
-/// Workspaces remembered as seeded before the set is reset.
+/// What a workspace's last seed left behind.
+#[derive(Debug, Clone, Copy)]
+enum Seeded {
+    /// Policies and every identity, the `github-token` one included.
+    Complete,
+    /// Everything but the `github-token` identity: the workspace had no
+    /// GitHub access when it was checked. Looked at again after
+    /// `GITHUB_RECHECK`, so installing the App or signing in later is
+    /// noticed without a restart.
+    WithoutGithub(std::time::Instant),
+}
+
+/// Workspaces remembered as seeded before the map is reset.
 const SEEDED_MAX: usize = 10_000;
+/// How long "this workspace has no GitHub access" is believed.
+const GITHUB_RECHECK: Duration = Duration::from_secs(5 * 60);
 
 impl Runtime {
     /// A runtime without the delivery peers: the delivery RPCs that need
@@ -204,7 +222,7 @@ impl Runtime {
             github_access,
             delivery,
             runners: Mutex::new(HashMap::new()),
-            seeded: Mutex::new(HashSet::new()),
+            seeded: Mutex::new(HashMap::new()),
         })
     }
 
@@ -218,19 +236,26 @@ impl Runtime {
     /// workspace on its first use. Checked once per process per workspace;
     /// the seed itself is idempotent.
     pub async fn ensure_workspace(&self, workspace_id: Uuid) -> Result<(), Status> {
-        if self
+        let known = self
             .seeded
             .lock()
             .expect("seeded lock")
-            .contains(&workspace_id)
-        {
-            return Ok(());
+            .get(&workspace_id)
+            .copied();
+        match known {
+            Some(Seeded::Complete) => return Ok(()),
+            Some(Seeded::WithoutGithub(at)) if at.elapsed() < GITHUB_RECHECK => return Ok(()),
+            _ => {}
         }
+        // The instance-wide token covers every workspace. Without it the
+        // workspace's own access decides: an installed App or a signed-in
+        // account (asked of identity, which caches what it mints).
+        let github = self.github_token || self.github_access.access(workspace_id).await.is_some();
         let mut tx = self.pool.begin().await.map_err(db_status)?;
         db::policies::seed(&mut tx, workspace_id)
             .await
             .map_err(db_status)?;
-        db::identities::seed(&mut tx, workspace_id, self.github_token)
+        db::identities::seed(&mut tx, workspace_id, github)
             .await
             .map_err(db_status)?;
         tx.commit().await.map_err(db_status)?;
@@ -238,7 +263,14 @@ impl Runtime {
         if seeded.len() >= SEEDED_MAX {
             seeded.clear();
         }
-        seeded.insert(workspace_id);
+        seeded.insert(
+            workspace_id,
+            if github {
+                Seeded::Complete
+            } else {
+                Seeded::WithoutGithub(std::time::Instant::now())
+            },
+        );
         Ok(())
     }
 
@@ -1417,12 +1449,13 @@ impl Runner {
             .await?;
         batch.commit(&self.rt).await?;
 
+        let (params, repository_note) = self.params_with_repository(exec, step).await;
         let input = StepInput {
             key: step.key.clone(),
             title: step.title.clone(),
             action_type: step.action_type.clone(),
             adapter: step.adapter.clone(),
-            params: step.params.0.clone(),
+            params,
             attempt: attempt.max(0) as u32,
         };
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_CHANNEL);
@@ -1464,6 +1497,9 @@ impl Runner {
             progress: OutputSink::new(progress_tx),
         };
         let fault_targets_step = ctx.fault.as_ref().is_some_and(|f| f.step_key == step.key);
+        if let Some(note) = repository_note {
+            ctx.logs.line(note);
+        }
 
         // The adapter future lives in this block so that leaving it (cancel)
         // drops it, which kills whatever child process it was waiting on.
@@ -1564,6 +1600,55 @@ impl Runner {
                 batch.commit(&self.rt).await?;
                 Ok(Flow::Continue)
             }
+        }
+    }
+
+    /// The step's params as its adapter gets them. A step of the github
+    /// family acts on the repository of the execution's project (CONTRACT.md
+    /// §23.5): when the plan does not name it (`params.repo`), knowledge is
+    /// asked, as the workspace's system principal like all background work.
+    /// The second value is a line for the step's log when it could not say;
+    /// the adapter then fails the step for the missing parameter.
+    async fn params_with_repository(
+        &self,
+        exec: &ExecutionRow,
+        step: &StepRow,
+    ) -> (BTreeMap<String, String>, Option<String>) {
+        let mut params = step.params.0.clone();
+        let named = ["repo", "repository"]
+            .iter()
+            .any(|key| params.get(*key).is_some_and(|v| !v.trim().is_empty()));
+        if named
+            || exec.adapter == adapters::SIMULATED
+            || exec.adapter == adapters::DELIVERY
+            || !adapters::GITHUB_ACTIONS.contains(&step.action_type.as_str())
+            || exec.project_id.trim().is_empty()
+        {
+            return (params, None);
+        }
+        let principal = Principal::system(self.workspace.to_string());
+        match self
+            .rt
+            .delivery
+            .projects
+            .project(&principal, exec.project_id.trim())
+            .await
+        {
+            Ok(project) if !project.repo_full_name.trim().is_empty() => {
+                params.insert("repo".to_owned(), project.repo_full_name.trim().to_owned());
+                (params, None)
+            }
+            Ok(_) => (
+                params,
+                Some("the execution's project has no repository on record".to_owned()),
+            ),
+            Err(status) => (
+                params,
+                Some(format!(
+                    "could not look up the repository of the execution's project: {}",
+                    status.message()
+                )),
+            ),
         }
     }
 
@@ -1797,7 +1882,7 @@ impl Runner {
             .find(|line| !line.is_empty())
             .unwrap_or_default()
             .chars()
-            .take(300)
+            .take(DETAIL_CHARS)
             .collect();
         let failed = FailedStep {
             title: step.map(|s| s.title.as_str()).unwrap_or(&record.step_key),

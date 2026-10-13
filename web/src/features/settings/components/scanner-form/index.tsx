@@ -43,7 +43,7 @@ function toPatch(draft: Draft, settings: KnowledgeSettings): KnowledgeSettingsPa
 export function ScannerForm({ settings }: { settings: KnowledgeSettings }) {
   const id = useId()
   const [draft, setDraft] = useState<Draft>(() => toDraft(settings))
-  const update = useUpdateSettings()
+  const update = useUpdateSettings('Scanner')
 
   const patch = toPatch(draft, settings)
   const valid = patch !== null

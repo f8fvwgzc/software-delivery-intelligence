@@ -857,6 +857,32 @@ fn garbage_files_do_not_panic() {
     assert!(a.facts.iter().any(|f| f.key == "iac:terraform"));
 }
 
+/// GitHub reads `.github/dependabot.yaml` as well as `.yml`; so does the
+/// scan, whether it holds the file's content or only sees it in the tree.
+#[test]
+fn dependabot_is_found_under_either_file_name() {
+    let config = "version: 2\nupdates:\n  - package-ecosystem: npm\n    directory: /\n    schedule:\n      interval: weekly\n  - package-ecosystem: github-actions\n    directory: /\n    schedule:\n      interval: weekly\n";
+    for path in [".github/dependabot.yml", ".github/dependabot.yaml"] {
+        let read = analyze(&snapshot("x/y", &[(path, config)], &[]));
+        assert!(read.dependabot.configured, "{path}");
+        assert_eq!(read.dependabot.config_path, path);
+        assert_eq!(
+            read.dependabot.ecosystems,
+            ["npm", "github-actions"],
+            "{path}"
+        );
+        assert!(fact(&read, "security:dependabot").is_some(), "{path}");
+
+        let listed = analyze(&snapshot("x/y", &[], &[path]));
+        assert!(listed.dependabot.configured, "{path} in the tree only");
+        assert_eq!(listed.dependabot.config_path, path);
+        assert!(listed.dependabot.ecosystems.is_empty());
+    }
+    let none = analyze(&snapshot("x/y", &[("README.md", "# x")], &[]));
+    assert!(!none.dependabot.configured);
+    assert!(fact(&none, "security:dependabot").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2: legacy and mixed codebases
 // ---------------------------------------------------------------------------

@@ -9,6 +9,13 @@
 //! also expires after [`TTL`]: a list nobody asked about for an hour is
 //! not worth the memory, and a body that old is re-fetched rather than
 //! trusted against a stale ETag.
+//!
+//! A cache may also be given a byte budget ([`EtagCache::with_budget`]):
+//! then no single body larger than the per-entry limit is kept, and the
+//! oldest entries go until the total fits. The client's second cache, the
+//! one holding decoded slices of the pull request calls (CONTRACT.md §23),
+//! is bounded that way, because its entries are many and of very different
+//! sizes.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -31,6 +38,11 @@ pub struct Entry {
 pub struct EtagCache {
     capacity: usize,
     ttl: Duration,
+    /// Largest body one entry may hold; a larger one is not cached.
+    max_entry_bytes: usize,
+    /// Most body bytes held at once, across every entry.
+    max_total_bytes: usize,
+    total_bytes: usize,
     entries: HashMap<String, Entry>,
     /// Insertion order; the front is evicted first.
     order: VecDeque<String>,
@@ -51,8 +63,22 @@ impl EtagCache {
         Self {
             capacity: capacity.max(1),
             ttl,
+            max_entry_bytes: usize::MAX,
+            max_total_bytes: usize::MAX,
+            total_bytes: 0,
             entries: HashMap::new(),
             order: VecDeque::new(),
+        }
+    }
+
+    /// A cache bounded by bytes as well as by entries: a body over
+    /// `max_entry_bytes` is never kept, and the oldest entries are evicted
+    /// until everything held fits `max_total_bytes`.
+    pub fn with_budget(capacity: usize, max_entry_bytes: usize, max_total_bytes: usize) -> Self {
+        Self {
+            max_entry_bytes: max_entry_bytes.min(max_total_bytes),
+            max_total_bytes,
+            ..Self::new(capacity)
         }
     }
 
@@ -65,7 +91,14 @@ impl EtagCache {
     /// Forgets `url` when its entry expired.
     fn expire(&mut self, url: &str) {
         if self.entries.contains_key(url) && !self.live(url) {
-            self.entries.remove(url);
+            self.forget(url);
+        }
+    }
+
+    /// Drops one entry and its place in the eviction order.
+    fn forget(&mut self, url: &str) {
+        if let Some(entry) = self.entries.remove(url) {
+            self.total_bytes -= entry.body.len();
             self.order.retain(|u| u != url);
         }
     }
@@ -76,6 +109,11 @@ impl EtagCache {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Body bytes held right now.
+    pub fn bytes(&self) -> usize {
+        self.total_bytes
     }
 
     pub fn get(&mut self, url: &str) -> Option<&Entry> {
@@ -89,33 +127,49 @@ impl EtagCache {
     }
 
     /// Stores a fresh body. Re-inserting a known url refreshes it in place
-    /// without consuming another slot.
+    /// without consuming another slot. A body over the per-entry limit is
+    /// not stored, and whatever was held for that url is dropped (its ETag
+    /// no longer describes anything this cache can serve).
     pub fn insert(&mut self, url: &str, etag: &str, body: Vec<u8>) {
         if etag.is_empty() {
             return;
         }
-        if let Some(entry) = self.entries.get_mut(url) {
-            // A refresh keeps its slot; only a new url can push something out.
-            entry.etag = etag.to_owned();
-            entry.body = body;
-            entry.at = Instant::now();
-            self.order.retain(|u| u != url);
-            self.order.push_back(url.to_owned());
+        if body.len() > self.max_entry_bytes {
+            self.forget(url);
             return;
         }
+        // A refresh keeps its slot; only a new url can push something out
+        // of the entry limit. Either may push older entries out of the byte
+        // budget, so the old body leaves the total first.
+        self.forget(url);
         // Expired entries go before anything live is pushed out.
-        if self.entries.len() >= self.capacity {
+        if self.entries.len() >= self.capacity
+            || self.total_bytes + body.len() > self.max_total_bytes
+        {
             let ttl = self.ttl;
-            self.entries.retain(|_, entry| entry.at.elapsed() < ttl);
+            let mut freed = 0;
+            self.entries.retain(|_, entry| {
+                let live = entry.at.elapsed() < ttl;
+                if !live {
+                    freed += entry.body.len();
+                }
+                live
+            });
+            self.total_bytes -= freed;
             let entries = &self.entries;
             self.order.retain(|u| entries.contains_key(u));
         }
-        while self.entries.len() >= self.capacity {
+        while self.entries.len() >= self.capacity
+            || self.total_bytes + body.len() > self.max_total_bytes
+        {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
-            self.entries.remove(&oldest);
+            if let Some(entry) = self.entries.remove(&oldest) {
+                self.total_bytes -= entry.body.len();
+            }
         }
+        self.total_bytes += body.len();
         self.order.push_back(url.to_owned());
         self.entries.insert(
             url.to_owned(),
@@ -130,13 +184,22 @@ impl EtagCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.total_bytes = 0;
     }
 
     /// Drops every entry whose key starts with `prefix` (one workspace's
     /// slice of the cache). Returns how many went.
     pub fn remove_prefix(&mut self, prefix: &str) -> usize {
         let before = self.entries.len();
-        self.entries.retain(|url, _| !url.starts_with(prefix));
+        let mut freed = 0;
+        self.entries.retain(|url, entry| {
+            let keep = !url.starts_with(prefix);
+            if !keep {
+                freed += entry.body.len();
+            }
+            keep
+        });
+        self.total_bytes -= freed;
         self.order.retain(|url| !url.starts_with(prefix));
         before - self.entries.len()
     }
@@ -219,5 +282,38 @@ mod tests {
         assert_eq!(cache.len(), CAPACITY);
         assert!(cache.get("u0").is_none());
         assert!(cache.get(&format!("u{}", CAPACITY * 2 - 1)).is_some());
+    }
+
+    #[test]
+    fn a_byte_budget_bounds_the_total_and_refuses_oversized_bodies() {
+        // Four entries at most, 10 bytes each at most, 25 bytes in all.
+        let mut cache = EtagCache::with_budget(4, 10, 25);
+        cache.insert("a", "\"1\"", vec![0; 10]);
+        cache.insert("b", "\"2\"", vec![0; 10]);
+        assert_eq!((cache.len(), cache.bytes()), (2, 20));
+
+        // A third 10-byte body does not fit next to both: the oldest goes.
+        cache.insert("c", "\"3\"", vec![0; 10]);
+        assert_eq!((cache.len(), cache.bytes()), (2, 20));
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_some() && cache.get("c").is_some());
+
+        // Too large for one entry: not kept, and what was held for that
+        // url is dropped rather than left to answer a stale ETag.
+        cache.insert("c", "\"3b\"", vec![0; 11]);
+        assert!(cache.get("c").is_none());
+        assert_eq!((cache.len(), cache.bytes()), (1, 10));
+
+        // A refresh replaces the body in the total instead of adding to it.
+        cache.insert("b", "\"2b\"", vec![0; 4]);
+        assert_eq!((cache.len(), cache.bytes()), (1, 4));
+        assert_eq!(cache.etag("b").as_deref(), Some("\"2b\""));
+
+        // Removing a slice and clearing both give the bytes back.
+        cache.insert("ws|x", "\"4\"", vec![0; 6]);
+        assert_eq!(cache.remove_prefix("ws|"), 1);
+        assert_eq!(cache.bytes(), 4);
+        cache.clear();
+        assert_eq!((cache.len(), cache.bytes()), (0, 0));
     }
 }

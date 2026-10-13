@@ -188,7 +188,7 @@ export function syntheticReview(files: number, seed = 4): Review {
     for (let item = 0; item < perFile; item++) {
       const line = 1 + Math.floor(random() * 400)
       const category = pick(random, CATEGORIES)
-      findings.push({
+      const finding: Finding = {
         id: `finding-${file}-${item}`,
         reviewId: 'stress-review',
         path,
@@ -200,11 +200,18 @@ export function syntheticReview(files: number, seed = 4): Review {
         title: `${pick(random, ['Unpinned', 'Unchecked', 'Hard-coded', 'Missing', 'Unused'])} ${pick(random, WORDS)} in ${path.slice(path.lastIndexOf('/') + 1)}`,
         detail: `The analyzer saw \`${pick(random, WORDS)}\` at line ${line}. **Fix:** ${pick(random, ['pin the version', 'add a check', 'read it from the environment', 'add a test', 'remove it'])}.`,
         suggestion: random() < 0.5 ? `${pick(random, WORDS)}(${pick(random, WORDS)}, { safe: true })` : null,
+        suggestionSource: null,
+        canDraftFix: false,
+        fixExecutionId: null,
         decision: random() < 0.15 ? 'accepted' : 'pending',
         decidedBy: null,
         decidedAt: null,
         decisionNote: null,
-      })
+      }
+      // The analyzer wrote the suggestions that exist; the model can be asked for the rest, except about a secret.
+      finding.suggestionSource = finding.suggestion ? 'rule' : null
+      finding.canDraftFix = !finding.suggestion && category !== 'secrets'
+      findings.push(finding)
     }
   }
   return {
@@ -233,6 +240,9 @@ export function syntheticReview(files: number, seed = 4): Review {
     updatedAt: new Date(START + 60_000).toISOString(),
     publishedUrl: null,
     error: null,
+    fixExecutionId: null,
+    mergeExecutionId: null,
+    fixesReady: findings.filter((finding) => finding.decision === 'accepted' && finding.suggestion).length,
   }
 }
 

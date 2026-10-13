@@ -327,6 +327,13 @@ message DataControls {
   // Days to keep audit entries. 0 keeps forever.
   uint32 audit_retention_days = 8;
   google.protobuf.Timestamp updated_at = 9;
+  // Whether source lines may be sent to the model so it can write a fix
+  // (CONTRACT.md §19, §23): "off" (default) | "changed_lines" (the lines a
+  // finding points at plus a few around them, from the pull request under
+  // review; never a whole file, never a line a secrets rule matched).
+  // Only has an effect while `reasoner` is not "off". Empty in an update
+  // keeps the stored value (the one field of this message that may be left out).
+  string code_to_model = 10;
 }
 
 message GetDataControlsRequest {

@@ -1,19 +1,48 @@
 #!/usr/bin/env bash
 # Runs every service (and the web app) on the host with live reload-free
 # cargo builds. Ctrl-C stops all of them.
+#
+#   ./scripts/dev.sh             build, then run the services and the web app
+#   ./scripts/dev.sh --no-web    services only
+#   ./scripts/dev.sh --no-build  run the binaries already in target/debug
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+with_web=1
+with_build=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-web) with_web=0 ;;
+    --no-build) with_build=0 ;;
+    *) echo "unknown option: $arg (known: --no-web, --no-build)" >&2; exit 2 ;;
+  esac
+done
+
+# Missing tools, a signed-out gh or a half-configured model are reported
+# here, with the command that fixes each, instead of as a build error later.
+./scripts/doctor.sh --quiet
 
 export DATABASE_URL="${DATABASE_URL:-postgres://sdi:sdi@127.0.0.1:5440/sdi}"
 export RUST_LOG="${RUST_LOG:-info,sqlx=warn,tower_http=info}"
 
-if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-  export GITHUB_TOKEN="$(gh auth token)"
-  echo "GITHUB_TOKEN taken from gh auth"
-fi
-
 if [[ -f .env ]]; then
   set -a; source .env; set +a
+fi
+
+# No token in the environment or in .env: use the gh login. For GitHub
+# Enterprise Server (GITHUB_API_URL=https://<host>/api/v3) that is the login
+# for that host. The token is exported to the services and never printed.
+if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null; then
+  gh_host=""
+  if [[ -n "${GITHUB_API_URL:-}" ]]; then
+    gh_host="$(printf '%s' "$GITHUB_API_URL" | sed -E 's#^[a-z]+://([^/:]+).*#\1#')"
+    [[ "$gh_host" == "api.github.com" ]] && gh_host=""
+  fi
+  if token="$(gh auth token ${gh_host:+--hostname "$gh_host"} 2>/dev/null)" && [[ -n "$token" ]]; then
+    export GITHUB_TOKEN="$token"
+    echo "GITHUB_TOKEN taken from gh auth${gh_host:+ ($gh_host)}"
+  fi
+  unset token gh_host
 fi
 
 # Identity (CONTRACT.md §18). Without a registered GitHub OAuth app,
@@ -48,15 +77,38 @@ mkdir -p "$SDI_RUN_DIR"
 
 # Refuse to start on top of a previous stack: a half-bound set of services is
 # worse than a clear message.
+port_in_use() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$1\$"
+  else
+    return 1
+  fi
+}
 for port in 8080 5173 50051 50052 50053 50054; do
-  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+  if port_in_use "$port"; then
     echo "port $port is already in use (an earlier stack is still running)." >&2
     echo "stop it with: pkill -f scripts/dev.sh; pkill -f target/debug/sdi-; pkill -f vite" >&2
     exit 1
   fi
 done
 
-cargo build --workspace
+# A fresh clone has no web dependencies yet; install them once, from the lockfile.
+if [[ $with_web -eq 1 && ! -d web/node_modules ]]; then
+  (cd web && pnpm install --frozen-lockfile)
+fi
+
+if [[ $with_build -eq 1 ]]; then
+  cargo build --workspace
+else
+  for svc in identity knowledge intelligence execution gateway; do
+    if [[ ! -x target/debug/sdi-$svc ]]; then
+      echo "target/debug/sdi-$svc is missing: run without --no-build once." >&2
+      exit 1
+    fi
+  done
+fi
 
 pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
@@ -68,7 +120,7 @@ for svc in identity knowledge intelligence execution gateway; do
   sleep 0.3
 done
 
-if [[ "${1:-}" != "--no-web" ]]; then
+if [[ $with_web -eq 1 ]]; then
   (cd web && pnpm dev) &
   pids+=($!)
 fi

@@ -34,7 +34,7 @@ permission for. What changes is that the step's side effect is real.
 |---|---|---|
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
 | `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/`, `container.build` runs `docker build`, `container.run` starts the image detached with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, `env.destroy_temporary` stops and removes everything; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
-| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal-id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url` | `repo.checkout`, `repo.open_pull_request` |
+| `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal-id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Also runs the pull request operations below | `repo.checkout`, `repo.open_pull_request`, `repo.commit_fixes`, `repo.verify_mergeable`, `repo.merge_pull_request`, `repo.delete_branch`, `repo.enable_security_updates` |
 | `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
 
 `CreateExecutionRequest.adapter` picks the runtime for the whole run; each
@@ -49,7 +49,7 @@ open a PR) as long as the chosen runtime is not `simulated`.
 |---|---|---|
 | `simulated` | `repository:read`, `container:build`, `environment:write` | always |
 | `local-docker` | the above plus `container:run` | always |
-| `github-token` | `repository:read`, `repository:write` | only while `GITHUB_TOKEN` is configured (it *is* the connected token) |
+| `github-token` | `repository:read`, `repository:write`, `pipeline:trigger` | only while the workspace has GitHub access: the installed GitHub App, the signed-in account, or the instance's `GITHUB_TOKEN` |
 
 Anything else is a time-boxed grant (default 30 minutes):
 
@@ -181,14 +181,74 @@ Nothing is pushed to the default branch, ever.
   `artifactCount` per option; the files themselves are at
   `GET /proposals/{id}/options/{optionId}/artifacts`.
 
+## Pull request operations
+
+Three more plans run on the `github` adapter (`CONTRACT.md` §23). Each is
+an ordinary execution: you can watch it, approve it, cancel it, and it
+stops with a diagnosis when GitHub refuses.
+
+**Apply review fixes** (`POST /reviews/{id}/apply-fixes`)
+
+```
+repo.checkout ─▶ repo.commit_fixes
+```
+
+`repo.commit_fixes` (medium, **approval**) adds one commit to the pull
+request's own branch with the accepted suggestions applied. It never
+force-pushes: if someone pushed in the meantime the step fails `HEAD_MOVED`
+and nothing is written. Pull requests from forks are refused before a run
+is created, because the branch is not ours to write to; publish the review
+instead and the author applies the suggestions.
+
+**Merge** (`POST /projects/{id}/pull-requests/{number}/merge`)
+
+```
+repo.verify_mergeable ─▶ repo.merge_pull_request ─▶ repo.delete_branch (optional)
+```
+
+| step | what happens | policy default |
+|---|---|---|
+| `repo.verify_mergeable` | reads the pull request again: same head as approved, no conflict, every check green, not blocked by branch protection | safe, auto |
+| `repo.merge_pull_request` | merges with the chosen method and the approved head SHA, so GitHub refuses if the branch moved | high, **approval** |
+| `repo.delete_branch` | deletes the merged branch when you asked for it and it lives in the same repository | medium, auto |
+
+Branch protection stays in charge: SDI merges through the normal API, so a
+required review or status check that is missing makes GitHub refuse and
+the step stops as `MERGE_BLOCKED` with GitHub's own words. To let merges
+run without a person approving each one, set the `repo.merge_pull_request`
+policy to `auto` on the Policies page. That is the only switch that does it.
+
+**Turn on Dependabot** (`POST /projects/{id}/security/dependabot`)
+
+```
+repo.checkout ─▶ repo.enable_security_updates ─▶ repo.open_pull_request
+```
+
+`repo.enable_security_updates` (medium, **approval**) switches on
+Dependabot alerts and security updates in the repository's settings. It
+needs `repository:admin`, which no identity holds by default: the first run
+pauses and asks for a timed grant. The last step opens a pull request that
+adds `.github/dependabot.yml`, and is skipped when the file is already
+there.
+
+| Failure | Meaning | What to do |
+|---|---|---|
+| `HEAD_MOVED` | the branch changed after you approved | review the new head, then ask again |
+| `MERGE_CONFLICT` | the branch conflicts with its base | update the branch, then retry |
+| `CHECKS_FAILING` | a check failed or is still running | retry when the checks are green |
+| `MERGE_BLOCKED` | GitHub refused (branch protection, draft, required review) | satisfy the rule on GitHub, then retry |
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `INVALID_ARGUMENT: step … needs adapter docker` on create | the chosen runtime cannot provide a step's tool family | pick `adapter: docker` (or `github`) for the run; `simulated` runs everything but mixes with nothing |
 | `PERMISSION_DENIED` at `container.run` | identity lacks `container:run` | use the `local-docker` identity or grant the permission with a TTL |
-| `PERMISSION_DENIED` at `repo.open_pull_request` | no `github-token` identity: `GITHUB_TOKEN` unset where execution runs | export it (`.env`, or `make up` with the variable set) and restart execution |
+| "this workspace has no GitHub access to act with" when a pull request, fix or merge run is created | the workspace has neither an installed GitHub App, a signed-in GitHub account, nor `GITHUB_TOKEN` where execution runs | install the App or sign in with GitHub; for a single-user setup export `GITHUB_TOKEN` (`make dev` takes it from `gh auth`) and restart execution. A workspace that gains access is noticed within five minutes |
 | `BUILD_FAILED` with "cannot connect to the Docker daemon" | no socket in the execution container | `make up-local-exec`, or set `DOCKER_HOST` |
 | `HEALTH_CHECK_FAILED` right after `container.run` | wrong `test.port`/`test.health_path`, or the app binds `127.0.0.1` inside its container | fix `.sdi.yml`; make the app listen on `0.0.0.0` |
 | GitHub answers 403 on the PR step | token lacks Contents/Pull requests write, or SSO is not authorised for the organisation | widen the token's scope; authorise it for the org |
 | PR opened against the wrong base | the scan is older than the default branch head | rescan, regenerate the proposal, open again |
+| `PERMISSION_DENIED` at `repo.enable_security_updates` | changing repository settings needs `repository:admin`, a timed grant, and a token whose account is an admin of the repository (the App needs Administration: write) | grant the permission on the paused run; use an admin's token |
+| The Security tab says alerts cannot be read | the token lacks the `repo` or `security_events` scope (classic), or "Dependabot alerts: read" (fine-grained, App) | `gh auth refresh -s security_events`, or add the permission; the tab falls back to an OSV lookup meanwhile |
+| Pull requests are not reviewed on their own | automatic review is off for the workspace, or the watcher is disabled (`SDI_PR_WATCH_SECONDS=0`) | Settings, Automation; the same panel shows when the watcher last ran and why it failed |

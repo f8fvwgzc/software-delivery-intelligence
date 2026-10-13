@@ -12,6 +12,7 @@ pub mod types;
 
 use std::{
     collections::VecDeque,
+    hash::{Hash, Hasher},
     io::{Seek, Write},
     sync::{Arc, Mutex},
     time::Duration,
@@ -22,7 +23,7 @@ use reqwest::{
     Response, StatusCode,
     header::{ACCEPT, ETAG, HeaderMap, HeaderValue, IF_NONE_MATCH},
 };
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 use cache::EtagCache;
 pub use token::{AccessKind, GithubAccess, TokenProvider};
@@ -43,6 +44,24 @@ const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 /// JSON calls are small; the archive download gets its own, longer budget.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const TARBALL_TIMEOUT: Duration = Duration::from_secs(180);
+/// Largest JSON body the pull request and security calls read. A page of a
+/// hundred alerts or a comparison with its file list is a few MB at worst;
+/// anything larger is refused instead of being buffered.
+pub const MAX_JSON_BYTES: usize = 16 << 20;
+/// The slim cache (decoded slices, see [`GithubClient::get_slim`]): entries
+/// held, the largest one kept, and the bytes held in all. A page of fifty
+/// pull requests is some tens of KB once reduced to the fields read here,
+/// so the budget covers thousands of polled projects.
+pub const SLIM_CAPACITY: usize = 8192;
+pub const SLIM_MAX_ENTRY_BYTES: usize = 2 << 20;
+pub const SLIM_MAX_TOTAL_BYTES: usize = 64 << 20;
+/// Pages of a hundred read of a head commit's check runs, of its commit
+/// statuses, and of a pull request's reviews. More than that is reported
+/// as [`Listed::more`], never silently cut: a merge is not judged on part
+/// of a list.
+pub const MAX_STATUS_PAGES: u32 = 5;
+/// Open Dependabot alerts read per repository (CONTRACT.md §23.4).
+pub const MAX_ALERTS: usize = 300;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
@@ -77,17 +96,72 @@ pub struct RawFile {
     pub content_length: Option<u64>,
 }
 
-/// Shared by every client the hub hands out: one HTTP client and one ETag
-/// cache (entries are keyed by workspace, so tenants never share a body).
+/// A value read through [`GithubClient::get_slim`].
+#[derive(Debug, Clone)]
+pub struct Slim<T> {
+    pub value: T,
+    /// GitHub answered `304 Not Modified`: the value is the cached one and
+    /// the request cost nothing against the rate limit.
+    pub not_modified: bool,
+    /// A hash of the fields this client reads. Two answers with the same
+    /// fingerprint are the same for every purpose here, however they were
+    /// obtained; stable within a process, never stored.
+    pub fingerprint: u64,
+}
+
+/// What [`GithubClient::pulls_listing`] read.
+#[derive(Debug, Clone)]
+pub struct PullListing {
+    pub pulls: Vec<Pull>,
+    /// Every page was a `304`: the poll cost no rate limit.
+    pub not_modified: bool,
+    /// Identifies this exact listing (see [`Slim::fingerprint`]): a caller
+    /// that already applied a listing with this fingerprint has nothing to
+    /// write.
+    pub fingerprint: u64,
+}
+
+/// A list read up to a page cap.
+#[derive(Debug, Clone, Default)]
+pub struct Listed<T> {
+    pub items: Vec<T>,
+    /// GitHub has more than were read.
+    pub more: bool,
+}
+
+/// The severity filters of the two passes of an alert listing, worst first.
+const ALERT_SEVERITY_PASSES: [&str; 2] = ["critical,high", "medium,low"];
+
+/// What [`GithubClient::dependabot_alerts`] read.
+#[derive(Debug, Clone, Default)]
+pub struct AlertListing {
+    pub alerts: Vec<Alert>,
+    /// GitHub has more open alerts than the limit that was read.
+    pub truncated: bool,
+}
+
+/// Shared by every client the hub hands out: one HTTP client and two ETag
+/// caches (entries are keyed by workspace, so tenants never share a body).
+/// `cache` holds GitHub's bodies as they came, for the lists the scanner
+/// and the delivery observer read. `slim` holds decoded slices for the
+/// calls that are polled per pull request (CONTRACT.md §23); it has its own
+/// budget so a burst of status checks can never evict a polled list.
 struct Shared {
     http: reqwest::Client,
     cache: Mutex<EtagCache>,
+    slim: Mutex<EtagCache>,
 }
 
 impl Shared {
     fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache> {
         // A poisoned cache only means a panic mid-insert; the data is still a cache.
         self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn slim(&self) -> std::sync::MutexGuard<'_, EtagCache> {
+        self.slim
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -123,6 +197,11 @@ impl Github {
             shared: Arc::new(Shared {
                 http,
                 cache: Mutex::new(EtagCache::default()),
+                slim: Mutex::new(EtagCache::with_budget(
+                    SLIM_CAPACITY,
+                    SLIM_MAX_ENTRY_BYTES,
+                    SLIM_MAX_TOTAL_BYTES,
+                )),
             }),
             tokens,
         })
@@ -159,16 +238,29 @@ impl Github {
         self.tokens.forget(workspace_id);
     }
 
-    /// Drops the workspace's ETag entries.
+    /// Holds `access` for the workspace as if identity had just minted it,
+    /// until it expires (tests and tools that run without identity).
+    pub fn remember_token(&self, workspace_id: Uuid, access: GithubAccess) {
+        self.tokens.remember(workspace_id, access);
+    }
+
+    /// Drops the workspace's ETag entries, of both caches.
     pub fn forget_cache(&self, workspace_id: Uuid) {
-        self.shared
-            .cache()
-            .remove_prefix(&cache_prefix(workspace_id));
+        let prefix = cache_prefix(workspace_id);
+        self.shared.cache().remove_prefix(&prefix);
+        self.shared.slim().remove_prefix(&prefix);
     }
 
     /// Entries currently cached across workspaces; for diagnostics.
     pub fn cached_entries(&self) -> usize {
         self.shared.cache().len()
+    }
+
+    /// Entries and body bytes of the slim cache across workspaces; for
+    /// diagnostics.
+    pub fn slim_cached(&self) -> (usize, usize) {
+        let slim = self.shared.slim();
+        (slim.len(), slim.bytes())
     }
 }
 
@@ -351,6 +443,91 @@ impl GithubClient {
     ) -> Result<T> {
         let bytes = self.get_bytes(path, query).await?;
         serde_json::from_slice(&bytes).map_err(|e| GithubError::Decode(e.to_string()))
+    }
+
+    /// A conditional GET that remembers the decoded value instead of the
+    /// body. GitHub's payloads carry far more than this client reads (a
+    /// pull request in a list is some 20 KB, of which a few hundred bytes
+    /// matter), and the calls of CONTRACT.md §23 are repeated per pull
+    /// request, per minute. So what sits next to the ETag is `T`
+    /// re-encoded: on a `304` it decodes back to the same `T`, at a
+    /// fraction of the memory.
+    ///
+    /// With the workspace's `cache_github` off the request is unconditional
+    /// and nothing is kept. The body is read up to [`MAX_JSON_BYTES`].
+    async fn get_slim<T>(&self, path: &str, query: &[(&str, String)]) -> Result<Slim<T>>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        self.get_slim_when(path, query, |_| true).await
+    }
+
+    /// [`get_slim`](Self::get_slim) that only remembers an answer `settled`
+    /// accepts. An answer GitHub itself calls unfinished is asked for again
+    /// plainly, never revalidated: a `304` to it would only confirm that
+    /// nothing is known yet.
+    async fn get_slim_when<T>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        settled: impl Fn(&T) -> bool,
+    ) -> Result<Slim<T>>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let use_cache = self.cache_enabled();
+        // The type is part of the key: one url is never decoded as two shapes.
+        let key = format!(
+            "{}{}|{}{}",
+            cache_prefix(self.workspace_id),
+            std::any::type_name::<T>(),
+            encode_path(path),
+            query_string(query)
+        );
+        let etag = if use_cache {
+            self.shared.slim().etag(&key)
+        } else {
+            None
+        };
+        let mut response = self
+            .request(path, query, etag.as_deref(), REQUEST_TIMEOUT)
+            .await?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            let cached = self.shared.slim().get(&key).map(|entry| entry.body.clone());
+            if let Some(body) = cached {
+                tracing::debug!(path, "GitHub 304, served from the slim cache");
+                let value = serde_json::from_slice(&body)
+                    .map_err(|e| GithubError::Decode(format!("cached {path}: {e}")))?;
+                return Ok(Slim {
+                    value,
+                    not_modified: true,
+                    fingerprint: fingerprint(&body),
+                });
+            }
+            // Only possible when the entry was evicted mid-request; fetch fresh.
+            response = self.request(path, query, None, REQUEST_TIMEOUT).await?;
+        }
+        let new_etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = read_bounded(response, MAX_JSON_BYTES, path).await?;
+        let value: T =
+            serde_json::from_slice(&body).map_err(|e| GithubError::Decode(e.to_string()))?;
+        let slim = serde_json::to_vec(&value).map_err(|e| GithubError::Decode(e.to_string()))?;
+        let fingerprint = fingerprint(&slim);
+        if use_cache
+            && let Some(new_etag) = new_etag
+            && settled(&value)
+        {
+            self.shared.slim().insert(&key, &new_etag, slim);
+        }
+        Ok(Slim {
+            value,
+            not_modified: false,
+            fingerprint,
+        })
     }
 
     /// Follows `page=` until a short page; `per_page` is already 100. Pages
@@ -556,20 +733,24 @@ impl GithubClient {
                 &[("ref", reference.to_owned())],
             )
             .await?;
-        match content.encoding.as_deref() {
-            Some("base64") => {
-                let raw: String = content
-                    .content
-                    .unwrap_or_default()
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                let bytes = STANDARD
-                    .decode(raw)
-                    .map_err(|e| GithubError::Decode(format!("{path}: {e}")))?;
-                Ok(String::from_utf8_lossy(&bytes).into_owned())
-            }
-            _ => Ok(content.content.unwrap_or_default()),
+        content_text(content, path)
+    }
+
+    /// A text file on the repository's default branch (no `ref`, so GitHub
+    /// picks the branch), or `None` when the path does not exist there.
+    /// Conditional like every list: asking again for an unchanged file
+    /// costs no quota.
+    pub async fn default_branch_file(
+        &self,
+        owner: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<Option<String>> {
+        let api_path = format!("/repos/{owner}/{name}/contents/{path}");
+        match self.get_slim::<Content>(&api_path, &[]).await {
+            Ok(content) => content_text(content.value, path).map(Some),
+            Err(GithubError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -737,12 +918,28 @@ impl GithubClient {
         state: &str,
         limit: usize,
     ) -> Result<Vec<Pull>> {
+        Ok(self.pulls_listing(owner, name, state, limit).await?.pulls)
+    }
+
+    /// [`pulls`](Self::pulls) with what a poller needs to know: whether
+    /// GitHub said nothing changed, and a fingerprint of the listing. Every
+    /// page is a conditional request, so polling an unchanged list costs
+    /// `304`s only (CONTRACT.md §23.1).
+    pub async fn pulls_listing(
+        &self,
+        owner: &str,
+        name: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<PullListing> {
         let path = format!("/repos/{owner}/{name}/pulls");
         let mut pulls = Vec::new();
+        let mut not_modified = true;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for page in 1..=20_u32 {
             let per_page = limit.saturating_sub(pulls.len()).clamp(1, 100);
-            let batch: Vec<Pull> = self
-                .get_json_cached(
+            let batch: Slim<Vec<Pull>> = self
+                .get_slim(
                     &path,
                     &[
                         ("state", state.to_owned()),
@@ -753,20 +950,260 @@ impl GithubClient {
                     ],
                 )
                 .await?;
-            let last = batch.len() < per_page;
-            pulls.extend(batch);
+            not_modified &= batch.not_modified;
+            batch.fingerprint.hash(&mut hasher);
+            let last = batch.value.len() < per_page;
+            pulls.extend(batch.value);
             if last || pulls.len() >= limit {
                 break;
             }
         }
         pulls.truncate(limit);
-        Ok(pulls)
+        Ok(PullListing {
+            pulls,
+            not_modified,
+            fingerprint: hasher.finish(),
+        })
     }
 
-    /// One pull request with its counters.
+    /// One pull request with its counters and, once GitHub has computed
+    /// it, its mergeability. Conditional: re-reading an unchanged pull
+    /// request costs no quota. The exception is an open pull request whose
+    /// `mergeable` is still `null`: GitHub computes it in the background
+    /// after the first read, so that answer is not kept and the next read
+    /// is a plain one.
     pub async fn pull(&self, owner: &str, name: &str, number: u64) -> Result<Pull> {
-        self.get_json(&format!("/repos/{owner}/{name}/pulls/{number}"), &[])
+        // Closed and merged pull requests keep `null` for good.
+        let settled = |pull: &Pull| pull.mergeable.is_some() || pull.state != "open";
+        Ok(self
+            .get_slim_when(
+                &format!("/repos/{owner}/{name}/pulls/{number}"),
+                &[],
+                settled,
+            )
+            .await?
+            .value)
+    }
+
+    /// Which merge methods the repository allows (CONTRACT.md §23.3).
+    pub async fn merge_settings(&self, owner: &str, name: &str) -> Result<RepoMergeSettings> {
+        Ok(self
+            .get_slim(&format!("/repos/{owner}/{name}"), &[])
+            .await?
+            .value)
+    }
+
+    /// The check runs of a commit (GitHub lists the latest run of every
+    /// check), at most [`MAX_STATUS_PAGES`] pages of a hundred.
+    pub async fn check_runs(&self, owner: &str, name: &str, sha: &str) -> Result<Listed<CheckRun>> {
+        let path = format!("/repos/{owner}/{name}/commits/{sha}/check-runs");
+        let mut listed = Listed {
+            items: Vec::new(),
+            more: true,
+        };
+        for page in 1..=MAX_STATUS_PAGES {
+            let batch: CheckRuns = self
+                .get_slim(
+                    &path,
+                    &[("per_page", "100".to_owned()), ("page", page.to_string())],
+                )
+                .await?
+                .value;
+            let short = batch.check_runs.len() < 100;
+            listed.items.extend(batch.check_runs);
+            // A short page ends the list; so does having as many as GitHub counted.
+            if short || (batch.total_count > 0 && listed.items.len() as u64 >= batch.total_count) {
+                listed.more = false;
+                break;
+            }
+        }
+        Ok(listed)
+    }
+
+    /// The commit statuses of a commit, the latest of every context, at
+    /// most [`MAX_STATUS_PAGES`] pages of a hundred.
+    pub async fn commit_statuses(
+        &self,
+        owner: &str,
+        name: &str,
+        sha: &str,
+    ) -> Result<Listed<CommitStatus>> {
+        let path = format!("/repos/{owner}/{name}/commits/{sha}/status");
+        let mut listed = Listed {
+            items: Vec::new(),
+            more: true,
+        };
+        for page in 1..=MAX_STATUS_PAGES {
+            let batch: CombinedStatus = self
+                .get_slim(
+                    &path,
+                    &[("per_page", "100".to_owned()), ("page", page.to_string())],
+                )
+                .await?
+                .value;
+            let short = batch.statuses.len() < 100;
+            listed.items.extend(batch.statuses);
+            if short || (batch.total_count > 0 && listed.items.len() as u64 >= batch.total_count) {
+                listed.more = false;
+                break;
+            }
+        }
+        Ok(listed)
+    }
+
+    /// The reviews of a pull request, oldest first, at most
+    /// [`MAX_STATUS_PAGES`] pages of a hundred. GitHub does not say how
+    /// many there are, so a last page that came back full counts as "more".
+    pub async fn pull_reviews(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u64,
+    ) -> Result<Listed<Review>> {
+        let path = format!("/repos/{owner}/{name}/pulls/{number}/reviews");
+        let mut listed = Listed {
+            items: Vec::new(),
+            more: true,
+        };
+        for page in 1..=MAX_STATUS_PAGES {
+            let batch: Vec<Review> = self
+                .get_slim(
+                    &path,
+                    &[("per_page", "100".to_owned()), ("page", page.to_string())],
+                )
+                .await?
+                .value;
+            let short = batch.len() < 100;
+            listed.items.extend(batch);
+            if short {
+                listed.more = false;
+                break;
+            }
+        }
+        Ok(listed)
+    }
+
+    /// Whether GitHub protects `branch` (its rules apply at merge time).
+    pub async fn branch_protected(&self, owner: &str, name: &str, branch: &str) -> Result<bool> {
+        let branch: Slim<Branch> = self
+            .get_slim(&format!("/repos/{owner}/{name}/branches/{branch}"), &[])
+            .await?;
+        Ok(branch.value.protected)
+    }
+
+    /// How many commits `head` is behind `base`. Only the counters are
+    /// kept; the commits are asked for one at a time and the file list is
+    /// dropped while decoding.
+    pub async fn behind_by(&self, owner: &str, name: &str, base: &str, head: &str) -> Result<u32> {
+        let comparison: Slim<Comparison> = self
+            .get_slim(
+                &format!("/repos/{owner}/{name}/compare/{base}...{head}"),
+                &[("per_page", "1".to_owned())],
+            )
+            .await?;
+        Ok(comparison.value.behind_by)
+    }
+
+    /// Succeeds when Dependabot alerts are on for the repository (GitHub
+    /// answers `204`); `NotFound` when they are off.
+    pub async fn vulnerability_alerts(&self, owner: &str, name: &str) -> Result<()> {
+        self.get(&format!("/repos/{owner}/{name}/vulnerability-alerts"), &[])
             .await
+            .map(|_| ())
+    }
+
+    /// Whether Dependabot security updates are on, and paused.
+    pub async fn security_fixes(&self, owner: &str, name: &str) -> Result<SecurityFixes> {
+        let response = self
+            .get(
+                &format!("/repos/{owner}/{name}/automated-security-fixes"),
+                &[],
+            )
+            .await?;
+        let path = "automated-security-fixes";
+        let body = read_bounded(response, MAX_JSON_BYTES, path).await?;
+        serde_json::from_slice(&body).map_err(|e| GithubError::Decode(e.to_string()))
+    }
+
+    /// The repository's open Dependabot alerts, at most `max` of them, read
+    /// in two passes so that a cut never drops the worse ones: critical and
+    /// high first, then medium and low while there is room. GitHub cannot
+    /// sort by severity, only filter by it. The endpoint pages by cursor:
+    /// the `after` value of each `Link: rel="next"` is sent back on this
+    /// client's own path, so the token never follows a URL GitHub handed out.
+    pub async fn dependabot_alerts(
+        &self,
+        owner: &str,
+        name: &str,
+        max: usize,
+    ) -> Result<AlertListing> {
+        let path = format!("/repos/{owner}/{name}/dependabot/alerts");
+        let mut listing = AlertListing::default();
+        let mut held = std::collections::HashSet::new();
+        for severities in ALERT_SEVERITY_PASSES {
+            if listing.alerts.len() >= max {
+                // Full already. Whether anything less severe exists decides
+                // "truncated"; one alert is enough to know.
+                if !listing.truncated {
+                    let (probe, _) = self.alert_page(&path, severities, 1, None).await?;
+                    listing.truncated = !probe.is_empty();
+                }
+                break;
+            }
+            let mut after: Option<String> = None;
+            // One page more than `max` needs can never be asked for: the
+            // loop ends as soon as `max` alerts are held.
+            for _ in 0..max.div_ceil(100).max(1) {
+                let (page, next) = self
+                    .alert_page(&path, severities, 100, after.as_deref())
+                    .await?;
+                after = next;
+                let empty = page.is_empty();
+                // An alert re-rated between the two passes must not show twice.
+                listing
+                    .alerts
+                    .extend(page.into_iter().filter(|alert| held.insert(alert.number)));
+                if after.is_none() || empty || listing.alerts.len() >= max {
+                    break;
+                }
+            }
+            if listing.alerts.len() > max {
+                listing.alerts.truncate(max);
+                listing.truncated = true;
+            }
+            // A cursor left over means GitHub had another page.
+            listing.truncated |= after.is_some();
+        }
+        Ok(listing)
+    }
+
+    /// One page of open alerts of the given severities and the cursor of
+    /// the next page, when there is one.
+    async fn alert_page(
+        &self,
+        path: &str,
+        severities: &str,
+        per_page: usize,
+        after: Option<&str>,
+    ) -> Result<(Vec<Alert>, Option<String>)> {
+        let mut query = vec![
+            ("state", "open".to_owned()),
+            ("per_page", per_page.to_string()),
+            ("severity", severities.to_owned()),
+        ];
+        if let Some(cursor) = after {
+            query.push(("after", cursor.to_owned()));
+        }
+        let response = self.get(path, &query).await?;
+        let next = response
+            .headers()
+            .get(reqwest::header::LINK)
+            .and_then(|v| v.to_str().ok())
+            .and_then(next_cursor);
+        let body = read_bounded(response, MAX_JSON_BYTES, path).await?;
+        let page: Vec<Alert> =
+            serde_json::from_slice(&body).map_err(|e| GithubError::Decode(e.to_string()))?;
+        Ok((page, next))
     }
 
     /// The changed files of a pull request, at most `max_files` of them
@@ -800,6 +1237,99 @@ impl GithubClient {
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
     let bytes = response.bytes().await?;
     serde_json::from_slice(&bytes).map_err(|e| GithubError::Decode(e.to_string()))
+}
+
+/// The whole body, unless it is larger than `max`: then an error, never a
+/// cut document (half a JSON value decodes to nothing useful).
+async fn read_bounded(mut response: Response, max: usize, what: &str) -> Result<Vec<u8>> {
+    let too_large =
+        || GithubError::Decode(format!("{what}: the response is larger than {max} bytes"));
+    if response
+        .content_length()
+        .is_some_and(|len| len > max as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > max {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// The text of a contents-API answer: base64-decoded, binary bytes replaced
+/// lossily.
+fn content_text(content: Content, path: &str) -> Result<String> {
+    match content.encoding.as_deref() {
+        Some("base64") => {
+            let raw: String = content
+                .content
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let bytes = STANDARD
+                .decode(raw)
+                .map_err(|e| GithubError::Decode(format!("{path}: {e}")))?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+        _ => Ok(content.content.unwrap_or_default()),
+    }
+}
+
+/// In-process identity of a slim body (see [`Slim::fingerprint`]).
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The `after` cursor of the `rel="next"` entry of a `Link` header, when
+/// there is one. Only the cursor is taken: the URL around it is GitHub's
+/// business (it names the repository by id, and on an enterprise host may
+/// carry another base than the one this workspace is configured with).
+pub fn next_cursor(link: &str) -> Option<String> {
+    let next = link.split(',').find(|part| {
+        part.split(';')
+            .skip(1)
+            .any(|param| param.trim().replace(' ', "") == "rel=\"next\"")
+    })?;
+    let url = next.split(';').next()?.trim();
+    let url = url.strip_prefix('<')?.strip_suffix('>')?;
+    let query = url.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "after" && !value.is_empty()).then(|| percent_decode(value))
+    })
+}
+
+/// Undoes percent-encoding (and `+` for a space) in a query value.
+/// Malformed escapes are kept as they are.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                (Some(high), Some(low)) => {
+                    out.push((high * 16 + low) as u8);
+                    i += 3;
+                    continue;
+                }
+                _ => out.push(b'%'),
+            },
+            b'+' => out.push(b' '),
+            other => out.push(other),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn error_message(response: Response) -> String {
@@ -904,6 +1434,67 @@ mod tests {
             "?affiliation=owner%2Ccollaborator&page=2"
         );
         assert_eq!(query_string(&[]), "");
+    }
+
+    #[test]
+    fn the_next_cursor_is_taken_from_the_link_header_and_nothing_else() {
+        // GitHub's shape: the repository by id, the cursor percent-encoded.
+        let link = "<https://api.github.com/repositories/42/dependabot/alerts?state=open&per_page=100&after=Y3Vyc29yOnYyOpHOAAE%3D>; rel=\"next\", \
+                    <https://api.github.com/repositories/42/dependabot/alerts?state=open&per_page=100&before=Y3Vyc29yOnYy>; rel=\"prev\"";
+        assert_eq!(next_cursor(link).as_deref(), Some("Y3Vyc29yOnYyOpHOAAE="));
+        // Order and spacing of the entries do not matter.
+        let reordered = "<https://x.example/a?before=b>; rel=\"prev\",<https://x.example/a?after=c%2Fd&per_page=100>;rel=\"next\"";
+        assert_eq!(next_cursor(reordered).as_deref(), Some("c/d"));
+        // The last page has no `next`; a `next` without a cursor is not one.
+        assert_eq!(
+            next_cursor("<https://x.example/a?before=b>; rel=\"prev\""),
+            None
+        );
+        assert_eq!(
+            next_cursor("<https://x.example/a?page=2>; rel=\"next\""),
+            None
+        );
+        assert_eq!(
+            next_cursor("<https://x.example/a?after=>; rel=\"next\""),
+            None
+        );
+        assert_eq!(next_cursor(""), None);
+        assert_eq!(next_cursor("garbage"), None);
+        // A broken escape is kept as it is rather than guessed at.
+        assert_eq!(percent_decode("a%2"), "a%2");
+        assert_eq!(percent_decode("a%zzb+c"), "a%zzb c");
+    }
+
+    #[test]
+    fn slim_keys_are_per_workspace_and_per_shape_and_the_switch_clears_them() {
+        let hub = Github::new(TokenProvider::new(
+            crate::identity::Identity::disabled(),
+            None,
+        ))
+        .unwrap();
+        let workspace = Uuid::now_v7();
+        let prefix = cache_prefix(workspace);
+        hub.shared
+            .slim()
+            .insert(&format!("{prefix}Pull|/x"), "\"e\"", b"{}".to_vec());
+        hub.shared.slim().insert(
+            &format!("{}Pull|/x", cache_prefix(Uuid::now_v7())),
+            "\"e\"",
+            b"{}".to_vec(),
+        );
+        assert_eq!(hub.slim_cached(), (2, 4));
+        // The raw cache is another cache: nothing of this shows there.
+        assert_eq!(hub.cached_entries(), 0);
+        hub.forget_cache(workspace);
+        assert_eq!(hub.slim_cached(), (1, 2));
+
+        // A remembered token is served until it expires, without identity.
+        let mut access = GithubAccess::dev("t");
+        access.api_base_url = "http://127.0.0.1:1".to_owned();
+        hub.remember_token(workspace, access);
+        assert_eq!(hub.tokens.cached_tokens(), 1);
+        hub.forget_token(workspace);
+        assert_eq!(hub.tokens.cached_tokens(), 0);
     }
 
     #[test]

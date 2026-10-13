@@ -3437,6 +3437,118 @@
         }
       }
     },
+    "/api/v1/findings/{id}/draft-fix": {
+      "post": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "Asks the workspace's model to write the replacement for the lines the\nfinding points at (member). The answer is the finding with the draft as\nits `suggestion` and `suggestionSource` = `model`; its decision does not\nchange, a person still accepts or dismisses it.",
+        "description": "412 when the data controls do not allow it (`reasoner` off, or\n`codeToModel` not `changed_lines`), when the finding cannot be drafted\n(`canDraftFix` is false: it already has a suggestion, has no line, is\nabout a secret, ...), when the model's reply was unusable or when the\ndaily token cap is spent. Nothing is stored in those cases.",
+        "operationId": "draft_fix",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Finding id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/github/account": {
       "get": {
         "tags": [
@@ -8153,6 +8265,261 @@
         }
       }
     },
+    "/api/v1/projects/{id}/pull-requests/{number}/merge": {
+      "post": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "Asks for the pull request to be merged (approver): creates an execution\nthat verifies the head again, merges exactly that commit and, when\nasked, deletes the branch. The merge step waits for approval unless the\nworkspace set the `repo.merge_pull_request` policy to `auto`.",
+        "description": "412 with the first blocker's sentence unless the pull request is ready\n(`GET .../merge-readiness`). The body may be left out.",
+        "operationId": "merge_pull_request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "Pull request number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergePullRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/pull-requests/{number}/merge-readiness": {
+      "get": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "Whether the pull request can be merged now and what stands in the way:\nGitHub read at this moment (state, conflicts, checks, reviews, branch\nprotection) plus SDI's own gate (its review of the head commit).",
+        "operationId": "merge_readiness",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "Pull request number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeReadiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{id}/pull-requests/{number}/reviews": {
       "post": {
         "tags": [
@@ -8799,6 +9166,248 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Scan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/security": {
+      "get": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "The project's vulnerable dependencies: Dependabot's open alerts when\nGitHub serves them, else the manifest versions looked up at OSV\n(`source` says which, `sourceNote` why), with the state of Dependabot on\nthe repository. Cached 5 minutes; `refresh=true` asks again.",
+        "operationId": "security_overview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Ask GitHub (and OSV) again instead of answering from the 5-minute cache.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/security/dependabot": {
+      "post": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "Turns Dependabot on for the repository (admin): alerts, security\nupdates and/or a pull request that adds `.github/dependabot.yml`,\nthrough an execution. Changing repository settings needs a timed\n`repository:admin` grant, so its first run pauses for access.",
+        "description": "400 unless at least one of the three is true.",
+        "operationId": "configure_dependabot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureDependabotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigureDependabotResult"
                 }
               }
             }
@@ -11210,6 +11819,118 @@
         }
       }
     },
+    "/api/v1/reviews/{id}/apply-fixes": {
+      "post": {
+        "tags": [
+          "autopilot"
+        ],
+        "summary": "Commits the suggestion of every accepted finding that no fix execution\ncarries yet to the pull request branch (approver, like every request that\nwrites to the repository): one commit on top of\nthe reviewed head, through an execution that waits for approval. The\nanswer is the review, whose `fixExecutionId` is that execution.",
+        "description": "412 when no accepted finding has a suggestion left to commit, when the\npull request is not open, when its head moved since the review, when it\ncomes from a fork, or while a fix execution of this review is still open.",
+        "operationId": "apply_fixes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Review"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/reviews/{id}/publish": {
       "post": {
         "tags": [
@@ -11675,6 +12396,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/reasoner/test": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Makes one tiny call to the workspace's model and says what came back,\nor names the setting that keeps the model from being called: the data\ncontrol, the reasoner choice, a missing key, a missing model name, the\ndaily cap, or what the provider answered (its status, never its body).\nA misconfiguration is an answer here, not an error. Admin; the call\ncounts against the daily token cap.",
+        "operationId": "test_reasoner",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReasonerTest"
                 }
               }
             }
@@ -14009,6 +14830,46 @@
           }
         }
       },
+      "ConfigureDependabotRequest": {
+        "type": "object",
+        "description": "Body of `POST /projects/{id}/security/dependabot` (admin). At least one\nof the three must be true.",
+        "properties": {
+          "alerts": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Turn on Dependabot alerts for the repository."
+          },
+          "configFile": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Open a pull request that adds `.github/dependabot.yml`."
+          },
+          "securityUpdates": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Turn on Dependabot security updates (pull requests that fix alerts)."
+          }
+        }
+      },
+      "ConfigureDependabotResult": {
+        "type": "object",
+        "description": "Response of `POST /projects/{id}/security/dependabot`.",
+        "required": [
+          "executionId"
+        ],
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "description": "The execution that turns Dependabot on; changing repository settings pauses it for a timed `repository:admin` grant."
+          }
+        }
+      },
       "ConnectProjectRequest": {
         "type": "object",
         "description": "Body of `POST /projects`.",
@@ -14235,7 +15096,8 @@
           "reasoner",
           "reasonerKeyConfigured",
           "auditRetentionDays",
-          "updatedAt"
+          "updatedAt",
+          "codeToModel"
         ],
         "properties": {
           "auditRetentionDays": {
@@ -14253,6 +15115,10 @@
             "format": "int32",
             "description": "Hours a `session` cache entry lives.",
             "minimum": 0
+          },
+          "codeToModel": {
+            "type": "string",
+            "description": "Whether source lines may be sent to the model so it can write a fix (CONTRACT.md §19, §23): `off` (default) or `changed_lines` (the lines a finding points at plus a few around them, never a whole file, never a line a secrets rule matched). Only has an effect while `reasoner` is not `off`."
           },
           "minimalChunks": {
             "type": "boolean",
@@ -16029,9 +16895,14 @@
           "line",
           "endLine",
           "rule",
-          "decision"
+          "decision",
+          "canDraftFix"
         ],
         "properties": {
+          "canDraftFix": {
+            "type": "boolean",
+            "description": "The model can be asked to draft a fix (`POST /findings/{id}/draft-fix`): the finding has no replacement yet (none, or only an example), points at lines of a text file and is not about a secret or a workflow file."
+          },
           "category": {
             "type": "string",
             "description": "`secrets` | `security` | `dependencies` | `docker` | `ci` | `iac` | `tests` | `docs` | `correctness` | `maturity`."
@@ -16072,6 +16943,13 @@
             "description": "Last line of the range; equals `line` for a single line.",
             "minimum": 0
           },
+          "fixExecutionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The fix execution that carries this suggestion, once one was requested; null until then."
+          },
           "id": {
             "type": "string",
             "description": "Finding id."
@@ -16103,7 +16981,14 @@
               "string",
               "null"
             ],
-            "description": "Replacement for the referenced lines, when the fix is mechanical; becomes a GitHub suggestion."
+            "description": "Code that goes with the finding; null when there is none. `suggestionSource` says what it is: with `rule` or `model` it is the exact replacement for lines `line..=endLine` (a GitHub suggestion when published, and what apply-fixes commits once the finding is accepted); with `example` it is an illustration to adapt by hand and is never committed."
+          },
+          "suggestionSource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What `suggestion` is: `rule` (the analyzer's exact replacement for the lines), `model` (a replacement the workspace's model drafted on request) or `example` (the analyzer's illustration to adapt by hand: shown, never committed by apply-fixes); null when there is no suggestion."
           },
           "title": {
             "type": "string",
@@ -16655,12 +17540,24 @@
           "reasonerProvider",
           "reasonerBaseUrl",
           "reasonerModel",
-          "reasonerDailyTokenCap"
+          "reasonerDailyTokenCap",
+          "autoDraftFixes",
+          "autoMerge",
+          "mergeRequiresReview",
+          "prWatchIntervalSeconds"
         ],
         "properties": {
           "apiKeyConfigured": {
             "type": "boolean",
             "description": "True when `ANTHROPIC_API_KEY` is configured. Read-only."
+          },
+          "autoDraftFixes": {
+            "type": "boolean",
+            "description": "During a review, ask the model to draft a fix for findings without a mechanical suggestion, at most 10 per review (CONTRACT.md §23). Needs the reasoner and the `codeToModel` data control. Default off."
+          },
+          "autoMerge": {
+            "type": "string",
+            "description": "Whose pull requests SDI asks to merge on its own once they are ready: `off` (default) or `dependabot`. The merge still runs as an execution, so the `repo.merge_pull_request` policy decides whether a person approves."
           },
           "autoReview": {
             "type": "boolean",
@@ -16682,9 +17579,34 @@
               }
             ]
           },
+          "mergeRequiresReview": {
+            "type": "boolean",
+            "description": "A merge needs an SDI review of the current head with no undecided finding of severity high or critical. Default on."
+          },
           "model": {
             "type": "string",
             "description": "Model used by the `claude` reasoner."
+          },
+          "prWatchIntervalSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds between two looks of the pull request watcher (`SDI_PR_WATCH_SECONDS`); 0 means the operator turned it off. Read-only.",
+            "minimum": 0
+          },
+          "prWatchLastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the watcher's last look at this workspace failed; null when it worked. Read-only."
+          },
+          "prWatchLastRunAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the watcher last looked at this workspace; null before its first look. Read-only."
           },
           "reasoner": {
             "type": "string",
@@ -16712,8 +17634,22 @@
       },
       "IntelligenceSettingsPatch": {
         "type": "object",
-        "description": "The `intelligence` part of `PATCH /settings`: every field is optional and\nunset fields keep their current value. `apiKeyConfigured` is read-only.",
+        "description": "The `intelligence` part of `PATCH /settings`: every field is optional and\nunset fields keep their current value. `apiKeyConfigured` and the three\n`prWatch*` fields are read-only.",
         "properties": {
+          "autoDraftFixes": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether a review drafts fixes with the model on its own."
+          },
+          "autoMerge": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off` or `dependabot`."
+          },
           "autoReview": {
             "type": [
               "boolean",
@@ -16739,6 +17675,13 @@
                 "type": "null"
               }
             ]
+          },
+          "mergeRequiresReview": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether a merge needs an SDI review of the current head."
           },
           "model": {
             "type": [
@@ -17270,6 +18213,265 @@
             ],
             "format": "date-time",
             "description": "When GitHub was last read; null before the first sync."
+          }
+        }
+      },
+      "MergeBlocker": {
+        "type": "object",
+        "description": "One reason a pull request cannot be merged yet.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`not_open` | `draft` | `conflicts` | `mergeability_unknown` | `checks_failing` | `checks_pending` | `changes_requested` | `blocked_by_github` | `no_review` | `review_outdated` | `review_running` | `findings_undecided` | `merge_in_progress`."
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence that says what to do about it."
+          }
+        }
+      },
+      "MergeMethod": {
+        "type": "string",
+        "description": "How GitHub merges a pull request.",
+        "enum": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      },
+      "MergePullRequestRequest": {
+        "type": "object",
+        "description": "Body of `POST /projects/{id}/pull-requests/{number}/merge` (approver).\nThe body may be left out altogether.",
+        "properties": {
+          "deleteBranch": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Delete the head branch after the merge (same-repository branches only). Default false."
+          },
+          "method": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeMethod",
+                "description": "Must be one the repository allows (`allowedMethods`); null picks the first allowed of squash, merge, rebase."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "MergeReadiness": {
+        "type": "object",
+        "description": "Whether a pull request can be merged now: GitHub's state read at\n`checkedAt` plus SDI's own gate (its review of the head commit).",
+        "required": [
+          "projectId",
+          "prNumber",
+          "title",
+          "state",
+          "headSha",
+          "headRef",
+          "baseRef",
+          "isFork",
+          "isDependabot",
+          "mergeable",
+          "mergeableState",
+          "checksTotal",
+          "checksPassed",
+          "checksFailed",
+          "checksPending",
+          "failedChecks",
+          "pendingChecks",
+          "approvals",
+          "changesRequested",
+          "allowedMethods",
+          "baseProtected",
+          "behindBy",
+          "undecidedBlockingFindings",
+          "blockers",
+          "canMerge",
+          "checkedAt"
+        ],
+        "properties": {
+          "allowedMethods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the repository allows: `merge` | `squash` | `rebase`."
+          },
+          "approvals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Approving reviews by people on GitHub, latest verdict per reviewer.",
+            "minimum": 0
+          },
+          "baseProtected": {
+            "type": "boolean",
+            "description": "The base branch is protected; GitHub enforces its rules at merge time."
+          },
+          "baseRef": {
+            "type": "string",
+            "description": "Target branch."
+          },
+          "behindBy": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Commits the head is behind its base.",
+            "minimum": 0
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergeBlocker"
+            },
+            "description": "What stands in the way, GitHub's reasons first; empty means `canMerge`."
+          },
+          "canMerge": {
+            "type": "boolean",
+            "description": "True when nothing blocks the merge."
+          },
+          "changesRequested": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reviewers on GitHub whose latest verdict requests changes.",
+            "minimum": 0
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When GitHub was read."
+          },
+          "checksFailed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Checks that failed.",
+            "minimum": 0
+          },
+          "checksPassed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Checks that passed.",
+            "minimum": 0
+          },
+          "checksPending": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Checks still queued or running.",
+            "minimum": 0
+          },
+          "checksTotal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Check runs and commit statuses of the head commit, counted together.",
+            "minimum": 0
+          },
+          "failedChecks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the failed checks, at most 20."
+          },
+          "headRef": {
+            "type": "string",
+            "description": "Source branch."
+          },
+          "headSha": {
+            "type": "string",
+            "description": "Head commit the answer is about; a merge is only ever of this commit."
+          },
+          "isDependabot": {
+            "type": "boolean",
+            "description": "The author is Dependabot."
+          },
+          "isFork": {
+            "type": "boolean",
+            "description": "The head branch lives in another repository."
+          },
+          "mergeExecutionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An open merge execution for this pull request; null when none is running."
+          },
+          "mergeable": {
+            "type": "string",
+            "description": "`mergeable` | `conflicting` | `unknown` (GitHub is still computing it: ask again)."
+          },
+          "mergeableState": {
+            "type": "string",
+            "description": "GitHub's own word: `clean` | `dirty` | `blocked` | `behind` | `unstable` | `has_hooks` | `draft` | `unknown`."
+          },
+          "pendingChecks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the checks still queued or running, at most 20."
+          },
+          "prNumber": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub number.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project the pull request belongs to."
+          },
+          "reviewId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SDI review of `headSha`; null when there is none."
+          },
+          "reviewStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That review's status (`context` | `analyzing` | `proposed` | `published` | `failed`); null when there is none."
+          },
+          "state": {
+            "type": "string",
+            "description": "`open` | `closed` | `merged` | `draft`."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "undecidedBlockingFindings": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Findings of severity high or critical nobody decided yet.",
+            "minimum": 0
+          }
+        }
+      },
+      "MergeResult": {
+        "type": "object",
+        "description": "Response of `POST /projects/{id}/pull-requests/{number}/merge`.",
+        "required": [
+          "executionId",
+          "readiness"
+        ],
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "description": "The execution that merges the pull request: its steps, its approval (the `repo.merge_pull_request` policy) and its outcome are there."
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/MergeReadiness",
+            "description": "The readiness the merge was requested on."
           }
         }
       },
@@ -18090,7 +19292,7 @@
           },
           "entity": {
             "type": "string",
-            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,\nor, for continuous delivery, `release`, `deployment` or `environment`."
+            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,\nfor continuous delivery `release`, `deployment` or `environment`, and for code review\nand the pull request autopilot `review` (also when a fix or merge execution is\nattached to it) or `finding` (also when a fix was drafted for it)."
           },
           "entityId": {
             "type": "string",
@@ -18719,7 +19921,11 @@
           "changedFiles",
           "additions",
           "deletions",
-          "htmlUrl"
+          "htmlUrl",
+          "headRepo",
+          "isFork",
+          "isBot",
+          "isDependabot"
         ],
         "properties": {
           "additions": {
@@ -18764,6 +19970,10 @@
             "type": "string",
             "description": "Source branch."
           },
+          "headRepo": {
+            "type": "string",
+            "description": "`owner/name` of the repository the head branch lives in; differs from the project's repository for a pull request from a fork."
+          },
           "headSha": {
             "type": "string",
             "description": "Head commit; a review is identified by it."
@@ -18771,6 +19981,18 @@
           "htmlUrl": {
             "type": "string",
             "description": "Link to the pull request on GitHub."
+          },
+          "isBot": {
+            "type": "boolean",
+            "description": "The author is a bot account."
+          },
+          "isDependabot": {
+            "type": "boolean",
+            "description": "The author is Dependabot."
+          },
+          "isFork": {
+            "type": "boolean",
+            "description": "The head branch lives in another repository: SDI cannot commit fixes to it (CONTRACT.md §23)."
           },
           "latestReviewId": {
             "type": [
@@ -18918,6 +20140,64 @@
           "reason": {
             "type": "string",
             "description": "Why the platform could not detect it on its own."
+          }
+        }
+      },
+      "ReasonerTest": {
+        "type": "object",
+        "description": "What one tiny call to the workspace's model reported, or which setting\nkeeps the model from being called (CONTRACT.md §19).",
+        "required": [
+          "status",
+          "message",
+          "provider",
+          "latencyMs",
+          "inputTokens",
+          "outputTokens"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Scheme and host the call goes to, never a path or a query."
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Tokens the call spent; 0 when no call was made.",
+            "minimum": 0
+          },
+          "latencyMs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long the provider took; 0 when no call was made.",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence: what works, or what to change and where."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model the call uses; null when none is named."
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Tokens the reply spent; 0 when no call was made.",
+            "minimum": 0
+          },
+          "provider": {
+            "type": "string",
+            "description": "`anthropic` or `openai_compatible`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, `off` (the data controls keep the reasoner off), `heuristic`\n(the settings choose the built-in reasoner), `no_key`, `no_model`,\n`cap_reached`, `provider_error` or `identity_unavailable`."
           }
         }
       },
@@ -19303,7 +20583,8 @@
           "reasoner",
           "requestedBy",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "fixesReady"
         ],
         "properties": {
           "createdAt": {
@@ -19343,6 +20624,19 @@
             "description": "Findings proposed.",
             "minimum": 0
           },
+          "fixExecutionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Latest execution that commits this review's fixes (CONTRACT.md §23); null when none was requested."
+          },
+          "fixesReady": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Accepted findings with a replacement (`suggestionSource` `rule` or `model`) that no fix execution carries yet: what `POST /reviews/{id}/apply-fixes` would commit. Examples never count.",
+            "minimum": 0
+          },
           "headSha": {
             "type": "string",
             "description": "Head commit reviewed."
@@ -19350,6 +20644,13 @@
           "id": {
             "type": "string",
             "description": "Review id."
+          },
+          "mergeExecutionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Latest execution that merges this pull request; null when none was requested."
           },
           "prAuthor": {
             "type": "string",
@@ -19430,7 +20731,7 @@
         "properties": {
           "action": {
             "type": "string",
-            "description": "`review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed`."
+            "description": "`review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed` | `fix.drafted` | `fixes.requested` | `merge.requested`."
           },
           "actor": {
             "type": "string",
@@ -19879,6 +21180,102 @@
           }
         }
       },
+      "SecurityOverview": {
+        "type": "object",
+        "description": "A project's vulnerable dependencies and the state of Dependabot on its\nrepository. Computed per request (cached 5 minutes); nothing is stored.",
+        "required": [
+          "projectId",
+          "source",
+          "vulnerabilities",
+          "bySeverity",
+          "truncated",
+          "configPresent",
+          "configEcosystems",
+          "alerts",
+          "securityUpdates",
+          "openDependabotPullRequests",
+          "checkedAt"
+        ],
+        "properties": {
+          "alerts": {
+            "type": "string",
+            "description": "Dependabot alerts: `enabled` | `disabled` | `unknown` (the token may not read the setting)."
+          },
+          "bySeverity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeverityCount"
+            },
+            "description": "Counts per severity, most severe first."
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When GitHub was read."
+          },
+          "configEcosystems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ecosystems the configuration names."
+          },
+          "configPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its path (`.github/dependabot.yml`); null when there is none."
+          },
+          "configPresent": {
+            "type": "boolean",
+            "description": "A Dependabot configuration file exists on the default branch."
+          },
+          "configureExecutionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An open execution that turns Dependabot on for this project; null when none is running."
+          },
+          "openDependabotPullRequests": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Open pull requests by Dependabot.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project."
+          },
+          "securityUpdates": {
+            "type": "string",
+            "description": "Dependabot security updates: `enabled` | `paused` | `disabled` | `unknown`."
+          },
+          "source": {
+            "type": "string",
+            "description": "Where the list came from: `dependabot` (GitHub's open alerts), `osv` (the manifest versions looked up at OSV) or `none` (neither answered)."
+          },
+          "sourceNote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it is not Dependabot's list, as a sentence; null when it is."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More exist than were read."
+          },
+          "vulnerabilities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Vulnerability"
+            },
+            "description": "The vulnerabilities, most severe first."
+          }
+        }
+      },
       "ServiceHealth": {
         "type": "object",
         "description": "Health of one backing service.",
@@ -19986,6 +21383,26 @@
           "knowledge": {
             "$ref": "#/components/schemas/KnowledgeSettings",
             "description": "Scanner limits (knowledge service)."
+          }
+        }
+      },
+      "SeverityCount": {
+        "type": "object",
+        "description": "How many vulnerabilities have one severity.",
+        "required": [
+          "severity",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Vulnerabilities of that severity.",
+            "minimum": 0
+          },
+          "severity": {
+            "type": "string",
+            "description": "`critical` | `high` | `medium` | `low` | `unknown`."
           }
         }
       },
@@ -20430,6 +21847,13 @@
             "description": "1–8760.",
             "minimum": 0
           },
+          "codeToModel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off` or `changed_lines`."
+          },
           "minimalChunks": {
             "type": [
               "boolean",
@@ -20722,6 +22146,110 @@
           }
         }
       },
+      "Vulnerability": {
+        "type": "object",
+        "description": "One vulnerable dependency.",
+        "required": [
+          "source",
+          "id",
+          "ecosystem",
+          "package",
+          "severity",
+          "summary"
+        ],
+        "properties": {
+          "currentVersion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version the manifest names; null when the source does not say."
+          },
+          "cveId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CVE id; null when the advisory has none."
+          },
+          "detectedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was detected; null when the source does not say (OSV lookups)."
+          },
+          "ecosystem": {
+            "type": "string",
+            "description": "`npm` | `pip` | `cargo` | `go` | `maven` | `nuget` | `composer` | `rubygems` | `actions` | ..."
+          },
+          "fixPullRequest": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Number of an open pull request that fixes it; null when there is none.",
+            "minimum": 0
+          },
+          "fixedVersion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "First version with the fix; null when no fixed version exists yet."
+          },
+          "id": {
+            "type": "string",
+            "description": "GHSA id when there is one, else the advisory's own id."
+          },
+          "manifestPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Manifest that names the package; null when the source does not say."
+          },
+          "package": {
+            "type": "string",
+            "description": "Package name."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`runtime` | `development`; null when the source does not say."
+          },
+          "severity": {
+            "type": "string",
+            "description": "`critical` | `high` | `medium` | `low` | `unknown`."
+          },
+          "source": {
+            "type": "string",
+            "description": "`dependabot` | `osv`."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What is wrong, in a line."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The advisory or the alert on GitHub; null when there is no page for it."
+          },
+          "vulnerableRange": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Versions the advisory affects; null when the source does not say."
+          }
+        }
+      },
       "WebhookAck": {
         "type": "object",
         "description": "Response of `POST /webhooks/github`.",
@@ -20930,6 +22458,10 @@
     {
       "name": "reviews",
       "description": "Pull request reviews: evidence first, a human decides, then SDI posts (§20)"
+    },
+    {
+      "name": "autopilot",
+      "description": "Pull request autopilot: drafted fixes, fix commits, merge readiness and merges, vulnerabilities and Dependabot; everything that changes the repository is an execution (§23)"
     },
     {
       "name": "executions",

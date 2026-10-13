@@ -62,6 +62,9 @@ async fn get_repo_file(
         .get_repo_file(proto::GetRepoFileRequest {
             project_id: id,
             path: query.path,
+            // The code browser shows the scanned commit; reading another
+            // commit (CONTRACT.md §23) is the intelligence service's.
+            r#ref: String::new(),
         })
         .await?
         .into_inner();

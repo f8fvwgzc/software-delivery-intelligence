@@ -1,3 +1,5 @@
+import { MERGE_READINESS_ROOT } from '@/lib/live/event-families'
+
 import type { PullRequestState } from './types'
 
 export type PullRequestFilter = 'open' | 'closed' | 'all'
@@ -27,6 +29,18 @@ export const reviewKeys = {
   list: (filters: ReviewListFilters) => [...reviewKeys.lists(), filters] as const,
   details: () => [...reviewKeys.all, 'detail'] as const,
   detail: (reviewId: string) => [...reviewKeys.details(), reviewId] as const,
+}
+
+/*
+ * Its own root, outside `pull-requests`: answering it makes the server read
+ * GitHub, so it must not ride along with every `review` event. The live
+ * stream reaches it through the gated lane (lib/live/event-families.ts),
+ * by project.
+ */
+export const mergeKeys = {
+  all: [MERGE_READINESS_ROOT] as const,
+  project: (projectId: string) => [...mergeKeys.all, projectId] as const,
+  readiness: (projectId: string, number: number) => [...mergeKeys.project(projectId), number] as const,
 }
 
 export const activityKeys = {

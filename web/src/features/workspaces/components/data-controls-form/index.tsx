@@ -10,7 +10,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 import { useUpdateDataControls } from '../../api/mutations'
 import type { DataControls, UpdateDataControlsRequest } from '../../api/types'
-import { CODE_CACHE_OPTIONS, REASONER_OPTIONS } from '../../lib/labels'
+import { CODE_CACHE_OPTIONS, CODE_TO_MODEL_OPTIONS, codeToModelMode, REASONER_OPTIONS, type CodeToModelMode } from '../../lib/labels'
 import { ReasonerKeyForm } from './reasoner-key-form'
 
 interface Draft {
@@ -18,6 +18,7 @@ interface Draft {
   codeCacheTtlHours: string
   minimalChunks: boolean
   reasoner: string
+  codeToModel: CodeToModelMode
   auditRetentionDays: string
 }
 
@@ -30,6 +31,7 @@ function toDraft(controls: DataControls): Draft {
     codeCacheTtlHours: String(controls.codeCacheTtlHours),
     minimalChunks: controls.minimalChunks,
     reasoner: controls.reasoner,
+    codeToModel: codeToModelMode(controls.codeToModel),
     auditRetentionDays: String(controls.auditRetentionDays),
   }
 }
@@ -51,6 +53,7 @@ function toPatch(draft: Draft, controls: DataControls): UpdateDataControlsReques
   if (ttl !== controls.codeCacheTtlHours) patch.codeCacheTtlHours = ttl
   if (draft.minimalChunks !== controls.minimalChunks) patch.minimalChunks = draft.minimalChunks
   if (draft.reasoner !== controls.reasoner) patch.reasoner = draft.reasoner
+  if (draft.codeToModel !== codeToModelMode(controls.codeToModel)) patch.codeToModel = draft.codeToModel
   if (retention !== controls.auditRetentionDays) patch.auditRetentionDays = retention
   return patch
 }
@@ -62,7 +65,7 @@ interface DataControlsFormProps {
   readOnly: boolean
 }
 
-/** The §19 switches. Save sends what changed; the key has its own form below. */
+/** The §19 switches, and §23's one about source lines. Save sends what changed; the key has its own form below. */
 export function DataControlsForm({ workspaceId, controls, readOnly }: DataControlsFormProps) {
   const id = useId()
   const [draft, setDraft] = useState<Draft>(() => toDraft(controls))
@@ -166,6 +169,35 @@ export function DataControlsForm({ workspaceId, controls, readOnly }: DataContro
               <FieldDescription className="text-xs">
                 Off sends nothing to a model. Claude sends structured context (facts, options, the spec), never raw files, with
                 the key stored below.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel id={`${id}-code-to-model-label`}>Source lines to the model</FieldLabel>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                size="sm"
+                spacing={0}
+                value={draft.codeToModel}
+                onValueChange={(value) => {
+                  if (value) set('codeToModel', codeToModelMode(value))
+                }}
+                aria-labelledby={`${id}-code-to-model-label`}
+                aria-describedby={`${id}-code-to-model-hint`}
+              >
+                {CODE_TO_MODEL_OPTIONS.map((option) => (
+                  <ToggleGroupItem key={option.value} value={option.value} className="px-3 font-normal data-[state=on]:font-medium">
+                    {option.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              <FieldDescription id={`${id}-code-to-model-hint`} className="text-xs">
+                Lets the model write a fix for a review finding. What is sent then: the lines the finding flags and at most 20 lines
+                either side of them, 120 lines at most, with every line that looks like a secret replaced by{' '}
+                <span className="font-mono">&lt;redacted&gt;</span>. Never a whole file, and never a finding about a secret. It only
+                matters while the reasoner is on, and it is off by default.
+                {draft.codeToModel === 'changed_lines' && draft.reasoner === 'off' ? ' The reasoner is off, so nothing is sent now.' : null}
               </FieldDescription>
             </Field>
 

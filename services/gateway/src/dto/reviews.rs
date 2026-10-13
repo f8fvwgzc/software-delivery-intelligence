@@ -1,5 +1,8 @@
 //! Code review (CONTRACT.md §20): pull requests as the knowledge service
 //! lists them, reviews with their rail and findings, and the activity log.
+//! The pull request autopilot (§23) adds where a head branch lives, who
+//! wrote a suggestion and which executions carry a review's fixes and merge;
+//! its own shapes are in `super::autopilot`.
 
 use chrono::{DateTime, Utc};
 use sdi_proto::{intelligence::v1 as intelligence, knowledge::v1 as knowledge};
@@ -59,6 +62,14 @@ pub struct PullRequestSummary {
     pub updated_at: Option<DateTime<Utc>>,
     /// The latest SDI review of this pull request, if any.
     pub latest_review_id: Option<String>,
+    /// `owner/name` of the repository the head branch lives in; differs from the project's repository for a pull request from a fork.
+    pub head_repo: String,
+    /// The head branch lives in another repository: SDI cannot commit fixes to it (CONTRACT.md §23).
+    pub is_fork: bool,
+    /// The author is a bot account.
+    pub is_bot: bool,
+    /// The author is Dependabot.
+    pub is_dependabot: bool,
 }
 
 impl From<knowledge::PullRequestSummary> for PullRequestSummary {
@@ -80,6 +91,10 @@ impl From<knowledge::PullRequestSummary> for PullRequestSummary {
             created_at: opt_timestamp(pr.created_at.as_ref()),
             updated_at: opt_timestamp(pr.updated_at.as_ref()),
             latest_review_id: opt_string(pr.latest_review_id),
+            head_repo: pr.head_repo,
+            is_fork: pr.is_fork,
+            is_bot: pr.is_bot,
+            is_dependabot: pr.is_dependabot,
         }
     }
 }
@@ -222,7 +237,7 @@ pub struct Finding {
     pub line: u32,
     /// Last line of the range; equals `line` for a single line.
     pub end_line: u32,
-    /// Replacement for the referenced lines, when the fix is mechanical; becomes a GitHub suggestion.
+    /// Code that goes with the finding; null when there is none. `suggestionSource` says what it is: with `rule` or `model` it is the exact replacement for lines `line..=endLine` (a GitHub suggestion when published, and what apply-fixes commits once the finding is accepted); with `example` it is an illustration to adapt by hand and is never committed.
     pub suggestion: Option<String>,
     /// Rule id, e.g. `secrets.aws_key`.
     pub rule: String,
@@ -234,6 +249,12 @@ pub struct Finding {
     pub decided_by: Option<String>,
     /// When.
     pub decided_at: Option<DateTime<Utc>>,
+    /// What `suggestion` is: `rule` (the analyzer's exact replacement for the lines), `model` (a replacement the workspace's model drafted on request) or `example` (the analyzer's illustration to adapt by hand: shown, never committed by apply-fixes); null when there is no suggestion.
+    pub suggestion_source: Option<String>,
+    /// The fix execution that carries this suggestion, once one was requested; null until then.
+    pub fix_execution_id: Option<String>,
+    /// The model can be asked to draft a fix (`POST /findings/{id}/draft-fix`): the finding has no replacement yet (none, or only an example), points at lines of a text file and is not about a secret or a workflow file.
+    pub can_draft_fix: bool,
 }
 
 impl From<intelligence::Finding> for Finding {
@@ -254,6 +275,9 @@ impl From<intelligence::Finding> for Finding {
             decision_note: opt_string(f.decision_note),
             decided_by: opt_string(f.decided_by),
             decided_at: opt_timestamp(f.decided_at.as_ref()),
+            suggestion_source: opt_string(f.suggestion_source),
+            fix_execution_id: opt_string(f.fix_execution_id),
+            can_draft_fix: f.can_draft_fix,
         }
     }
 }
@@ -330,6 +354,12 @@ pub struct Review {
     pub created_at: DateTime<Utc>,
     /// When it last changed.
     pub updated_at: DateTime<Utc>,
+    /// Latest execution that commits this review's fixes (CONTRACT.md §23); null when none was requested.
+    pub fix_execution_id: Option<String>,
+    /// Latest execution that merges this pull request; null when none was requested.
+    pub merge_execution_id: Option<String>,
+    /// Accepted findings with a replacement (`suggestionSource` `rule` or `model`) that no fix execution carries yet: what `POST /reviews/{id}/apply-fixes` would commit. Examples never count.
+    pub fixes_ready: u32,
 }
 
 impl From<intelligence::Review> for Review {
@@ -355,6 +385,9 @@ impl From<intelligence::Review> for Review {
             requested_by: r.requested_by,
             created_at: timestamp(r.created_at.as_ref()),
             updated_at: timestamp(r.updated_at.as_ref()),
+            fix_execution_id: opt_string(r.fix_execution_id),
+            merge_execution_id: opt_string(r.merge_execution_id),
+            fixes_ready: r.fixes_ready,
         }
     }
 }
@@ -404,7 +437,7 @@ pub struct ReviewActivity {
     pub project_name: String,
     /// Pull request number.
     pub pr_number: u64,
-    /// `review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed`.
+    /// `review.started` | `review.proposed` | `finding.accepted` | `finding.dismissed` | `review.published` | `review.failed` | `fix.drafted` | `fixes.requested` | `merge.requested`.
     pub action: String,
     /// Who did it (`system` for the pipeline).
     pub actor: String,
@@ -507,5 +540,60 @@ mod tests {
         });
         assert!(file.previous_path.is_none());
         assert_eq!(file.hunks[0].lines, vec!["+x"]);
+    }
+
+    #[test]
+    fn pull_request_summary_says_where_the_head_lives_and_who_wrote_it() {
+        let summary = PullRequestSummary::from(knowledge::PullRequestSummary {
+            number: 7,
+            head_repo: "dependabot/repo".into(),
+            is_fork: true,
+            is_bot: true,
+            is_dependabot: true,
+            ..Default::default()
+        });
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["headRepo"], "dependabot/repo");
+        assert_eq!(json["isFork"], true);
+        assert_eq!(json["isBot"], true);
+        assert_eq!(json["isDependabot"], true);
+    }
+
+    #[test]
+    fn autopilot_fields_are_null_until_something_was_drafted_or_requested() {
+        let untouched = serde_json::to_value(Finding::from(intelligence::Finding {
+            can_draft_fix: true,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(untouched["suggestion"].is_null());
+        assert!(untouched["suggestionSource"].is_null());
+        assert!(untouched["fixExecutionId"].is_null());
+        assert_eq!(untouched["canDraftFix"], true);
+        let drafted = serde_json::to_value(Finding::from(intelligence::Finding {
+            suggestion: "x".into(),
+            suggestion_source: "model".into(),
+            fix_execution_id: "e1".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(drafted["suggestionSource"], "model");
+        assert_eq!(drafted["fixExecutionId"], "e1");
+        assert_eq!(drafted["canDraftFix"], false);
+
+        let review = serde_json::to_value(Review::from(intelligence::Review::default())).unwrap();
+        assert!(review["fixExecutionId"].is_null());
+        assert!(review["mergeExecutionId"].is_null());
+        assert_eq!(review["fixesReady"], 0);
+        let review = serde_json::to_value(Review::from(intelligence::Review {
+            fix_execution_id: "e1".into(),
+            merge_execution_id: "e2".into(),
+            fixes_ready: 3,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(review["fixExecutionId"], "e1");
+        assert_eq!(review["mergeExecutionId"], "e2");
+        assert_eq!(review["fixesReady"], 3);
     }
 }

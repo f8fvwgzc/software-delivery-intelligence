@@ -73,6 +73,13 @@ service KnowledgeService {
   rpc ListPullRequests(ListPullRequestsRequest) returns (ListPullRequestsResponse);
   // One PR with its changed files and unified diff hunks (bounded).
   rpc GetPullRequest(GetPullRequestRequest) returns (PullRequest);
+  // Whether one PR can be merged right now, read from GitHub at call time:
+  // mergeability, checks, approvals, allowed merge methods (CONTRACT.md §23).
+  rpc GetPullRequestStatus(GetPullRequestStatusRequest) returns (PullRequestStatus);
+
+  // --- Security (CONTRACT.md §23) -------------------------------------------
+  // Dependabot's state for the repository and its open alerts.
+  rpc GetRepositorySecurity(GetRepositorySecurityRequest) returns (RepositorySecurity);
 
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (KnowledgeSettings);
@@ -950,6 +957,10 @@ message RepoTree {
 message GetRepoFileRequest {
   string project_id = 1;
   string path = 2;
+  // Commit SHA to read instead of the scanned commit (a pull request head,
+  // CONTRACT.md §23). Must be a full 40-character SHA. A file read this way
+  // is never written to the code cache and carries no `fact_ids`.
+  string ref = 3;
 }
 
 message RepoFile {
@@ -990,6 +1001,14 @@ message PullRequestSummary {
   google.protobuf.Timestamp updated_at = 15;
   // Id of the latest SDI review for this PR, if any.
   string latest_review_id = 16;
+  // `owner/name` of the repository the head branch lives in. Differs from
+  // the project's repository for a pull request from a fork.
+  string head_repo = 17;
+  bool is_fork = 18;
+  // The author is a bot account (GitHub user type "Bot").
+  bool is_bot = 19;
+  // The author is Dependabot.
+  bool is_dependabot = 20;
 }
 
 message DiffHunk {
@@ -1040,6 +1059,92 @@ message ListPullRequestsResponse {
 message GetPullRequestRequest {
   string project_id = 1;
   uint64 number = 2;
+}
+
+message GetPullRequestStatusRequest {
+  string project_id = 1;
+  uint64 number = 2;
+}
+
+// Check runs and commit statuses of the head commit, counted together.
+message CheckSummary {
+  uint32 total = 1;
+  uint32 passed = 2;
+  uint32 failed = 3;
+  uint32 pending = 4;
+  // Names of the failed checks, at most 20.
+  repeated string failed_names = 5;
+  // Names of the checks still queued or running, at most 20.
+  repeated string pending_names = 6;
+}
+
+message PullRequestStatus {
+  PullRequestSummary summary = 1;
+  // "mergeable" | "conflicting" | "unknown" (GitHub is still computing it)
+  string mergeable = 2;
+  // GitHub's own word: "clean" | "dirty" | "blocked" | "behind" | "unstable" | "has_hooks" | "draft" | "unknown"
+  string mergeable_state = 3;
+  CheckSummary checks = 4;
+  // Reviews by people on GitHub, latest verdict per reviewer.
+  uint32 approvals = 5;
+  uint32 changes_requested = 6;
+  // What the repository allows: "merge" | "squash" | "rebase".
+  repeated string allowed_methods = 7;
+  // The base branch is protected; GitHub enforces its rules at merge time.
+  bool base_protected = 8;
+  // Commits the head is behind its base.
+  uint32 behind_by = 9;
+  google.protobuf.Timestamp checked_at = 10;
+}
+
+message GetRepositorySecurityRequest {
+  string project_id = 1;
+  // Ask GitHub again instead of answering from the short-lived cache.
+  bool refresh = 2;
+}
+
+message DependabotAlert {
+  uint64 number = 1;
+  // In `Dependency.ecosystem`'s vocabulary: "npm" | "pip" | "cargo" | "go" | "maven" | "nuget" | "composer" | "rubygems" | "github_actions" | ...
+  string ecosystem = 2;
+  string package = 3;
+  string manifest_path = 4;
+  // "runtime" | "development" | ""
+  string scope = 5;
+  // "critical" | "high" | "medium" | "low"
+  string severity = 6;
+  string ghsa_id = 7;
+  string cve_id = 8;
+  string summary = 9;
+  string vulnerable_range = 10;
+  // Empty when no fixed version exists yet.
+  string fixed_version = 11;
+  string html_url = 12;
+  google.protobuf.Timestamp created_at = 13;
+  // Number of an open Dependabot pull request that updates this package, 0 when none.
+  uint64 fix_pull_request = 14;
+}
+
+message RepositorySecurity {
+  string project_id = 1;
+  // A Dependabot configuration file exists on the default branch.
+  bool config_present = 2;
+  string config_path = 3;
+  repeated string config_ecosystems = 4;
+  // Dependabot alerts: "enabled" | "disabled" | "unknown" (the token may not read the setting).
+  string alerts = 5;
+  // Dependabot security updates: "enabled" | "paused" | "disabled" | "unknown".
+  string security_updates = 6;
+  // Why `open_alerts` is what it is: "ok" | "disabled" | "forbidden" | "unavailable".
+  string alerts_status = 7;
+  // A sentence for the reader whenever `alerts_status` is not "ok".
+  string alerts_message = 8;
+  // Open alerts, most severe first, at most 300.
+  repeated DependabotAlert open_alerts = 9;
+  // More open alerts exist than were read.
+  bool truncated = 10;
+  uint32 open_pull_requests = 11;
+  google.protobuf.Timestamp checked_at = 12;
 }
 
 message GetKnowledgeStatsRequest {}

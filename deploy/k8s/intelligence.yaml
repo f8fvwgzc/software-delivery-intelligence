@@ -53,6 +53,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: sdi-config, key: EXECUTION_GRPC_URL } }
             - name: IDENTITY_GRPC_URL
               valueFrom: { configMapKeyRef: { name: sdi-config, key: IDENTITY_GRPC_URL } }
+            - name: LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: LLM_API_KEY, optional: true } }
             - name: ANTHROPIC_API_KEY
               valueFrom: { secretKeyRef: { name: sdi-secrets, key: ANTHROPIC_API_KEY, optional: true } }
           readinessProbe:

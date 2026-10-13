@@ -55,6 +55,11 @@ pub fn update_allowed(editable: bool, decision: PolicyDecision) -> Result<(), &'
     }
 }
 
+/// The permission that changes repository settings (CONTRACT.md §5.3,
+/// §23): known like every `<resource>:<verb>`, held by no seeded identity,
+/// so a step that needs it always pauses for a timed grant first.
+pub const REPOSITORY_ADMIN: &str = "repository:admin";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
     pub permission: String,

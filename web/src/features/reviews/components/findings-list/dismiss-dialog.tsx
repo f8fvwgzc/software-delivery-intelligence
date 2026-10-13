@@ -21,10 +21,12 @@ import type { Finding } from '../../api/types'
 interface DismissDialogProps {
   finding: Finding
   decide: ReturnType<typeof useDecideFinding>
+  /** The viewer's role is too low to decide; the caller says why next to the buttons. */
+  disabled?: boolean
 }
 
 /** Dismissing drops the finding from the published review, so it asks for a note. */
-export function DismissDialog({ finding, decide }: DismissDialogProps) {
+export function DismissDialog({ finding, decide, disabled = false }: DismissDialogProps) {
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
   const dismissing = decide.isPending && decide.variables?.decision === 'dismissed'
@@ -46,7 +48,7 @@ export function DismissDialog({ finding, decide }: DismissDialogProps) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button size="xs" variant="ghost" disabled={accepting}>
+        <Button size="xs" variant="ghost" disabled={accepting || disabled}>
           <XIcon data-icon="inline-start" />
           Dismiss
         </Button>

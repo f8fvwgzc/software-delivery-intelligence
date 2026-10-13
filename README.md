@@ -96,12 +96,16 @@ one Postgres schema. The deeper design is in
 
 ## Quick start
 
-Prerequisites: Docker with Compose v2, Rust stable (edition 2024), Node 22
-with pnpm 10, `protoc`, and the `gh` CLI logged in (`gh auth login`) so the
-knowledge service can read your repositories.
+Prerequisites: Docker with Compose v2, Rust 1.88 or newer, Node 22 with
+pnpm, `protoc`, and the `gh` CLI logged in (`gh auth login`) so SDI can
+read and write your repositories. `make doctor` checks all of it and
+prints the fix for anything missing. The step-by-step version, including
+the model key and the automation switches, is
+[`docs/getting-started.md`](docs/getting-started.md).
 
 ```sh
-cp .env.example .env            # optional: GITHUB_TOKEN, ANTHROPIC_API_KEY
+make doctor                     # is this machine ready?
+cp .env.example .env            # optional: a model key (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL)
 
 make dev                        # Postgres in Docker, services + web on the host
 #   gateway   http://127.0.0.1:8080/api/docs
@@ -115,7 +119,8 @@ make down
 make up-local-exec              # same, plus the docker adapter (read "Adapters" first)
 ```
 
-`make dev` exports `GITHUB_TOKEN` from `gh auth token` when `.env` does not
+`make dev` runs the doctor first, installs the web dependencies on a fresh
+clone, exports `GITHUB_TOKEN` from `gh auth token` when `.env` does not
 set it, turns on the dev login (`SDI_DEV_LOGIN=1`: `/auth/login` signs you
 in as that account without registering an OAuth app) and generates a
 session secret into `.run/session-secret`. `make up` builds five Rust
@@ -139,7 +144,8 @@ because the default thread count exhausts memory on a 16 GB machine.
 | `GITHUB_TOKEN` | — | knowledge (read); execution (`github` adapter, needs `repo` write) |
 | `LLM_PROVIDER` / `LLM_BASE_URL` | `anthropic` / — | intelligence (instance-wide reasoner fallback: `anthropic`, or `openai_compatible` with the endpoint of OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter, Gemini) |
 | `LLM_API_KEY` (alias `ANTHROPIC_API_KEY`) | — | intelligence (optional; enables the reasoner for workspaces that allow it and hold no key) |
-| `LLM_MODEL` (alias `ANTHROPIC_MODEL`) | `claude-sonnet-5-5` | intelligence |
+| `LLM_MODEL` (alias `ANTHROPIC_MODEL`) | `claude-sonnet-5-5` for `anthropic`; required for every other provider | intelligence |
+| `SDI_PR_WATCH_SECONDS` | `60` | intelligence: how often the pull request watcher looks at open pull requests of workspaces with automatic review on (§23); `0` turns it off |
 | `OSV_API_URL` | `https://api.osv.dev` | intelligence (review vulnerability check; `off` disables) |
 | `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge |
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` | `0.0.0.0:<port>` | each service |
@@ -179,8 +185,9 @@ deploy/docker          rust.Dockerfile (ARG SERVICE, Docker CLI in execution onl
 deploy/nginx           edge config: SPA, /api proxy, rate limits, SSE (snippets/sse.conf), JSON logs
 docker-compose.yml     production-shaped stack (+ profile local-exec); docker-compose.dev.yml is Postgres only
 scripts/               dev.sh (everything on the host), api-contract.sh, loadcheck.sh
-docs/                  architecture.md, configuration.md (.sdi.yml), adapters.md, e2e.md,
-                       github-app.md, self-hosting.md
+docs/                  getting-started.md, architecture.md, configuration.md (.sdi.yml),
+                       adapters.md, continuous-delivery.md, e2e.md, github-app.md,
+                       self-hosting.md, performance.md
 TRUST.md · PRIVACY.md · SECURITY.md · LICENSE (Apache-2.0)
 .github/               CI (rust, web, edge, images, Playwright), nightly, Dependabot
 ```
@@ -215,6 +222,15 @@ observe → understand → store → retrieve → compare → rank
    created with.
 6. **Learn outcome** pattern success rates and last-used times feed the
    next ranking.
+
+**Pull requests.** The same loop runs on pull requests
+([`CONTRACT.md` §20, §23](CONTRACT.md)): a watcher reviews every open pull
+request of a connected repository (it polls, so it needs no webhook),
+findings come with the evidence and, where possible, the replacement code,
+accepted replacements are committed to the branch, and a merge shows what
+stands in the way before it asks for approval. The Security tab lists
+vulnerable dependencies and can turn Dependabot on. Every one of those
+writes is an execution behind an approval.
 
 Four principles hold everywhere: detected ≠ inferred ≠ proposed ≠ decided;
 discover first, ask only what cannot be known; observe mode is the default;

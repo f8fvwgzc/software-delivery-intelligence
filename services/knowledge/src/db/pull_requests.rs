@@ -35,6 +35,12 @@ pub struct PullRequestRow {
     pub pr_created_at: Option<DateTime<Utc>>,
     pub pr_updated_at: Option<DateTime<Utc>>,
     pub synced_at: DateTime<Utc>,
+    /// `owner/name` of the repository the head branch lives in; empty when
+    /// that fork no longer exists.
+    pub head_repo: String,
+    pub is_fork: bool,
+    pub is_bot: bool,
+    pub is_dependabot: bool,
 }
 
 /// What one GitHub pull request becomes in the cache.
@@ -55,6 +61,41 @@ pub struct NewPullRequest {
     pub html_url: String,
     pub pr_created_at: Option<DateTime<Utc>>,
     pub pr_updated_at: Option<DateTime<Utc>>,
+    pub head_repo: String,
+    pub is_fork: bool,
+    pub is_bot: bool,
+    pub is_dependabot: bool,
+}
+
+impl NewPullRequest {
+    /// The row this would be stored as, without storing it: a status read
+    /// (CONTRACT.md §23.3) answers from GitHub alone.
+    pub fn unstored(self, workspace_id: Uuid, project_id: Uuid) -> PullRequestRow {
+        PullRequestRow {
+            workspace_id,
+            project_id,
+            number: self.number,
+            title: self.title,
+            body: self.body,
+            author: self.author,
+            author_avatar_url: self.author_avatar_url,
+            state: self.state,
+            base_ref: self.base_ref,
+            head_ref: self.head_ref,
+            head_sha: self.head_sha,
+            changed_files: self.changed_files,
+            additions: self.additions,
+            deletions: self.deletions,
+            html_url: self.html_url,
+            pr_created_at: self.pr_created_at,
+            pr_updated_at: self.pr_updated_at,
+            synced_at: Utc::now(),
+            head_repo: self.head_repo,
+            is_fork: self.is_fork,
+            is_bot: self.is_bot,
+            is_dependabot: self.is_dependabot,
+        }
+    }
 }
 
 /// One changed file as stored; `hunks` are empty when `truncated`.
@@ -112,6 +153,10 @@ pub async fn upsert_all(
     Ok(())
 }
 
+/// Stores one summary. GitHub's list carries no size counters (they are
+/// zero there; only the single-PR call has them), so counters that arrive
+/// as zero for the head commit already stored leave the stored ones alone:
+/// a list sync never erases what a read of the pull request filled in.
 pub async fn upsert(
     exec: impl PgExecutor<'_>,
     workspace_id: Uuid,
@@ -120,14 +165,26 @@ pub async fn upsert(
 ) -> sqlx::Result<PullRequestRow> {
     sqlx::query_as::<_, PullRequestRow>(
         "INSERT INTO pull_requests (workspace_id, project_id, number, title, body, author, author_avatar_url, state,
-            base_ref, head_ref, head_sha, changed_files, additions, deletions, html_url, pr_created_at, pr_updated_at, synced_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+            base_ref, head_ref, head_sha, changed_files, additions, deletions, html_url, pr_created_at, pr_updated_at, synced_at,
+            head_repo, is_fork, is_bot, is_dependabot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now(), $18, $19, $20, $21)
          ON CONFLICT (project_id, number) DO UPDATE SET
            title = EXCLUDED.title, body = EXCLUDED.body, author = EXCLUDED.author,
            author_avatar_url = EXCLUDED.author_avatar_url, state = EXCLUDED.state, base_ref = EXCLUDED.base_ref,
-           head_ref = EXCLUDED.head_ref, head_sha = EXCLUDED.head_sha, changed_files = EXCLUDED.changed_files,
-           additions = EXCLUDED.additions, deletions = EXCLUDED.deletions, html_url = EXCLUDED.html_url,
-           pr_created_at = EXCLUDED.pr_created_at, pr_updated_at = EXCLUDED.pr_updated_at, synced_at = now()
+           head_ref = EXCLUDED.head_ref, head_sha = EXCLUDED.head_sha,
+           changed_files = CASE WHEN pull_requests.head_sha = EXCLUDED.head_sha AND EXCLUDED.changed_files = 0
+                                 AND EXCLUDED.additions = 0 AND EXCLUDED.deletions = 0
+                                THEN pull_requests.changed_files ELSE EXCLUDED.changed_files END,
+           additions = CASE WHEN pull_requests.head_sha = EXCLUDED.head_sha AND EXCLUDED.changed_files = 0
+                             AND EXCLUDED.additions = 0 AND EXCLUDED.deletions = 0
+                            THEN pull_requests.additions ELSE EXCLUDED.additions END,
+           deletions = CASE WHEN pull_requests.head_sha = EXCLUDED.head_sha AND EXCLUDED.changed_files = 0
+                             AND EXCLUDED.additions = 0 AND EXCLUDED.deletions = 0
+                            THEN pull_requests.deletions ELSE EXCLUDED.deletions END,
+           html_url = EXCLUDED.html_url,
+           pr_created_at = EXCLUDED.pr_created_at, pr_updated_at = EXCLUDED.pr_updated_at, synced_at = now(),
+           head_repo = EXCLUDED.head_repo, is_fork = EXCLUDED.is_fork, is_bot = EXCLUDED.is_bot,
+           is_dependabot = EXCLUDED.is_dependabot
          RETURNING *",
     )
     .bind(workspace_id)
@@ -147,6 +204,10 @@ pub async fn upsert(
     .bind(&pull.html_url)
     .bind(pull.pr_created_at)
     .bind(pull.pr_updated_at)
+    .bind(&pull.head_repo)
+    .bind(pull.is_fork)
+    .bind(pull.is_bot)
+    .bind(pull.is_dependabot)
     .fetch_one(exec)
     .await
 }

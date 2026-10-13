@@ -4,6 +4,8 @@
 pub mod diff;
 pub mod failure;
 pub mod impact;
+pub mod merge;
+pub mod security;
 pub mod similarity;
 pub mod stats;
 pub mod temporal;

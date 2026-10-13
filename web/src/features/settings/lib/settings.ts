@@ -123,6 +123,27 @@ export const EMPTY_WEIGHTS: ScoreWeights = {
   success: 0,
 }
 
+/* Automation (CONTRACT.md §23.6) */
+
+/** `IntelligenceSettings.autoMerge`: whose pull requests SDI asks to merge on its own. */
+export const AUTO_MERGE_MODES = ['off', 'dependabot'] as const
+export type AutoMergeMode = (typeof AUTO_MERGE_MODES)[number]
+
+export const AUTO_MERGE_LABEL: Record<AutoMergeMode, string> = {
+  off: 'Off',
+  dependabot: 'Dependabot pull requests',
+}
+
+export const AUTO_MERGE_DESCRIPTION: Record<AutoMergeMode, string> = {
+  off: 'A person asks for every merge.',
+  dependabot: 'Asked for as soon as one is ready to merge.',
+}
+
+/** The stored mode; anything else (an intelligence service from before §23 answers nothing) reads as off, the default. */
+export function autoMergeMode(value: string | null | undefined): AutoMergeMode {
+  return (AUTO_MERGE_MODES as readonly string[]).includes(value ?? '') ? (value as AutoMergeMode) : 'off'
+}
+
 /** The reasoner that actually answers, given the configured one and the key. */
 export function effectiveReasoner(settings: Pick<IntelligenceSettings, 'reasoner' | 'apiKeyConfigured'>) {
   return settings.reasoner === 'claude' && !settings.apiKeyConfigured ? 'heuristic' : settings.reasoner
@@ -144,6 +165,13 @@ function mergeIntelligence(current: IntelligenceSettings, patch: IntelligenceSet
   return {
     apiKeyConfigured: current.apiKeyConfigured,
     autoReview: patch.autoReview ?? current.autoReview,
+    autoDraftFixes: patch.autoDraftFixes ?? current.autoDraftFixes,
+    autoMerge: patch.autoMerge ?? current.autoMerge,
+    mergeRequiresReview: patch.mergeRequiresReview ?? current.mergeRequiresReview,
+    // Read-only: what the watcher reports, never part of a patch.
+    prWatchIntervalSeconds: current.prWatchIntervalSeconds,
+    prWatchLastRunAt: current.prWatchLastRunAt,
+    prWatchLastError: current.prWatchLastError,
     costCeilingUsd: patch.costCeilingUsd ?? current.costCeilingUsd,
     defaultWeights: patch.defaultWeights ?? current.defaultWeights,
     model: patch.model ?? current.model,

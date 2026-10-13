@@ -99,7 +99,7 @@ pub(crate) async fn insert_plan(
         Ok(identity) => identity,
         Err(sqlx::Error::RowNotFound) if runtime == adapters::GITHUB => {
             return Err(Status::failed_precondition(
-                "the github adapter needs GITHUB_TOKEN configured on the execution service",
+                "this workspace has no GitHub access to act with: install the GitHub App on the organisation, sign in with GitHub, or set GITHUB_TOKEN on the execution service",
             ));
         }
         Err(sqlx::Error::RowNotFound) => {

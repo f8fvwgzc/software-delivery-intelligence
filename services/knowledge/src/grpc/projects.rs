@@ -164,6 +164,8 @@ pub(super) async fn delete_project(
         return Err(Status::not_found("project not found"));
     }
     tx.commit().await.map_err(db_status)?;
+    // Alerts are the repository's; the answer held for it goes with the project.
+    state.security.forget_project(ws, id);
     tracing::info!(project = %id, files = purged.files, trees = purged.trees, "project deleted, caches purged");
     state.events.project(ws, id, "deleted", "");
     state

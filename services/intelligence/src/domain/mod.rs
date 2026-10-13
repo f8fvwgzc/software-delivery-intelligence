@@ -4,6 +4,8 @@
 pub mod cost;
 pub mod diagrams;
 pub mod documents;
+pub mod fixes;
+pub mod merge;
 pub mod model;
 pub mod modernization;
 pub mod narrative;
@@ -12,3 +14,4 @@ pub mod plans;
 pub mod policy;
 pub mod ranking;
 pub mod review;
+pub mod security;

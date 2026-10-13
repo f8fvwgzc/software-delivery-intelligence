@@ -5,11 +5,13 @@
 
 pub mod budget;
 pub mod diagrams;
+pub mod fixes;
 mod provider;
 
 use async_trait::async_trait;
 
-pub use provider::{LlmReasoner, Provider};
+pub(crate) use provider::without_body;
+pub use provider::{CapReached, LlmReasoner, Provider};
 
 /// The one request shape every provider receives: a system prompt, the
 /// structured context (trimmed to the token budget before it is sent),
@@ -45,6 +47,14 @@ pub trait Reasoner: Send + Sync {
     /// impacted components, never diff lines. The heuristic keeps the draft.
     async fn write_review_summary(&self, draft: &str, _context: &serde_json::Value) -> String {
         draft.to_owned()
+    }
+
+    /// Asks the model for the replacement of a finding's lines
+    /// (CONTRACT.md §23.2). Returns the reply as the model wrote it; the
+    /// caller cleans and checks it ([`fixes::accept_reply`]) before anything
+    /// is stored. The heuristic has no model to ask.
+    async fn draft_fix(&self, _request: &fixes::FixRequest) -> Result<String, fixes::FixRefusal> {
+        Err(fixes::FixRefusal::NoModel)
     }
 }
 

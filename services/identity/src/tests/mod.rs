@@ -922,6 +922,105 @@ async fn audit_and_data_controls_round_trip() {
     h.drop_schema().await;
 }
 
+/// `code_to_model` (CONTRACT.md §19, §23): nothing leaves by default, the
+/// two values round trip, anything else is refused with the allowed values,
+/// and a caller that does not know the field cannot change it.
+#[tokio::test]
+async fn code_to_model_defaults_off_round_trips_and_refuses_unknown_values() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let (_token, user_id) = h.login().await;
+    let ws = workspaces::list(&h.state, ListWorkspacesRequest { user_id })
+        .await
+        .unwrap()
+        .workspaces
+        .remove(0);
+    let get = || async {
+        controls::get(
+            &h.state,
+            GetDataControlsRequest {
+                workspace_id: ws.id.clone(),
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let update = |controls: DataControls| async {
+        controls::update(
+            &h.state,
+            UpdateDataControlsRequest {
+                controls: Some(controls),
+            },
+        )
+        .await
+    };
+
+    let defaults = get().await;
+    assert_eq!(defaults.code_to_model, "off", "the most private default");
+    let stored: String =
+        sqlx::query_scalar("SELECT code_to_model FROM data_controls WHERE workspace_id = $1")
+            .bind(Uuid::parse_str(&ws.id).unwrap())
+            .fetch_one(&h.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, "off", "the column default, not a conversion");
+
+    // Round trip, case and padding normalised like the other vocabularies.
+    let on = update(DataControls {
+        code_to_model: " Changed_Lines ".into(),
+        ..defaults.clone()
+    })
+    .await
+    .unwrap();
+    assert_eq!(on.code_to_model, "changed_lines");
+    assert_eq!(get().await.code_to_model, "changed_lines");
+    assert_eq!(on.reasoner, defaults.reasoner, "nothing else moved");
+    assert_eq!(on.code_cache, defaults.code_cache);
+
+    // Anything else is refused, naming what is allowed, and nothing is stored.
+    for bad in ["whole_file", "on", "true"] {
+        let refused = update(DataControls {
+            code_to_model: bad.into(),
+            ..on.clone()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code(), Code::InvalidArgument, "{bad}");
+        assert!(
+            refused.message().contains("off") && refused.message().contains("changed_lines"),
+            "{}",
+            refused.message()
+        );
+    }
+    assert_eq!(get().await.code_to_model, "changed_lines");
+
+    // A caller that leaves the field empty changes the rest and keeps it.
+    let kept = update(DataControls {
+        code_to_model: String::new(),
+        minimal_chunks: true,
+        ..on.clone()
+    })
+    .await
+    .unwrap();
+    assert!(kept.minimal_chunks);
+    assert_eq!(
+        kept.code_to_model, "changed_lines",
+        "empty keeps the stored value"
+    );
+
+    let off = update(DataControls {
+        code_to_model: "off".into(),
+        ..kept
+    })
+    .await
+    .unwrap();
+    assert_eq!(off.code_to_model, "off");
+    assert_eq!(get().await.code_to_model, "off");
+
+    h.drop_schema().await;
+}
+
 #[test]
 fn role_text_matches_the_common_crate() {
     assert_eq!(roles::to_db(Role::Approver), "APPROVER");

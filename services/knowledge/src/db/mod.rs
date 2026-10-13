@@ -52,6 +52,67 @@ pub fn parse_pgvector(literal: &str) -> Vec<f32> {
         .collect()
 }
 
+/// Applies the schema: makes sure pgvector lives where every schema can
+/// see it, then runs the migrations. The service and its tests both come
+/// through here.
+///
+/// `CREATE EXTENSION` puts an extension's types into the first schema of
+/// the search path, and an extension exists once per database. On a fresh
+/// database the first schema to run the migrations would therefore own
+/// `vector`, and every other schema (another install sharing the database,
+/// each test's own schema) would fail with `type "vector" does not exist`.
+/// So the extension is created in `public`, which is on every pool's search
+/// path, before the first migration asks for it, and one that an earlier
+/// version left in another schema is moved there. The work is serialised by
+/// an advisory lock because `IF NOT EXISTS` does not protect two sessions
+/// that create the same extension at the same moment.
+pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let mut tx = pool.begin().await.context("could not open a transaction")?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('sdi.knowledge.pgvector', 0))")
+        .execute(&mut *tx)
+        .await
+        .context("could not take the extension lock")?;
+    let home: Option<String> = sqlx::query_scalar(
+        "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace \
+         WHERE e.extname = 'vector'",
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .context("could not look for the pgvector extension")?;
+    match home.as_deref() {
+        Some("public") => {}
+        Some(other) => {
+            sqlx::query("ALTER EXTENSION vector SET SCHEMA public")
+                .execute(&mut *tx)
+                .await
+                .with_context(|| {
+                    format!("could not move pgvector from schema {other} to public")
+                })?;
+            tracing::info!(from = other, "pgvector moved to the public schema");
+        }
+        None => {
+            sqlx::query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+                .execute(&mut *tx)
+                .await
+                .context(
+                    "could not create the pgvector extension: use a Postgres that ships it \
+                     (the pgvector/pgvector image does) and a role that may create extensions",
+                )?;
+        }
+    }
+    tx.commit()
+        .await
+        .context("could not commit the extension setup")?;
+
+    sqlx::migrate!("./migrations")
+        .run(pool)
+        .await
+        .context("knowledge migrations failed")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

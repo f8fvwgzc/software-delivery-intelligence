@@ -16,8 +16,10 @@ mod knowledge;
 mod patterns;
 mod projects;
 mod pull_requests;
+mod pull_status;
 mod retrieval;
 mod scans;
+mod security;
 mod settings;
 
 use std::{pin::Pin, sync::Arc};
@@ -58,6 +60,11 @@ pub struct KnowledgeState {
     /// Where a scan syncs the `.sdi.yml` environments (CONTRACT.md §22).
     /// `None` (tests, tools that only touch the database) skips that step.
     pub execution: Option<Arc<dyn DeliveryGateway>>,
+    /// Which pull request listing each project's cached summaries already
+    /// reflect, so a poll that finds nothing new writes nothing (§23.1).
+    pull_sync: Arc<pull_requests::SyncMarks>,
+    /// `GetRepositorySecurity` answers, kept five minutes (§23.4).
+    security: Arc<security::SecurityCache>,
 }
 
 impl KnowledgeState {
@@ -69,6 +76,8 @@ impl KnowledgeState {
             controls: Arc::new(ControlsProvider::new(identity.clone())),
             identity,
             execution: None,
+            pull_sync: Arc::default(),
+            security: Arc::default(),
         }
     }
 
@@ -76,6 +85,18 @@ impl KnowledgeState {
     pub fn with_execution(mut self, execution: Arc<dyn DeliveryGateway>) -> Self {
         self.execution = Some(execution);
         self
+    }
+
+    /// `GetRepositorySecurity` answers held in memory right now
+    /// (diagnostics, tests).
+    pub fn cached_security_answers(&self) -> usize {
+        self.security.held()
+    }
+
+    /// Projects whose pull request listing is marked as applied right now
+    /// (diagnostics, tests).
+    pub fn pull_sync_marks(&self) -> usize {
+        self.pull_sync.held()
     }
 
     /// The project by id, in the caller's workspace only: another
@@ -437,6 +458,26 @@ impl KnowledgeService for KnowledgeState {
     ) -> Result<Response<PullRequest>, Status> {
         let caller = caller(&request)?;
         pull_requests::get_pull_request(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_pull_request_status(
+        &self,
+        request: Request<GetPullRequestStatusRequest>,
+    ) -> Result<Response<PullRequestStatus>, Status> {
+        let caller = caller(&request)?;
+        pull_status::get_pull_request_status(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_repository_security(
+        &self,
+        request: Request<GetRepositorySecurityRequest>,
+    ) -> Result<Response<RepositorySecurity>, Status> {
+        let caller = caller(&request)?;
+        security::get_repository_security(self, &caller, request.into_inner())
             .await
             .map(Response::new)
     }

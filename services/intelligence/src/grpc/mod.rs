@@ -5,45 +5,62 @@
 //! read and stored nowhere, so they count as one); generate / negotiate /
 //! accept / reject, documents, diagrams and decisions need MEMBER; settings
 //! need ADMIN; the workspace export needs ADMIN and the delete needs OWNER.
+//! Pull request autopilot (CONTRACT.md §23): merge readiness and the
+//! security overview are reads; drafting and applying fixes need MEMBER,
+//! asking for a merge APPROVER, turning Dependabot on ADMIN.
 
+mod autopilot;
+#[cfg(test)]
+mod autopilot_tests;
 mod decisions;
 mod delivery;
 mod diagrams;
 mod documents;
+mod fixes;
+mod merge;
 mod negotiation;
 mod proposals;
 mod review_runner;
 mod reviews;
+mod security;
 mod settings;
 mod stats;
 #[cfg(test)]
 mod tests;
+pub(crate) mod watcher;
 mod workspace;
 
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::Utc;
 use sdi_common::{
+    cache::TtlCache,
     grpc::db_status,
     principal::{Principal, Role},
 };
 use sdi_proto::{
     common::v1::{PlatformEvent, WatchEventsRequest},
-    identity::v1::{AuditEntry, ReasonerKey},
+    identity::v1::{AuditEntry, DataControls, ReasonerKey},
     intelligence::v1::{
-        AcceptProposalRequest, CreateDecisionRequest, DecideFindingRequest, Decision,
+        AcceptProposalRequest, ApplyFixesRequest, ConfigureDependabotRequest,
+        ConfigureDependabotResponse, CreateDecisionRequest, DecideFindingRequest, Decision,
         DeleteDiagramRequest, DeleteDiagramResponse, DeleteWorkspaceDataRequest,
-        DeleteWorkspaceDataResponse, DeliveryArtifacts, Diagram, Document,
+        DeleteWorkspaceDataResponse, DeliveryArtifacts, Diagram, Document, DraftFixRequest,
         ExportWorkspaceDataRequest, Finding, GenerateDeliveryArtifactsRequest,
         GenerateDiagramRequest, GenerateDocumentRequest, GenerateProposalRequest,
-        GetDiagramRequest, GetDocumentRequest, GetIntelligenceStatsRequest, GetProposalRequest,
-        GetReviewRequest, GetSettingsRequest, IntelligenceSettings, IntelligenceStats,
-        ListDecisionsRequest, ListDecisionsResponse, ListDiagramsRequest, ListDiagramsResponse,
-        ListDocumentsRequest, ListDocumentsResponse, ListMessagesRequest, ListMessagesResponse,
-        ListProposalsRequest, ListProposalsResponse, ListReviewActivityRequest,
-        ListReviewActivityResponse, ListReviewsRequest, ListReviewsResponse, NegotiateRequest,
-        NegotiateResponse, Proposal, PublishReviewRequest, RejectProposalRequest, Review,
-        StartReviewRequest, SupersedeDecisionRequest, UpdateDiagramRequest, UpdateSettingsRequest,
+        GetDiagramRequest, GetDocumentRequest, GetIntelligenceStatsRequest,
+        GetMergeReadinessRequest, GetProposalRequest, GetReviewRequest, GetSecurityOverviewRequest,
+        GetSettingsRequest, IntelligenceSettings, IntelligenceStats, ListDecisionsRequest,
+        ListDecisionsResponse, ListDiagramsRequest, ListDiagramsResponse, ListDocumentsRequest,
+        ListDocumentsResponse, ListMessagesRequest, ListMessagesResponse, ListProposalsRequest,
+        ListProposalsResponse, ListReviewActivityRequest, ListReviewActivityResponse,
+        ListReviewsRequest, ListReviewsResponse, MergePullRequestRequest, MergePullRequestResponse,
+        MergeReadiness, NegotiateRequest, NegotiateResponse, Proposal, PublishReviewRequest,
+        ReasonerTest, RejectProposalRequest, Review, SecurityOverview, StartReviewRequest,
+        SupersedeDecisionRequest, TestReasonerRequest, UpdateDiagramRequest, UpdateSettingsRequest,
         WorkspaceDataRecord, intelligence_service_server::IntelligenceService,
     },
 };
@@ -77,6 +94,7 @@ impl std::fmt::Debug for ReasonerConfig {
             .field("base_url", &self.env.base_url)
             .field("api_key", &self.env.api_key.as_ref().map(|_| "<set>"))
             .field("model", &self.env.model)
+            .field("anthropic_model", &self.env.anthropic_model)
             .finish()
     }
 }
@@ -117,6 +135,27 @@ pub(crate) struct ReasonerAccess {
     pub key: Option<ReasonerKey>,
     /// The provider the settings or the environment chose.
     pub provider: Provider,
+    /// The data control `code_to_model` is `changed_lines`: the lines a
+    /// finding points at may be sent to the model (CONTRACT.md §19, §23.2).
+    pub code_to_model: bool,
+}
+
+/// Whether the data controls let the reasoner be used at all.
+pub(crate) fn reasoner_allowed(controls: &DataControls) -> bool {
+    !matches!(
+        controls.reasoner.trim().to_ascii_lowercase().as_str(),
+        "" | "off" | "none" | "heuristic"
+    )
+}
+
+/// Whether the data controls let a finding's lines be sent to the model:
+/// the reasoner must be on **and** `code_to_model` must be `changed_lines`.
+pub(crate) fn code_to_model_allowed(controls: &DataControls) -> bool {
+    reasoner_allowed(controls)
+        && controls
+            .code_to_model
+            .trim()
+            .eq_ignore_ascii_case("changed_lines")
 }
 
 impl ReasonerAccess {
@@ -125,6 +164,24 @@ impl ReasonerAccess {
     }
 }
 
+/// How long a computed security overview is served again (CONTRACT.md §23.4).
+pub(crate) const SECURITY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Projects whose overview is remembered at once, across workspaces.
+const SECURITY_CACHE_CAPACITY: usize = 512;
+/// How long the watcher leaves a blocked Dependabot pull request alone
+/// before it asks GitHub about the same head again.
+pub(crate) const MERGE_RECHECK: Duration = Duration::from_secs(5 * 60);
+const MERGE_RECHECK_CAPACITY: usize = 4096;
+
+/// `(workspace, project)`.
+pub(crate) type SecurityKey = (Uuid, String);
+/// `(workspace, project, pull request, head commit)`.
+pub(crate) type MergeCheckKey = (Uuid, String, u64, String);
+
+/// Cheap to clone: every field is a handle. The watcher runs on a clone of
+/// the service the RPCs use, so both share the pool, the peers, the event
+/// bus and the caches.
+#[derive(Clone)]
 pub struct IntelligenceGrpc {
     pool: PgPool,
     knowledge: Arc<dyn KnowledgeGateway>,
@@ -137,6 +194,14 @@ pub struct IntelligenceGrpc {
     publisher: Arc<GithubPublisher>,
     /// The vulnerability check of added dependencies; `None` = off.
     osv: Option<Arc<crate::osv::OsvClient>>,
+    /// Seconds between two looks of the pull request watcher; 0 = off.
+    /// Shown read-only in the settings.
+    pr_watch_seconds: u32,
+    /// Security overviews, 5 minutes each, bounded.
+    security_cache: Arc<Mutex<TtlCache<SecurityKey, SecurityOverview>>>,
+    /// Dependabot pull requests the watcher found blocked: not asked about
+    /// again until the entry expires or the head moves.
+    merge_recheck: Arc<Mutex<TtlCache<MergeCheckKey, ()>>>,
 }
 
 impl IntelligenceGrpc {
@@ -157,7 +222,30 @@ impl IntelligenceGrpc {
             github_tokens: Arc::new(GithubTokens::new(None)),
             publisher: Arc::new(GithubPublisher::new()),
             osv: None,
+            pr_watch_seconds: crate::config::DEFAULT_PR_WATCH_SECONDS,
+            security_cache: Arc::new(Mutex::new(TtlCache::new(
+                SECURITY_CACHE_CAPACITY,
+                SECURITY_CACHE_TTL,
+            ))),
+            merge_recheck: Arc::new(Mutex::new(TtlCache::new(
+                MERGE_RECHECK_CAPACITY,
+                MERGE_RECHECK,
+            ))),
         }
+    }
+
+    /// `SDI_PR_WATCH_SECONDS` as parsed at startup (0 = the watcher is off).
+    pub fn with_pr_watch_seconds(mut self, seconds: u32) -> Self {
+        self.pr_watch_seconds = seconds;
+        self
+    }
+
+    /// How long a blocked Dependabot pull request is left alone by the
+    /// watcher. Tests pass zero to look at every pull request every time.
+    #[cfg(test)]
+    pub(crate) fn with_merge_recheck(mut self, wait: Duration) -> Self {
+        self.merge_recheck = Arc::new(Mutex::new(TtlCache::new(MERGE_RECHECK_CAPACITY, wait)));
+        self
     }
 
     /// The OSV client reviews ask about added dependencies (`OSV_API_URL`).
@@ -207,25 +295,34 @@ impl IntelligenceGrpc {
         caller: &Caller,
         settings: &SettingsRow,
     ) -> ReasonerAccess {
-        let provider = self.provider_for(settings);
-        let controls = match self.identity.data_controls(&caller.principal).await {
-            Ok(controls) => controls,
+        match self.identity.data_controls(&caller.principal).await {
+            Ok(controls) => self.access_from_controls(caller, settings, &controls).await,
             Err(error) => {
                 tracing::warn!(%error, "data controls unavailable; reasoner stays off");
-                return ReasonerAccess {
-                    provider,
+                ReasonerAccess {
+                    provider: self.provider_for(settings),
                     ..ReasonerAccess::default()
-                };
+                }
             }
-        };
-        if matches!(
-            controls.reasoner.trim().to_ascii_lowercase().as_str(),
-            "" | "off" | "none" | "heuristic"
-        ) {
+        }
+    }
+
+    /// [`reasoner_access`](Self::reasoner_access) for data controls the
+    /// caller already holds (a draft fix reads them first, to say exactly
+    /// which switch is off).
+    pub(crate) async fn access_from_controls(
+        &self,
+        caller: &Caller,
+        settings: &SettingsRow,
+        controls: &DataControls,
+    ) -> ReasonerAccess {
+        let provider = self.provider_for(settings);
+        if !reasoner_allowed(controls) {
             return ReasonerAccess {
                 allowed: false,
                 key: None,
                 provider,
+                code_to_model: false,
             };
         }
         let key = match self.identity.reasoner_key(&caller.principal).await {
@@ -255,11 +352,14 @@ impl IntelligenceGrpc {
             allowed: true,
             key,
             provider,
+            code_to_model: code_to_model_allowed(controls),
         }
     }
 
     /// The model the provider is called with: the settings' choice, else
-    /// the one stored with the workspace key, else the environment's.
+    /// the one stored with the workspace key, else the environment's for
+    /// that provider. Empty when an OpenAI-compatible provider has no model
+    /// named anywhere: then nothing is called (see `reasoner_for`).
     pub(crate) fn effective_model(
         &self,
         settings: &SettingsRow,
@@ -274,7 +374,7 @@ impl IntelligenceGrpc {
             .map(|k| k.model.trim())
             .filter(|m| !m.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| self.reasoner.env.model.clone())
+            .unwrap_or_else(|| self.reasoner.env.model_for(&access.provider))
     }
 
     /// The settings choose the reasoner; the LLM only works when the
@@ -287,17 +387,22 @@ impl IntelligenceGrpc {
         settings: &SettingsRow,
         access: &ReasonerAccess,
     ) -> Arc<dyn Reasoner> {
+        let model = self.effective_model(settings, access);
         match &access.key {
-            Some(key) if access.allowed && settings.wants_llm() => Arc::new(LlmReasoner::new(
-                access.provider.clone(),
-                key.api_key.clone(),
-                self.effective_model(settings, access),
-                caller.workspace,
-                settings.daily_token_cap(),
-                Arc::new(PgUsageLedger {
-                    pool: self.pool.clone(),
-                }),
-            )),
+            // Without a model there is nothing to call: the built-in
+            // reasoner answers, and `TestReasoner` says what is missing.
+            Some(key) if access.allowed && settings.wants_llm() && !model.trim().is_empty() => {
+                Arc::new(LlmReasoner::new(
+                    access.provider.clone(),
+                    key.api_key.clone(),
+                    model,
+                    caller.workspace,
+                    settings.daily_token_cap(),
+                    Arc::new(PgUsageLedger {
+                        pool: self.pool.clone(),
+                    }),
+                ))
+            }
             _ => Arc::new(HeuristicReasoner),
         }
     }
@@ -325,6 +430,14 @@ impl IntelligenceGrpc {
             },
         );
     }
+}
+
+/// A cache behind a mutex. A panic while it was held cannot leave a cache
+/// in a state worth refusing to read, so poisoning is ignored.
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Page size of every list RPC (CONTRACT.md §21): 50 unless asked, never
@@ -619,6 +732,68 @@ impl IntelligenceService for IntelligenceGrpc {
             .map(Response::new)
     }
 
+    async fn draft_fix(
+        &self,
+        request: Request<DraftFixRequest>,
+    ) -> Result<Response<Finding>, Status> {
+        let caller = caller(&request, Role::Member)?;
+        fixes::draft(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn apply_fixes(
+        &self,
+        request: Request<ApplyFixesRequest>,
+    ) -> Result<Response<Review>, Status> {
+        // Writes to the repository through the `github` adapter: approver,
+        // like opening a pull request (CONTRACT.md §18, §23.2).
+        let caller = caller(&request, Role::Approver)?;
+        fixes::apply(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_merge_readiness(
+        &self,
+        request: Request<GetMergeReadinessRequest>,
+    ) -> Result<Response<MergeReadiness>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        merge::readiness(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn merge_pull_request(
+        &self,
+        request: Request<MergePullRequestRequest>,
+    ) -> Result<Response<MergePullRequestResponse>, Status> {
+        let caller = caller(&request, Role::Approver)?;
+        merge::merge(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_security_overview(
+        &self,
+        request: Request<GetSecurityOverviewRequest>,
+    ) -> Result<Response<SecurityOverview>, Status> {
+        let caller = caller(&request, Role::Viewer)?;
+        security::overview(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn configure_dependabot(
+        &self,
+        request: Request<ConfigureDependabotRequest>,
+    ) -> Result<Response<ConfigureDependabotResponse>, Status> {
+        let caller = caller(&request, Role::Admin)?;
+        security::configure(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
     async fn generate_delivery_artifacts(
         &self,
         request: Request<GenerateDeliveryArtifactsRequest>,
@@ -643,6 +818,18 @@ impl IntelligenceService for IntelligenceGrpc {
     ) -> Result<Response<IntelligenceSettings>, Status> {
         let caller = caller(&request, Role::Admin)?;
         settings::update(self, &caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn test_reasoner(
+        &self,
+        request: Request<TestReasonerRequest>,
+    ) -> Result<Response<ReasonerTest>, Status> {
+        // Spends tokens and reads the workspace's configuration: admin,
+        // like changing the settings it tests.
+        let caller = caller(&request, Role::Admin)?;
+        settings::test_reasoner(self, &caller)
             .await
             .map(Response::new)
     }

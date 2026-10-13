@@ -5,11 +5,13 @@ import type {
   FindingDecision,
   FindingSeverity,
   PullRequestState,
+  PullRequestSummary,
   ReviewActivityAction,
   ReviewEvent,
   ReviewStatus,
   ReviewStepKey,
   ReviewStepStatus,
+  SuggestionSource,
 } from '../api/types'
 
 interface StatusMeta {
@@ -23,6 +25,36 @@ export const PR_STATE: Record<PullRequestState, StatusMeta> = {
   draft: { label: 'Draft', tone: 'neutral' },
   merged: { label: 'Merged', tone: 'brand' },
   closed: { label: 'Closed', tone: 'destructive' },
+}
+
+export interface PullRequestFlag {
+  key: 'dependabot' | 'fork' | 'bot'
+  label: string
+  /** What the tag means, for its tooltip. */
+  title: string
+}
+
+/**
+ * Where a pull request comes from, as tags (CONTRACT.md §23.6). Dependabot
+ * is a bot, so its row says "Dependabot" and not "Bot" as well.
+ */
+export function pullRequestFlags(
+  pullRequest: Pick<PullRequestSummary, 'isDependabot' | 'isFork' | 'isBot' | 'headRepo'>,
+): PullRequestFlag[] {
+  const flags: PullRequestFlag[] = []
+  if (pullRequest.isDependabot) {
+    flags.push({ key: 'dependabot', label: 'Dependabot', title: 'Opened by Dependabot' })
+  } else if (pullRequest.isBot) {
+    flags.push({ key: 'bot', label: 'Bot', title: 'Opened by a bot account' })
+  }
+  if (pullRequest.isFork) {
+    flags.push({
+      key: 'fork',
+      label: 'Fork',
+      title: pullRequest.headRepo ? `The branch lives in ${pullRequest.headRepo}` : 'The branch lives in another repository',
+    })
+  }
+  return flags
 }
 
 export const REVIEW_STATUS: Record<ReviewStatus, StatusMeta> = {
@@ -92,6 +124,22 @@ export const DECISION: Record<FindingDecision, StatusMeta> = {
   dismissed: { label: 'Dismissed', tone: 'neutral' },
 }
 
+export const SUGGESTION_SOURCE: Record<SuggestionSource, StatusMeta> = {
+  rule: { label: 'From the rule', tone: 'neutral' },
+  model: { label: 'Drafted by the model', tone: 'info' },
+  example: { label: 'Not committed', tone: 'neutral' },
+}
+
+/** An example to adapt by hand, as opposed to an exact replacement that Apply fixes can commit. */
+export function isExample(source: string | null | undefined): boolean {
+  return source === 'example'
+}
+
+/** Who wrote a finding's suggestion; null when the review does not say (a suggestion from before §23). */
+export function suggestionSource(source: string | null | undefined): StatusMeta | null {
+  return SUGGESTION_SOURCE[source as SuggestionSource] ?? null
+}
+
 export const REVIEW_EVENT: Record<ReviewEvent, { label: string; description: string }> = {
   comment: { label: 'Comment', description: 'Post without a verdict' },
   request_changes: { label: 'Request changes', description: 'Block merging until addressed' },
@@ -105,6 +153,9 @@ export const ACTIVITY_ACTION: Record<ReviewActivityAction, StatusMeta> = {
   'finding.dismissed': { label: 'Dismissed', tone: 'neutral' },
   'review.published': { label: 'Published', tone: 'success' },
   'review.failed': { label: 'Failed', tone: 'destructive' },
+  'fix.drafted': { label: 'Fix drafted', tone: 'info' },
+  'fixes.requested': { label: 'Fixes requested', tone: 'brand' },
+  'merge.requested': { label: 'Merge requested', tone: 'brand' },
 }
 
 /** Unknown actions (a newer gateway) still render. */
@@ -128,8 +179,11 @@ export function formatDurationMs(ms: number) {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`
 }
 
-/** Avatar for a GitHub login; `system` and empty actors get none. */
+/** Actors that are the platform itself, not an account on GitHub: the pipeline and the pull request watcher (CONTRACT.md §23.1). */
+const AUTOMATION: ReadonlySet<string> = new Set(['system', 'watcher'])
+
+/** Avatar for a GitHub login; automation and empty actors get none. */
 export function actorAvatarUrl(actor: string) {
-  if (!actor || actor === 'system' || actor.includes(' ')) return undefined
+  if (!actor || AUTOMATION.has(actor) || actor.includes(' ')) return undefined
   return `https://github.com/${encodeURIComponent(actor)}.png?size=48`
 }

@@ -4,7 +4,7 @@ import { api, unwrap } from '@/lib/api/client'
 import { fallbackPoll } from '@/lib/live/connection-store'
 
 import { isReviewRunning } from '../lib/labels'
-import { activityKeys, pullRequestKeys, reviewKeys, type ActivityFilters, type PullRequestFilter, type ReviewListFilters } from './keys'
+import { activityKeys, mergeKeys, pullRequestKeys, reviewKeys, type ActivityFilters, type PullRequestFilter, type ReviewListFilters } from './keys'
 
 /** Fallback cadence while a review runs and the live stream is down. */
 const RUNNING_INTERVAL = 3_000
@@ -53,6 +53,27 @@ export const reviewQueries = {
         const status = query.state.data?.status
         return status && isReviewRunning(status) ? fallbackPoll(RUNNING_INTERVAL) : false
       },
+    }),
+}
+
+export const mergeQueries = {
+  /**
+   * Whether the pull request can be merged now and what stands in the way
+   * (CONTRACT.md §23.3). Every call makes the server read GitHub, so the
+   * query never polls by itself: the merge frame turns an interval on only
+   * while GitHub is still working something out, and the live stream reaches
+   * it through the gated lane.
+   */
+  readiness: (projectId: string, number: number) =>
+    queryOptions({
+      queryKey: mergeKeys.readiness(projectId, number),
+      queryFn: ({ signal }) =>
+        unwrap(
+          api.GET('/api/v1/projects/{id}/pull-requests/{number}/merge-readiness', {
+            params: { path: { id: projectId, number } },
+            signal,
+          }),
+        ),
     }),
 }
 

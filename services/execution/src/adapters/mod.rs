@@ -1,7 +1,8 @@
 //! Tool adapters (CONTRACT.md §5.4). `simulated` is a timed dry run; `docker`
 //! and `github` do the real thing. A run picks a *runtime* (`Execution.adapter`)
 //! and the runner routes every step to the *family* its action type needs:
-//! `repo.open_pull_request` is GitHub's, everything else the docker family's.
+//! `repo.open_pull_request` and the pull request operations of CONTRACT.md
+//! §23 are GitHub's, everything else the docker family's.
 //! The reserved runtimes (`cloud`, `kubernetes`) answer UNIMPLEMENTED so a
 //! plan naming them fails loudly instead of silently dry-running.
 //!
@@ -29,6 +30,7 @@ pub mod gitops;
 pub mod http_health;
 pub mod jenkins;
 pub mod net;
+pub mod pull_requests;
 pub mod registry;
 pub mod simulated;
 pub mod webhook;
@@ -92,10 +94,27 @@ pub const DOCKER_ACTIONS: [&str; 7] = [
     "deps.install",
 ];
 
-/// Action types the github family runs. `repo.checkout` is listed because a
-/// github run may download the tree first; it is still executed by the
-/// docker family (a tarball download needs no daemon).
-pub const GITHUB_ACTIONS: [&str; 2] = ["repo.checkout", "repo.open_pull_request"];
+/// Action types of the pull request autopilot (CONTRACT.md §23.5).
+pub const COMMIT_FIXES: &str = "repo.commit_fixes";
+pub const VERIFY_MERGEABLE: &str = "repo.verify_mergeable";
+pub const MERGE_PULL_REQUEST: &str = "repo.merge_pull_request";
+pub const DELETE_BRANCH: &str = "repo.delete_branch";
+pub const ENABLE_SECURITY_UPDATES: &str = "repo.enable_security_updates";
+pub const OPEN_PULL_REQUEST: &str = "repo.open_pull_request";
+const CHECKOUT: &str = "repo.checkout";
+
+/// Action types the github family runs (CONTRACT.md §5.4). `repo.checkout`
+/// is listed because a github run may download the tree first; it is still
+/// executed by the docker family (a tarball download needs no daemon).
+pub const GITHUB_ACTIONS: [&str; 7] = [
+    CHECKOUT,
+    OPEN_PULL_REQUEST,
+    COMMIT_FIXES,
+    VERIFY_MERGEABLE,
+    MERGE_PULL_REQUEST,
+    DELETE_BRANCH,
+    ENABLE_SECURITY_UPDATES,
+];
 
 /// Longest log line the runner stores; longer lines are cut, not dropped.
 pub const MAX_LOG_LINE_BYTES: usize = 2048;
@@ -108,7 +127,7 @@ pub enum Family {
 }
 
 pub fn family_of(action_type: &str) -> Family {
-    if action_type == "repo.open_pull_request" {
+    if action_type != CHECKOUT && GITHUB_ACTIONS.contains(&action_type) {
         Family::Github
     } else {
         Family::Docker
@@ -135,13 +154,14 @@ pub fn runtime_name(raw: &str) -> Result<&'static str, Status> {
 }
 
 /// Whether `runtime` can run a step of `action_type`. The simulated runtime
-/// runs everything; `docker` runs its own family plus the github family so a
-/// plan can build locally and then open a pull request (§5.4 "a plan may mix
-/// families"); `github` only writes to the repository.
+/// runs everything; `docker` runs its own family and may open a pull
+/// request with what it built (§5.4 "a plan may mix families"); `github`
+/// only reads and writes the repository, which includes the pull request
+/// operations of §23 that no other real runtime runs.
 pub fn runnable(runtime: &str, action_type: &str) -> bool {
     match runtime {
         SIMULATED => true,
-        DOCKER => DOCKER_ACTIONS.contains(&action_type) || GITHUB_ACTIONS.contains(&action_type),
+        DOCKER => DOCKER_ACTIONS.contains(&action_type) || action_type == OPEN_PULL_REQUEST,
         GITHUB => GITHUB_ACTIONS.contains(&action_type),
         DELIVERY => DELIVERY_ACTIONS.contains(&action_type),
         _ => false,
@@ -733,6 +753,36 @@ mod tests {
         assert!(runnable(GITHUB, "repo.open_pull_request"));
         assert!(runnable(GITHUB, "repo.checkout"));
         assert!(!runnable(GITHUB, "container.build"));
+        // The pull request operations of §23 are the github family's: the
+        // github runtime accepts them and routes them to its own adapter,
+        // the simulated runtime dry-runs them, a delivery run never does.
+        for action in [
+            COMMIT_FIXES,
+            VERIFY_MERGEABLE,
+            MERGE_PULL_REQUEST,
+            DELETE_BRANCH,
+            ENABLE_SECURITY_UPDATES,
+        ] {
+            assert!(runnable(GITHUB, action), "{action}");
+            assert!(runnable(SIMULATED, action), "{action}");
+            assert!(!runnable(DOCKER, action), "{action}");
+            assert!(!runnable(DELIVERY, action), "{action}");
+            assert_eq!(family_of(action), Family::Github, "{action}");
+            assert_eq!(
+                registry.for_step(GITHUB, action, "github").unwrap().name(),
+                GITHUB,
+                "{action}"
+            );
+            assert_eq!(
+                registry
+                    .for_step(SIMULATED, action, "github")
+                    .unwrap()
+                    .name(),
+                SIMULATED,
+                "{action}"
+            );
+        }
+        assert_eq!(family_of("repo.checkout"), Family::Docker);
         assert_eq!(
             registry
                 .for_step(GITHUB, "repo.checkout", "")

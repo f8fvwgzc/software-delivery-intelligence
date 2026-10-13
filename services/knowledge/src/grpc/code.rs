@@ -5,6 +5,10 @@
 //! Data controls (§19) decide what a miss leaves behind: `none` returns the
 //! file without storing it, `session` stores it with an expiry, `persistent`
 //! stores it for good. Every file read is audited (`file.read`).
+//!
+//! `GetRepoFile` with a `ref` (§23) reads one file at another commit, a
+//! pull request's head: straight from GitHub, with the same limits and the
+//! same refusals, and never into the cache, whatever the data controls say.
 
 use sdi_common::grpc::db_status;
 use sdi_proto::knowledge::v1::*;
@@ -93,19 +97,32 @@ pub(super) async fn get_repo_file(
             "this file looks like a secret and is never displayed",
         ));
     }
+    // Before the project lookup: a malformed ref is the caller's mistake
+    // whatever project it names.
+    let reference = commit_ref(&req.r#ref)?;
     let project = state.project(caller, &req.project_id).await?;
-    let commit_sha = scanned_commit(state, caller, &project).await?;
-
-    let cached = db::code::get_file(&state.pool, ws, project.id, &commit_sha, path)
-        .await
-        .map_err(db_status)?;
-    let row = match cached {
-        Some(row) => row,
-        None => fetch_and_maybe_store(state, caller, &project, &commit_sha, path).await?,
+    let (row, fact_ids) = match reference {
+        // Another commit than the scanned one: read, answer, keep nothing.
+        // Facts describe the scanned snapshot, so none are claimed for it.
+        Some(sha) => (
+            fetch(state, caller, &project, &sha, path).await?,
+            Vec::new(),
+        ),
+        None => {
+            let commit_sha = scanned_commit(state, caller, &project).await?;
+            let cached = db::code::get_file(&state.pool, ws, project.id, &commit_sha, path)
+                .await
+                .map_err(db_status)?;
+            let row = match cached {
+                Some(row) => row,
+                None => fetch_and_maybe_store(state, caller, &project, &commit_sha, path).await?,
+            };
+            let fact_ids = db::facts::ids_for_path(&state.pool, ws, project.id, path)
+                .await
+                .map_err(db_status)?;
+            (row, fact_ids)
+        }
     };
-    let fact_ids = db::facts::ids_for_path(&state.pool, ws, project.id, path)
-        .await
-        .map_err(db_status)?;
     state.identity.audit_file_read(
         caller,
         &project.id.to_string(),
@@ -132,6 +149,98 @@ pub(super) async fn get_repo_file(
     })
 }
 
+/// The `ref` of a `GetRepoFile` request: nothing (the scanned commit), or
+/// a full commit SHA. Branch names, tags and abbreviated SHAs are refused:
+/// what is read must be exactly the commit the caller reviewed, and a name
+/// can move between two calls.
+pub(crate) fn commit_ref(raw: &str) -> Result<Option<String>, Status> {
+    let reference = raw.trim();
+    if reference.is_empty() {
+        return Ok(None);
+    }
+    if reference.len() != 40 || !reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Status::invalid_argument(
+            "ref must be a full 40-character commit SHA",
+        ));
+    }
+    Ok(Some(reference.to_ascii_lowercase()))
+}
+
+/// What GitHub holds for `path` at `commit_sha`, classified and bounded.
+struct Fetched {
+    content: String,
+    binary: bool,
+    truncated: bool,
+    size: u64,
+}
+
+/// Reads the file from GitHub: at most [`MAX_FILE_BYTES`], binary files
+/// without content.
+async fn fetch_raw(
+    state: &KnowledgeState,
+    caller: &Caller,
+    project: &ProjectRow,
+    commit_sha: &str,
+    path: &str,
+) -> Result<Fetched, Status> {
+    let ws = caller.workspace_id;
+    let (owner, name) = repo_parts(project)?;
+    let github = state.github(caller).await?;
+    let raw = github
+        .file_raw(owner, name, path, commit_sha, MAX_FILE_BYTES)
+        .await
+        .map_err(github_status)?;
+    let classified = classify(path, &raw.bytes, raw.truncated);
+    // A cut file's real size is what GitHub announced, else what the tree
+    // said (only the scanned commit has one); as a last resort the bytes
+    // read, a lower bound.
+    let size = match (raw.truncated, raw.content_length) {
+        (false, _) => raw.bytes.len() as u64,
+        (true, Some(len)) => len,
+        (true, None) => db::code::tree_entry_size(&state.pool, ws, project.id, commit_sha, path)
+            .await
+            .map_err(db_status)?
+            .and_then(|size| u64::try_from(size).ok())
+            .unwrap_or(raw.bytes.len() as u64),
+    };
+    Ok(Fetched {
+        content: classified.content,
+        binary: classified.binary,
+        truncated: classified.truncated,
+        size,
+    })
+}
+
+impl Fetched {
+    fn as_new<'a>(&'a self, commit_sha: &'a str, path: &'a str) -> NewFile<'a> {
+        NewFile {
+            commit_sha,
+            path,
+            content: &self.content,
+            binary: self.binary,
+            truncated: self.truncated,
+            size: self.size,
+            language: sdi_analyzer::language_for_path(path),
+        }
+    }
+}
+
+/// Fetches the file for the answer only: nothing is written.
+async fn fetch(
+    state: &KnowledgeState,
+    caller: &Caller,
+    project: &ProjectRow,
+    commit_sha: &str,
+    path: &str,
+) -> Result<FileRow, Status> {
+    let fetched = fetch_raw(state, caller, project, commit_sha, path).await?;
+    Ok(unstored(
+        caller.workspace_id,
+        project.id,
+        &fetched.as_new(commit_sha, path),
+    ))
+}
+
 /// Fetches the file and, depending on the workspace's `code_cache`, stores
 /// it with or without an expiry, or not at all.
 async fn fetch_and_maybe_store(
@@ -142,33 +251,8 @@ async fn fetch_and_maybe_store(
     path: &str,
 ) -> Result<FileRow, Status> {
     let ws = caller.workspace_id;
-    let (owner, name) = repo_parts(project)?;
-    let github = state.github(caller).await?;
-    let raw = github
-        .file_raw(owner, name, path, commit_sha, MAX_FILE_BYTES)
-        .await
-        .map_err(github_status)?;
-    let classified = classify(path, &raw.bytes, raw.truncated);
-    // A cut file's real size is what GitHub announced, else what the tree
-    // said; only as a last resort the bytes read (a lower bound).
-    let size = match (raw.truncated, raw.content_length) {
-        (false, _) => raw.bytes.len() as u64,
-        (true, Some(len)) => len,
-        (true, None) => db::code::tree_entry_size(&state.pool, ws, project.id, commit_sha, path)
-            .await
-            .map_err(db_status)?
-            .and_then(|size| u64::try_from(size).ok())
-            .unwrap_or(raw.bytes.len() as u64),
-    };
-    let file = NewFile {
-        commit_sha,
-        path,
-        content: &classified.content,
-        binary: classified.binary,
-        truncated: classified.truncated,
-        size,
-        language: sdi_analyzer::language_for_path(path),
-    };
+    let fetched = fetch_raw(state, caller, project, commit_sha, path).await?;
+    let file = fetched.as_new(commit_sha, path);
     let controls = state.controls.get(caller).await;
     if !controls.stores_files() {
         return Ok(unstored(ws, project.id, &file));
@@ -184,8 +268,8 @@ async fn fetch_and_maybe_store(
     .map_err(db_status)
 }
 
-/// The row a `code_cache = none` workspace would have stored, kept only for
-/// the answer.
+/// The row that would have been stored, kept only for the answer: what a
+/// `code_cache = none` workspace gets, and every read at a `ref`.
 fn unstored(workspace_id: uuid::Uuid, project_id: uuid::Uuid, file: &NewFile<'_>) -> FileRow {
     FileRow {
         workspace_id,
@@ -469,6 +553,33 @@ mod tests {
         ] {
             let error = validate_path(bad).unwrap_err();
             assert_eq!(error.code(), tonic::Code::InvalidArgument, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_ref_is_a_full_commit_sha_or_nothing() {
+        assert_eq!(commit_ref("").unwrap(), None);
+        assert_eq!(commit_ref("   ").unwrap(), None);
+        let sha = "0123456789abcdef0123456789ABCDEF01234567";
+        assert_eq!(
+            commit_ref(&format!(" {sha} ")).unwrap().as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        for bad in [
+            "main",
+            "refs/heads/main",
+            "v1.2.3",
+            "0123456",
+            // 39 and 41 characters, and 40 that are not all hex.
+            "0123456789abcdef0123456789abcdef0123456",
+            "0123456789abcdef0123456789abcdef012345678",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef0123456/",
+            "../../../0123456789abcdef0123456789abcdef",
+        ] {
+            let error = commit_ref(bad).unwrap_err();
+            assert_eq!(error.code(), tonic::Code::InvalidArgument, "{bad:?}");
+            assert!(error.message().contains("40-character"), "{bad:?}");
         }
     }
 

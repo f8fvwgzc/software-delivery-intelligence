@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 import type { Review } from '../../api/types'
 import { REVIEW_STATUS, actorAvatarUrl, shortSha } from '../../lib/labels'
+import { ExecutionLink } from '@/components/shared/data/execution-link'
 import { count } from '@/lib/intl'
 
 interface ReviewHeaderProps {
@@ -16,7 +17,7 @@ interface ReviewHeaderProps {
   actions?: React.ReactNode
 }
 
-/** PR title, number, author and head sha; the review's state as the eyebrow. */
+/** PR title, number, author and head sha; the review's state as the eyebrow; the ways to its fix and merge executions. */
 export function ReviewHeader({ review, actions }: ReviewHeaderProps) {
   const status = REVIEW_STATUS[review.status]
 
@@ -57,6 +58,9 @@ export function ReviewHeader({ review, actions }: ReviewHeaderProps) {
               <ExternalLinkIcon className="size-3" />
             </a>
           ) : null}
+          {/* The executions this review started (CONTRACT.md §23): the latest fix commit and the latest merge. */}
+          {review.fixExecutionId ? <ExecutionLink executionId={review.fixExecutionId}>Fix run</ExecutionLink> : null}
+          {review.mergeExecutionId ? <ExecutionLink executionId={review.mergeExecutionId}>Merge run</ExecutionLink> : null}
         </span>
       }
       actions={actions}

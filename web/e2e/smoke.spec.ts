@@ -30,6 +30,7 @@ const PROJECT_ROUTES = [
   { path: '', title: 'Understanding' },
   { path: '/architecture', title: 'Architecture' },
   { path: '/dependencies', title: 'Dependencies' },
+  { path: '/security', title: 'Security' },
   { path: '/delivery', title: 'Delivery' },
   { path: '/proposals', title: 'Proposals' },
   { path: '/documents', title: 'Documents' },

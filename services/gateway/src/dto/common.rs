@@ -66,7 +66,9 @@ impl Adapter {
 #[serde(rename_all = "camelCase")]
 pub struct PlatformEvent {
     /// `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,
-    /// or, for continuous delivery, `release`, `deployment` or `environment`.
+    /// for continuous delivery `release`, `deployment` or `environment`, and for code review
+    /// and the pull request autopilot `review` (also when a fix or merge execution is
+    /// attached to it) or `finding` (also when a fix was drafted for it).
     pub entity: String,
     /// Id of the entity that changed.
     pub entity_id: String,

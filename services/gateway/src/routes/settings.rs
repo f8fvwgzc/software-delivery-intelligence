@@ -8,7 +8,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     dto::{
-        intelligence::IntelligenceSettings,
+        intelligence::{IntelligenceSettings, ReasonerTest},
         knowledge::KnowledgeSettings,
         settings::{Settings, UpdateSettingsRequest},
     },
@@ -17,7 +17,9 @@ use crate::{
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(get_settings, update_settings))
+    OpenApiRouter::new()
+        .routes(routes!(get_settings, update_settings))
+        .routes(routes!(test_reasoner))
 }
 
 async fn knowledge_settings(state: &Scoped) -> ApiResult<KnowledgeSettings> {
@@ -102,4 +104,25 @@ async fn update_settings(
         knowledge,
         intelligence,
     }))
+}
+
+/// Makes one tiny call to the workspace's model and says what came back,
+/// or names the setting that keeps the model from being called: the data
+/// control, the reasoner choice, a missing key, a missing model name, the
+/// daily cap, or what the provider answered (its status, never its body).
+/// A misconfiguration is an answer here, not an error. Admin; the call
+/// counts against the daily token cap.
+#[utoipa::path(
+    post,
+    path = "/settings/reasoner/test",
+    tag = "system",
+    responses((status = 200, body = ReasonerTest), ErrorResponses),
+)]
+async fn test_reasoner(state: Scoped) -> ApiResult<Json<ReasonerTest>> {
+    let test = state
+        .intelligence()
+        .test_reasoner(intelligence::TestReasonerRequest {})
+        .await?
+        .into_inner();
+    Ok(Json(test.into()))
 }

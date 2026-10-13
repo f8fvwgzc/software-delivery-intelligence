@@ -61,7 +61,7 @@ export default function DataPrivacyPage() {
       <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
         <Panel
           title="Controls"
-          description="Per workspace. Defaults: per-commit cache for 24 hours, whole chunks, reasoner off, audit kept a year."
+          description="Per workspace. Defaults: per-commit cache for 24 hours, whole chunks, reasoner off, no source lines to the model, audit kept a year."
           className="lg:col-span-7"
           skeleton={<DataControlsSkeleton />}
         >

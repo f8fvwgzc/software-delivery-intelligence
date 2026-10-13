@@ -13,6 +13,9 @@ use crate::{convert, db};
 
 pub const CODE_CACHE_MODES: [&str; 3] = ["none", "session", "persistent"];
 pub const REASONERS: [&str; 2] = ["off", "claude"];
+/// What may be sent to the model so it can write a fix (CONTRACT.md §19,
+/// §23): nothing, or the lines a finding points at.
+pub const CODE_TO_MODEL_MODES: [&str; 2] = ["off", "changed_lines"];
 
 pub async fn get(
     state: &IdentityState,
@@ -57,17 +60,29 @@ pub async fn update(
             "audit_retention_days must be at most 3650 (0 keeps forever)",
         ));
     }
+    // The one field of this message that may be left out. A caller written
+    // before the field existed sends the whole message with it empty; that
+    // must not undo what an admin chose, so empty keeps the stored value.
+    let code_to_model = controls.code_to_model.trim().to_ascii_lowercase();
+    if !code_to_model.is_empty() && !CODE_TO_MODEL_MODES.contains(&code_to_model.as_str()) {
+        return Err(Status::invalid_argument(
+            "code_to_model must be one of off, changed_lines",
+        ));
+    }
     db::workspaces::ensure_controls(&state.pool, id)
         .await
         .map_err(db_status)?;
     db::controls::update(
         &state.pool,
         id,
-        &code_cache,
-        controls.code_cache_ttl_hours as i32,
-        controls.minimal_chunks,
-        &reasoner,
-        controls.audit_retention_days as i32,
+        db::controls::ControlsUpdate {
+            code_cache: &code_cache,
+            ttl_hours: controls.code_cache_ttl_hours as i32,
+            minimal_chunks: controls.minimal_chunks,
+            reasoner: &reasoner,
+            audit_retention_days: controls.audit_retention_days as i32,
+            code_to_model: (!code_to_model.is_empty()).then_some(code_to_model.as_str()),
+        },
     )
     .await
     .map_err(db_status)?;

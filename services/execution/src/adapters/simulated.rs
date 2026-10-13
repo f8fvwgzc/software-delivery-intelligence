@@ -48,6 +48,50 @@ pub fn success_output(step: &StepInput, elapsed: Duration) -> String {
             .unwrap_or_else(|| default.to_owned())
     };
     let secs = elapsed.as_secs_f64();
+    // The pull request operations of CONTRACT.md §23 change a repository
+    // when they are real: the dry run says what it would do and that it
+    // did not, and reports no commit, merge or setting as an output.
+    let pull_request = || format!("pull request #{}", p("pull_request", "?"));
+    match step.action_type.as_str() {
+        super::COMMIT_FIXES => {
+            return format!(
+                "Would commit the review fixes to {} of {} on top of {}\nNothing was committed (dry run, {secs:.1}s)",
+                p("branch", "the head branch"),
+                pull_request(),
+                p("expected_head_sha", "its head")
+            );
+        }
+        super::VERIFY_MERGEABLE => {
+            return format!(
+                "Would read {} and the checks of {} on GitHub\nNothing was read or verified (dry run, {secs:.1}s)",
+                pull_request(),
+                p("expected_head_sha", "its head")
+            );
+        }
+        super::MERGE_PULL_REQUEST => {
+            return format!(
+                "Would merge {} at {} with {}\nNothing was merged (dry run, {secs:.1}s)",
+                pull_request(),
+                p("expected_head_sha", "its head"),
+                p("merge_method", "the repository's merge method")
+            );
+        }
+        super::DELETE_BRANCH => {
+            return format!(
+                "Would delete {} once {} is merged\nNothing was deleted (dry run, {secs:.1}s)",
+                p("branch", "the head branch"),
+                pull_request()
+            );
+        }
+        super::ENABLE_SECURITY_UPDATES => {
+            return format!(
+                "Would turn on Dependabot (alerts: {}, security updates: {})\nNo repository setting was changed (dry run, {secs:.1}s)",
+                p("alerts", "false"),
+                p("security_updates", "false")
+            );
+        }
+        _ => {}
+    }
     // The action type says what the step does; the adapter only decides the
     // shape when the action type is not one we know.
     let kind = match step.action_type.as_str() {
@@ -147,6 +191,23 @@ pub fn failure_output(step: &StepInput, code: &str) -> String {
         diagnosis::BUILD_FAILED => "#4 [builder 3/4] RUN build\n#4 12.3 error TS2322: Type 'string' is not assignable to type 'number'.\n#4 ERROR: process \"/bin/sh -c build\" did not complete successfully: exit code 2".to_owned(),
         diagnosis::TESTS_FAILED => "test result: FAILED. 126 passed; 2 failed; 0 ignored\n---- api::health_returns_ok stdout ----\nassertion failed: status == 200 (got 500)".to_owned(),
         diagnosis::DEPENDENCY_CONFLICT => "error: failed to select a version for `serde` (conflicting requirements ^1.0.200 and =1.0.188)".to_owned(),
+        diagnosis::HEAD_MOVED => format!(
+            "pull request #{} is at another commit now; this run was planned for {}. Nothing was committed or merged (injected fault).",
+            p("pull_request", "?"),
+            p("expected_head_sha", "its earlier head")
+        ),
+        diagnosis::MERGE_CONFLICT => format!(
+            "pull request #{} conflicts with its base branch. Nothing was merged (injected fault).",
+            p("pull_request", "?")
+        ),
+        diagnosis::CHECKS_FAILING => format!(
+            "pull request #{} is not ready to merge: 1 check failed (ci) and 1 check is still running (build). Nothing was merged (injected fault).",
+            p("pull_request", "?")
+        ),
+        diagnosis::MERGE_BLOCKED => format!(
+            "GitHub refused to merge pull request #{}: at least 1 approving review is required. Nothing was merged (injected fault).",
+            p("pull_request", "?")
+        ),
         other => format!("{} failed: {other} (injected fault)", step.key),
     }
 }
@@ -224,6 +285,91 @@ mod tests {
             .run(&step("build", "docker", "container.build"), &ctx)
             .await;
         assert!(matches!(ok, StepOutcome::Succeeded { .. }));
+    }
+
+    /// The pull request steps of CONTRACT.md §23 are dry-run like every
+    /// other: the output says what would happen and that it did not, no
+    /// output claims a commit or a merge, and their failure codes can be
+    /// rehearsed.
+    #[tokio::test]
+    async fn pull_request_steps_are_dry_run_and_their_faults_can_be_injected() {
+        let adapter = SimulatedAdapter::new(1);
+        let with_params = |action_type: &str| StepInput {
+            params: [
+                ("pull_request", "12"),
+                ("branch", "fix/lint"),
+                ("expected_head_sha", "a1b2c3d"),
+                ("merge_method", "squash"),
+                ("alerts", "true"),
+            ]
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+            ..step("pr", "github", action_type)
+        };
+        for (action_type, says) in [
+            (
+                crate::adapters::COMMIT_FIXES,
+                "Nothing was committed (dry run",
+            ),
+            (
+                crate::adapters::VERIFY_MERGEABLE,
+                "Nothing was read or verified (dry run",
+            ),
+            (
+                crate::adapters::MERGE_PULL_REQUEST,
+                "Nothing was merged (dry run",
+            ),
+            (
+                crate::adapters::DELETE_BRANCH,
+                "Nothing was deleted (dry run",
+            ),
+            (
+                crate::adapters::ENABLE_SECURITY_UPDATES,
+                "No repository setting was changed (dry run",
+            ),
+        ] {
+            match adapter
+                .run(&with_params(action_type), &RunContext::default())
+                .await
+            {
+                StepOutcome::Succeeded { output, outputs } => {
+                    assert!(output.contains(says), "{action_type}: {output}");
+                    assert!(output.starts_with("Would "), "{action_type}: {output}");
+                    assert!(outputs.is_empty(), "{action_type}: {outputs:?}");
+                }
+                other => panic!("{action_type}: {other:?}"),
+            }
+        }
+        for code in [
+            diagnosis::HEAD_MOVED,
+            diagnosis::MERGE_CONFLICT,
+            diagnosis::CHECKS_FAILING,
+            diagnosis::MERGE_BLOCKED,
+        ] {
+            let ctx = RunContext {
+                fault: Some(Fault {
+                    step_key: "pr".into(),
+                    code: code.to_ascii_lowercase(),
+                }),
+                ..Default::default()
+            };
+            match adapter
+                .run(&with_params(crate::adapters::MERGE_PULL_REQUEST), &ctx)
+                .await
+            {
+                StepOutcome::Failed {
+                    code: failed,
+                    raw_output,
+                    ..
+                } => {
+                    assert_eq!(failed, code);
+                    assert!(raw_output.contains("#12"), "{raw_output}");
+                    assert!(raw_output.contains("injected fault"), "{raw_output}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
     }
 
     #[test]

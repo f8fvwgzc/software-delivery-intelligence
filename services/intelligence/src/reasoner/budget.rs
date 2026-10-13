@@ -11,6 +11,8 @@ pub const CONTEXT_TOKENS: usize = 6_000;
 pub const SUMMARY_MAX_TOKENS: u32 = 600;
 pub const NEGOTIATION_MAX_TOKENS: u32 = 400;
 pub const DIAGRAM_MAX_TOKENS: u32 = 250;
+/// A drafted fix (CONTRACT.md §23.2): the replacement for a finding's lines.
+pub const FIX_MAX_TOKENS: u32 = 800;
 
 /// Top-level keys in the order they are worth keeping: findings and ranked
 /// options first, the facts of the project next, graph and summary

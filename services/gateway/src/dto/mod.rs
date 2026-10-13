@@ -5,6 +5,7 @@
 use chrono::{DateTime, Utc};
 use prost_types::Timestamp;
 
+pub mod autopilot;
 pub mod code;
 pub mod common;
 pub mod delivery;

@@ -550,11 +550,7 @@ async fn pipeline(
     let dependabot_prs = match github.open_pulls(owner, name).await {
         Ok(pulls) => pulls
             .iter()
-            .filter(|p| {
-                p.user
-                    .as_ref()
-                    .is_some_and(|u| u.login == "dependabot[bot]")
-            })
+            .filter(|p| p.user.as_ref().is_some_and(|u| u.is_dependabot()))
             .count() as i32,
         Err(error) => {
             tracing::warn!(%error, "could not count dependabot pull requests");

@@ -1,6 +1,6 @@
 import { Skeleton } from '@/components/ui/skeleton'
 
-/** Same frame as the live form: three radio rows, a switch, a toggle, two inputs, a footer. */
+/** Same frame as the live form: three radio rows, a switch, two toggles, two inputs, a footer. */
 export function DataControlsSkeleton() {
   return (
     <div className="flex flex-col gap-5 rounded-lg p-4 ring-1 ring-border" aria-hidden>
@@ -19,6 +19,7 @@ export function DataControlsSkeleton() {
         <Skeleton className="h-3 w-28" />
       </div>
       <Skeleton className="h-7 w-32" />
+      <Skeleton className="h-7 w-56" />
       <Skeleton className="h-8 w-48" />
       <div className="flex justify-end">
         <Skeleton className="h-7 w-28" />

@@ -26,7 +26,7 @@ pub struct PolicyRow {
 
 /// `(action_type, label, risk, decision, editable)`: the §5.2 table. The
 /// bootstrap workspace got the same rows from the migrations.
-pub const SEED: [(&str, &str, &str, &str, bool); 27] = [
+pub const SEED: [(&str, &str, &str, &str, bool); 32] = [
     ("repo.read", "Read repository", "SAFE", "AUTO", false),
     ("repo.analyze", "Analyze repository", "SAFE", "AUTO", false),
     ("tests.run_local", "Run tests locally", "SAFE", "AUTO", true),
@@ -191,6 +191,43 @@ pub const SEED: [(&str, &str, &str, &str, bool); 27] = [
         "deploy.rollback",
         "Roll back an environment",
         "HIGH",
+        "APPROVAL",
+        true,
+    ),
+    // CONTRACT.md §23: the pull request autopilot. Merging waits for a
+    // person unless the workspace sets that one policy to AUTO.
+    (
+        "repo.commit_fixes",
+        "Commit review fixes to a pull request branch",
+        "MEDIUM",
+        "APPROVAL",
+        true,
+    ),
+    (
+        "repo.verify_mergeable",
+        "Check that a pull request can be merged",
+        "SAFE",
+        "AUTO",
+        false,
+    ),
+    (
+        "repo.merge_pull_request",
+        "Merge a pull request",
+        "HIGH",
+        "APPROVAL",
+        true,
+    ),
+    (
+        "repo.delete_branch",
+        "Delete a merged branch",
+        "MEDIUM",
+        "AUTO",
+        true,
+    ),
+    (
+        "repo.enable_security_updates",
+        "Turn on Dependabot alerts and security updates",
+        "MEDIUM",
         "APPROVAL",
         true,
     ),

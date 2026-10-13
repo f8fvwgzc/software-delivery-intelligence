@@ -42,8 +42,7 @@ async fn connect() -> Option<(PgPool, String)> {
     let pool = sdi_common::db::connect(&url, &schema)
         .await
         .expect("dev database reachable");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+    sdi_knowledge::db::migrate(&pool)
         .await
         .expect("migrations apply");
     Some((pool, schema))

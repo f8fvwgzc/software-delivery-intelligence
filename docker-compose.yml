@@ -189,7 +189,9 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      # Pull request watcher (CONTRACT.md §23); 0 turns it off.
+      SDI_PR_WATCH_SECONDS: ${SDI_PR_WATCH_SECONDS:-60}
     networks:
       - backend
     depends_on:

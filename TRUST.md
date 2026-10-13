@@ -50,6 +50,7 @@ scoped to a workspace and nothing can be read across that boundary.
 | **What SDI produced**: proposals, generated files, decisions, documents, diagrams | Postgres, `intelligence` schema | you delete them | Delete per item or with the workspace. |
 | **Execution records**: step logs and outputs of runs | Postgres, `execution` schema | you delete them | Checkout directories are removed after every run. |
 | **LLM requests** | nowhere | — | Off by default. Only `reasoner=claude` with *your* key sends anything, and the payload is structured context (facts, options, a spec), never file contents. |
+| **Source lines sent to the model** to draft a code fix | nowhere (the drafted fix is stored with the review) | — | Off by default, and a second switch on top of the reasoner: `code_to_model`. When you set it to `changed_lines`, drafting a fix sends the lines one finding points at and at most 20 lines either side, 120 lines at most, from the pull request under review. Never a whole file, never a finding about a secret, and a line that looks like a secret is replaced by `<redacted>` first. |
 | **Audit trail**: who did what, when | `identity.audit` | `audit_retention_days`, default 365 | Retention is a workspace setting; 0 keeps forever. |
 | **GitHub credentials** | memory (installation tokens, at most 55 minutes); Postgres `identity` schema, encrypted (OAuth tokens) | the session ends or is revoked | Encrypted with `SDI_SESSION_SECRET`; rotating the secret invalidates them. |
 
@@ -70,6 +71,17 @@ workspace, with the current values of the settings.
 - **No LLM calls without your key.** Bring your own key (BYOK): the
   reasoner is off by default, and when on it uses the key stored for your
   workspace, encrypted at rest and never returned by the API.
+- **No source code to a model unless you switch it on.** With the reasoner
+  on, the model still sees only structured context. Sending source lines
+  is a separate setting, off by default, limited to the lines a review
+  finding points at, and only used to draft a fix that a person then
+  accepts or dismisses.
+- **No change to your repository without a decision.** SDI does not
+  publish a review, commit a fix, merge a pull request or change a
+  repository setting on its own. Each of those is a run that waits for an
+  approval under the default policies. The one way to remove the person
+  from a merge is for a workspace admin to set that policy to automatic,
+  and the audit trail records who did.
 - **No access beyond GitHub's.** Identity *is* GitHub. Roles are derived
   from organisation ownership and team membership and can only be
   narrowed by an admin, never widened. Losing organisation membership

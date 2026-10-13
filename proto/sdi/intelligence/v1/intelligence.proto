@@ -58,6 +58,25 @@ service IntelligenceService {
   // Recent review and finding activity, newest first.
   rpc ListReviewActivity(ListReviewActivityRequest) returns (ListReviewActivityResponse);
 
+  // --- Pull request autopilot (CONTRACT.md §23) -------------------------------
+  // Asks the workspace's model to write the replacement for the lines one
+  // finding points at. Stored as the finding's suggestion with
+  // `suggestion_source = "model"`; the finding stays undecided.
+  rpc DraftFix(DraftFixRequest) returns (Finding);
+  // Commits the suggestions of every accepted finding to the pull request
+  // branch, through an execution that waits for approval.
+  rpc ApplyFixes(ApplyFixesRequest) returns (Review);
+  // Whether a pull request can be merged now, and what stands in the way.
+  rpc GetMergeReadiness(GetMergeReadinessRequest) returns (MergeReadiness);
+  // Merges a pull request through an execution that waits for approval.
+  rpc MergePullRequest(MergePullRequestRequest) returns (MergePullRequestResponse);
+  // Vulnerable dependencies of a project: Dependabot alerts when GitHub
+  // serves them, else an OSV lookup of the manifest versions.
+  rpc GetSecurityOverview(GetSecurityOverviewRequest) returns (SecurityOverview);
+  // Turns Dependabot on for the repository (alerts, security updates, the
+  // configuration file) through an execution that waits for approval.
+  rpc ConfigureDependabot(ConfigureDependabotRequest) returns (ConfigureDependabotResponse);
+
   // --- Delivery setup ---------------------------------------------------------
   // Files that wire a project's CI to its registry and its environments'
   // deployers (build-and-push workflow, deploy workflow, Flux / Argo CD
@@ -67,6 +86,10 @@ service IntelligenceService {
   // --- Settings and live events ---------------------------------------------
   rpc GetSettings(GetSettingsRequest) returns (IntelligenceSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (IntelligenceSettings);
+  // Makes one tiny call to the workspace's model and reports what came
+  // back, or which setting keeps the model from being called at all
+  // (CONTRACT.md §19). Counts against the daily token cap like any call.
+  rpc TestReasoner(TestReasonerRequest) returns (ReasonerTest);
   // Proposal, decision and document changes as they happen. Never ends.
   rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
 
@@ -588,7 +611,9 @@ message Finding {
   string path = 7;
   uint32 line = 8;
   uint32 end_line = 9;
-  // Optional replacement for the referenced lines (a suggestion block).
+  // Code that goes with the finding. What it is depends on
+  // `suggestion_source`: the exact replacement for lines `line..=end_line`
+  // ("rule", "model"), or an example to adapt by hand ("example").
   string suggestion = 10;
   // Rule id, e.g. "secrets.aws_key", "docker.root_user".
   string rule = 11;
@@ -596,6 +621,21 @@ message Finding {
   string decision_note = 13;
   string decided_by = 14;
   google.protobuf.Timestamp decided_at = 15;
+  // What `suggestion` is and who wrote it (CONTRACT.md §23.2):
+  // "rule"    the analyzer's exact replacement for the lines;
+  // "model"   a replacement the workspace's model drafted on request;
+  // "example" the analyzer's illustration (a line to add, text with a
+  //           placeholder): shown with the finding, never committed, and
+  //           published as plain code rather than a suggestion block;
+  // ""        there is none.
+  // Only "rule" and "model" are committed by ApplyFixes.
+  string suggestion_source = 16;
+  // The fix execution that carries this suggestion, once one was requested.
+  string fix_execution_id = 17;
+  // The model can be asked to draft a fix for this finding (§23): it has no
+  // replacement yet (none at all, or only an example), it points at lines
+  // of a text file, and it is not about a secret or a workflow file.
+  bool can_draft_fix = 18;
 }
 
 message ReviewStep {
@@ -632,6 +672,13 @@ message Review {
   string requested_by = 18;
   google.protobuf.Timestamp created_at = 19;
   google.protobuf.Timestamp updated_at = 20;
+  // Latest execution that commits this review's fixes (§23), if any.
+  string fix_execution_id = 21;
+  // Latest execution that merges this pull request (§23), if any.
+  string merge_execution_id = 22;
+  // Accepted findings with a replacement ("rule" or "model") that no fix
+  // execution carries yet. Examples never count.
+  uint32 fixes_ready = 23;
 }
 
 message StartReviewRequest {
@@ -697,6 +744,10 @@ message IntelligenceSettings {
   // only answers when the workspace's data controls allow the reasoner and
   // a key exists; it falls back to the heuristic otherwise.
   string reasoner = 2;
+  // The model calls use: the settings' choice, else the one stored with the
+  // workspace key, else `LLM_MODEL`; for the Anthropic provider only, else
+  // `ANTHROPIC_MODEL`, else the built-in default. Empty when an
+  // OpenAI-compatible provider has no model named: nothing is called then.
   string model = 3;
   bool api_key_configured = 4;
   // Cost shrink: options above this monthly cost lose ranking unless a budget says otherwise.
@@ -718,9 +769,52 @@ message IntelligenceSettings {
   // Tokens (input + output) the workspace may spend per UTC day before the
   // reasoner falls back to the heuristic. Default 200000.
   uint64 reasoner_daily_token_cap = 10;
+  // Pull request autopilot (CONTRACT.md §23).
+  // During a review, ask the model to draft a fix for findings that have no
+  // mechanical suggestion (at most 10 per review). Needs the reasoner and
+  // the `code_to_model` data control. Default off.
+  bool auto_draft_fixes = 11;
+  // Whose pull requests SDI asks to merge on its own once they are ready:
+  // "off" (default) | "dependabot". The merge still runs as an execution, so
+  // the `repo.merge_pull_request` policy decides whether a person approves.
+  string auto_merge = 12;
+  // A merge needs an SDI review of the current head. Default true. Off, a
+  // pull request SDI never reviewed can be merged; a review that exists
+  // for the head still blocks while it has an undecided finding of
+  // severity high or critical. A plain bool cannot say "unset":
+  // `UpdateSettings` takes the whole message, so send what `GetSettings`
+  // returned with the change applied (the gateway does).
+  bool merge_requires_review = 13;
+  // Read-only. Seconds between two looks at the open pull requests
+  // (`SDI_PR_WATCH_SECONDS`); 0 means the operator turned the watcher off.
+  uint32 pr_watch_interval_seconds = 14;
+  // Read-only. When the watcher last looked at this workspace.
+  google.protobuf.Timestamp pr_watch_last_run_at = 15;
+  // Read-only. Why the watcher's last look at this workspace failed; empty when it worked.
+  string pr_watch_last_error = 16;
 }
 
 message GetSettingsRequest {}
+
+message TestReasonerRequest {}
+
+message ReasonerTest {
+  // "ok" | "off" (the data controls keep the reasoner off) | "heuristic"
+  // (the settings choose the built-in reasoner) | "no_key" | "no_model" |
+  // "cap_reached" | "provider_error" | "identity_unavailable"
+  string status = 1;
+  // A sentence: what works, or what to change and where.
+  string message = 2;
+  // "anthropic" | "openai_compatible"
+  string provider = 3;
+  // The model the call would use; empty when none is named.
+  string model = 4;
+  // Where the call goes: scheme and host of the endpoint, never a path or a query.
+  string endpoint = 5;
+  uint32 latency_ms = 6;
+  uint32 input_tokens = 7;
+  uint32 output_tokens = 8;
+}
 
 message UpdateSettingsRequest {
   IntelligenceSettings settings = 1;
@@ -778,4 +872,160 @@ message DeliveryArtifacts {
   repeated string notes = 2;
   // Secret names the generated files reference.
   repeated string required_secrets = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Pull request autopilot (CONTRACT.md §23)
+// ---------------------------------------------------------------------------
+
+message DraftFixRequest {
+  string finding_id = 1;
+}
+
+message ApplyFixesRequest {
+  string review_id = 1;
+}
+
+message GetMergeReadinessRequest {
+  string project_id = 1;
+  uint64 pr_number = 2;
+}
+
+// One reason a pull request cannot be merged yet.
+message MergeBlocker {
+  // "not_open" | "draft" | "conflicts" | "mergeability_unknown" |
+  // "checks_failing" | "checks_pending" | "changes_requested" |
+  // "blocked_by_github" | "no_review" | "review_outdated" |
+  // "review_running" | "findings_undecided" | "merge_in_progress"
+  string code = 1;
+  // A sentence that says what to do about it.
+  string message = 2;
+}
+
+message MergeReadiness {
+  string project_id = 1;
+  uint64 pr_number = 2;
+  string title = 3;
+  // "open" | "closed" | "merged" | "draft"
+  string state = 4;
+  string head_sha = 5;
+  string head_ref = 6;
+  string base_ref = 7;
+  bool is_fork = 8;
+  bool is_dependabot = 9;
+  // "mergeable" | "conflicting" | "unknown"
+  string mergeable = 10;
+  string mergeable_state = 11;
+  uint32 checks_total = 12;
+  uint32 checks_passed = 13;
+  uint32 checks_failed = 14;
+  uint32 checks_pending = 15;
+  repeated string failed_checks = 16;
+  repeated string pending_checks = 17;
+  uint32 approvals = 18;
+  uint32 changes_requested = 19;
+  // "merge" | "squash" | "rebase", as the repository allows.
+  repeated string allowed_methods = 20;
+  bool base_protected = 21;
+  uint32 behind_by = 22;
+  // The SDI review of `head_sha`, if one exists.
+  string review_id = 23;
+  // Its status in the review vocabulary ("proposed", "published", ...), else "".
+  string review_status = 24;
+  // Findings of severity high or critical nobody decided yet.
+  uint32 undecided_blocking_findings = 25;
+  // Empty means `can_merge`.
+  repeated MergeBlocker blockers = 26;
+  bool can_merge = 27;
+  // An open merge execution for this pull request, if any.
+  string merge_execution_id = 28;
+  google.protobuf.Timestamp checked_at = 29;
+}
+
+message MergePullRequestRequest {
+  string project_id = 1;
+  uint64 pr_number = 2;
+  // "merge" | "squash" | "rebase"; empty picks the first the repository
+  // allows, in the order squash, merge, rebase.
+  string method = 3;
+  // Delete the head branch after the merge (same-repository branches only).
+  bool delete_branch = 4;
+}
+
+message MergePullRequestResponse {
+  string execution_id = 1;
+  MergeReadiness readiness = 2;
+}
+
+message GetSecurityOverviewRequest {
+  string project_id = 1;
+  bool refresh = 2;
+}
+
+message Vulnerability {
+  // "dependabot" | "osv"
+  string source = 1;
+  // GHSA id when there is one, else the advisory's own id.
+  string id = 2;
+  string cve_id = 3;
+  string ecosystem = 4;
+  string package = 5;
+  // The version the manifest names; empty when the source does not say.
+  string current_version = 6;
+  string vulnerable_range = 7;
+  // Empty when no fixed version exists yet.
+  string fixed_version = 8;
+  // "critical" | "high" | "medium" | "low" | "unknown"
+  string severity = 9;
+  string summary = 10;
+  string manifest_path = 11;
+  // "runtime" | "development" | ""
+  string scope = 12;
+  string url = 13;
+  // Open pull request that fixes it, 0 when none.
+  uint64 fix_pull_request = 14;
+  google.protobuf.Timestamp detected_at = 15;
+}
+
+message SeverityCount {
+  string severity = 1;
+  uint32 count = 2;
+}
+
+message SecurityOverview {
+  string project_id = 1;
+  // Where the list came from: "dependabot" | "osv" | "none".
+  string source = 2;
+  // Why it is not Dependabot's list, as a sentence; empty when it is.
+  string source_note = 3;
+  repeated Vulnerability vulnerabilities = 4;
+  // Counts per severity, most severe first.
+  repeated SeverityCount by_severity = 5;
+  bool truncated = 6;
+  // Dependabot on the repository.
+  bool config_present = 7;
+  string config_path = 8;
+  repeated string config_ecosystems = 9;
+  // "enabled" | "disabled" | "unknown"
+  string alerts = 10;
+  // "enabled" | "paused" | "disabled" | "unknown"
+  string security_updates = 11;
+  uint32 open_dependabot_pull_requests = 12;
+  // An open execution that configures Dependabot for this project, if any.
+  string configure_execution_id = 13;
+  google.protobuf.Timestamp checked_at = 14;
+}
+
+message ConfigureDependabotRequest {
+  string project_id = 1;
+  // Turn on Dependabot alerts for the repository.
+  bool alerts = 2;
+  // Turn on Dependabot security updates (pull requests that fix alerts).
+  bool security_updates = 3;
+  // Open a pull request that adds `.github/dependabot.yml`.
+  bool config_file = 4;
+}
+
+message ConfigureDependabotResponse {
+  string execution_id = 1;
 }

@@ -16,6 +16,12 @@
 //! started to its conclusion, and `deployment.record` creates a GitHub
 //! Deployment with a `success` status so the repository shows what runs in
 //! which environment.
+//!
+//! The pull request autopilot (CONTRACT.md §23) adds five operations that
+//! live in `super::pull_requests`: committing review fixes, checking that a
+//! pull request can be merged, merging it, deleting its branch and turning
+//! on Dependabot. They go through [`GithubAdapter::call`] like everything
+//! here, so they reach GitHub as the workspace does.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -24,11 +30,13 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
-use super::{Adapter, GITHUB, RunContext, StepInput, StepOutcome, jenkins::step_limit};
+use super::{
+    Adapter, GITHUB, RunContext, StepInput, StepOutcome, gitops::encode_path, jenkins::step_limit,
+};
 use crate::domain::diagnosis;
 
 pub const DEFAULT_API: &str = "https://api.github.com";
-const STEP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub(super) const STEP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("sdi-execution/", env!("CARGO_PKG_VERSION"));
 /// What the remediation tells the human when GitHub refuses the write.
@@ -49,6 +57,11 @@ pub const MAX_DISPATCH_TIMEOUT_SECONDS: u64 = 6 * 60 * 60;
 /// How long GitHub gets to create the run after accepting a dispatch.
 const RUN_APPEARS_WITHIN: Duration = Duration::from_secs(90);
 const DISPATCH_POLL: Duration = Duration::from_secs(5);
+/// GitHub computes `mergeable` lazily: the first read of a pull request
+/// often says `null`. `repo.verify_mergeable` asks again this often, for
+/// this long in total, before saying it could not find out.
+const MERGEABLE_POLL: Duration = Duration::from_secs(2);
+const MERGEABLE_WAIT: Duration = Duration::from_secs(20);
 /// Clock skew allowed between the dispatch and the run's `created_at`.
 const DISPATCH_SKEW: chrono::Duration = chrono::Duration::seconds(5);
 const ACTIONS_HINT: &str = "the GitHub token needs Actions \"Read and write\" on the repository (the `workflow` scope on a classic token; `actions: write` for a GitHub App installation)";
@@ -62,6 +75,10 @@ pub struct GithubAdapter {
     poll: Duration,
     /// How long a dispatched run may take to appear.
     appears_within: Duration,
+    /// Pause between reads of a pull request whose mergeability GitHub has
+    /// not computed yet, and how long to keep asking.
+    pub(super) mergeable_poll: Duration,
+    pub(super) mergeable_wait: Duration,
 }
 
 pub(super) enum ApiError {
@@ -159,7 +176,18 @@ impl GithubAdapter {
             http,
             poll: DISPATCH_POLL,
             appears_within: RUN_APPEARS_WITHIN,
+            mergeable_poll: MERGEABLE_POLL,
+            mergeable_wait: MERGEABLE_WAIT,
         }
+    }
+
+    /// A shorter wait for GitHub to compute a pull request's mergeability
+    /// (tests).
+    #[cfg(test)]
+    pub fn with_mergeable_poll(mut self, poll: Duration, wait: Duration) -> Self {
+        self.mergeable_poll = poll;
+        self.mergeable_wait = wait;
+        self
     }
 
     /// Shorter waits between polls and for a dispatched run to appear (tests).
@@ -183,6 +211,27 @@ impl GithubAdapter {
     ) -> Result<(StatusCode, Value), ApiError> {
         let (token, api) = self.github_for(ctx);
         let url = format!("{api}{path}");
+        // What an error may quote: the address without its query string
+        // (a query can carry a branch, a filter, a timestamp; never needed
+        // to understand the failure).
+        let bare = path.split('?').next().unwrap_or(path);
+        let transport = |error: reqwest::Error| {
+            // reqwest's own text names the full URL and leaves the cause
+            // out: "timed out" is said here for the callers that look for
+            // it, and the innermost cause ("connection refused") is added.
+            if error.is_timeout() {
+                return ApiError::Transport(format!("{method} {api}{bare} timed out"));
+            }
+            let mut cause = std::error::Error::source(&error);
+            while let Some(deeper) = cause.and_then(std::error::Error::source) {
+                cause = Some(deeper);
+            }
+            let cause = cause.map_or_else(String::new, |cause| format!(": {cause}"));
+            ApiError::Transport(format!(
+                "{method} {api}{bare} failed: {}{cause}",
+                error.without_url()
+            ))
+        };
         let mut request = self
             .http
             .request(method.clone(), &url)
@@ -191,19 +240,20 @@ impl GithubAdapter {
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
-        if let Some(body) = body {
-            request = request.json(&body);
+        match body {
+            Some(body) => request = request.json(&body),
+            // A write without a body (turning a repository setting on) is
+            // sent with an explicit zero length: over HTTP/1.1 the client
+            // would send none at all, and GitHub answers that with 411.
+            None if matches!(method, Method::PUT | Method::POST | Method::PATCH) => {
+                request = request.header(reqwest::header::CONTENT_LENGTH, "0");
+            }
+            None => {}
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| ApiError::Transport(format!("{method} {url} failed: {e}")))?;
+        let response = request.send().await.map_err(transport)?;
         let status = response.status();
         ctx.logs.line(format!("{method} {path} -> {status}"));
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ApiError::Transport(format!("{method} {url}: {e}")))?;
+        let text = response.text().await.map_err(transport)?;
         let value: Value = if text.trim().is_empty() {
             Value::Null
         } else {
@@ -218,7 +268,7 @@ impl GithubAdapter {
             .map_or_else(|| super::truncate_line(text.trim()), str::to_owned);
         Err(ApiError::Status {
             method,
-            path: path.to_owned(),
+            path: bare.to_owned(),
             status,
             message,
         })
@@ -243,12 +293,7 @@ impl GithubAdapter {
         let (_, repository) = self
             .call(ctx, Method::GET, &format!("/repos/{repo}"), None, &[])
             .await?;
-        let branch = str_field(&repository, "default_branch");
-        Ok(if branch.is_empty() {
-            "main".to_owned()
-        } else {
-            branch
-        })
+        Ok(default_branch_of(&repository))
     }
 
     // --- deployment runs (CONTRACT.md §22) ----------------------------------
@@ -667,8 +712,26 @@ impl GithubAdapter {
             .map(|m| m.trim())
             .filter(|m| !m.is_empty())
             .map_or_else(|| title.clone(), str::to_owned);
+        // CONTRACT.md §23.5: a repository path that makes the step
+        // unnecessary when it already exists on the default branch.
+        let skip_if_exists = step
+            .params
+            .get("skip_if_exists")
+            .map(|path| path.trim().trim_matches('/'))
+            .filter(|path| !path.is_empty());
 
-        let work = self.publish(ctx, &repo, &owner, &branch, &title, &body, &message);
+        let work = self.publish(
+            ctx,
+            PullRequest {
+                repo: &repo,
+                owner: &owner,
+                branch: &branch,
+                title: &title,
+                body: &body,
+                message: &message,
+                skip_if_exists,
+            },
+        );
         match tokio::time::timeout(STEP_TIMEOUT, work).await {
             Ok(result) => result,
             Err(_) => StepOutcome::failed(
@@ -678,38 +741,60 @@ impl GithubAdapter {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn publish(
-        &self,
-        ctx: &RunContext,
-        repo: &str,
-        owner: &str,
-        branch: &str,
-        title: &str,
-        body: &str,
-        message: &str,
-    ) -> StepOutcome {
-        match self
-            .publish_inner(ctx, repo, owner, branch, title, body, message)
-            .await
-        {
+    async fn publish(&self, ctx: &RunContext, pull_request: PullRequest<'_>) -> StepOutcome {
+        match self.publish_inner(ctx, pull_request).await {
             Ok(outcome) => outcome,
             Err(error) => error.into_outcome(),
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn publish_inner(
         &self,
         ctx: &RunContext,
-        repo: &str,
-        owner: &str,
-        branch: &str,
-        title: &str,
-        body: &str,
-        message: &str,
+        pull_request: PullRequest<'_>,
     ) -> Result<StepOutcome, ApiError> {
+        let PullRequest {
+            repo,
+            owner,
+            branch,
+            title,
+            body,
+            message,
+            skip_if_exists,
+        } = pull_request;
         let base = format!("/repos/{repo}");
+
+        // Decided before anything is created, so a skipped step leaves no
+        // branch behind: the file the pull request would add is already on
+        // the default branch.
+        let mut repository = None;
+        if let Some(path) = skip_if_exists {
+            let (_, found) = self.call(ctx, Method::GET, &base, None, &[]).await?;
+            let default_branch = default_branch_of(&found);
+            let (status, _) = self
+                .call(
+                    ctx,
+                    Method::GET,
+                    &format!(
+                        "{base}/contents/{}?ref={}",
+                        encode_path(path),
+                        encode_path(&default_branch)
+                    ),
+                    None,
+                    &[StatusCode::NOT_FOUND],
+                )
+                .await?;
+            if status != StatusCode::NOT_FOUND {
+                ctx.logs.line(format!(
+                    "{path} is already on {default_branch}; nothing to open"
+                ));
+                return Ok(StepOutcome::ok(format!(
+                    "skipped: {path} already exists on {default_branch} of {repo}, so no branch, commit or pull request was created"
+                )));
+            }
+            repository = Some(found);
+        }
+
         let mut outputs = BTreeMap::from([("branch".to_owned(), branch.to_owned())]);
 
         // An open pull request for the branch is reused, never duplicated;
@@ -732,13 +817,11 @@ impl GithubAdapter {
             ctx.logs.line(format!("pull request already open: {url}"));
         }
 
-        let (_, repository) = self.call(ctx, Method::GET, &base, None, &[]).await?;
-        let default_branch = str_field(&repository, "default_branch");
-        let default_branch = if default_branch.is_empty() {
-            "main".to_owned()
-        } else {
-            default_branch
+        let repository = match repository {
+            Some(repository) => repository,
+            None => self.call(ctx, Method::GET, &base, None, &[]).await?.1,
         };
+        let default_branch = default_branch_of(&repository);
         let (_, head) = self
             .call(
                 ctx,
@@ -856,28 +939,18 @@ impl GithubAdapter {
             .await?;
         let base_tree = str_field(commit.get("tree").unwrap_or(&Value::Null), "sha");
 
-        let mut entries = Vec::with_capacity(ctx.artifacts.len());
-        let mut blobs: BTreeMap<String, String> = BTreeMap::new();
-        for (path, content) in &ctx.artifacts {
-            let (_, blob) = self
-                .call(
-                    ctx,
-                    Method::POST,
-                    &format!("{base}/git/blobs"),
-                    Some(json!({ "content": content, "encoding": "utf-8" })),
-                    &[],
-                )
-                .await?;
-            let sha = str_field(&blob, "sha");
-            let path = path.trim_start_matches('/').to_owned();
-            entries.push(json!({
-                "path": path,
-                "mode": "100644",
-                "type": "blob",
-                "sha": sha,
-            }));
-            blobs.insert(path, sha);
-        }
+        let blobs = self.create_blobs(ctx, base).await?;
+        let entries = blobs
+            .iter()
+            .map(|(path, sha)| {
+                json!({
+                    "path": path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": sha,
+                })
+            })
+            .collect();
 
         if branch_existed && self.tree_holds(ctx, base, &base_tree, &blobs).await? {
             ctx.logs.line(format!(
@@ -887,35 +960,7 @@ impl GithubAdapter {
             return Ok(Some(parent.to_owned()));
         }
 
-        let touches_workflows = blobs.keys().any(|p| p.starts_with(".github/workflows/"));
-        let (_, tree) = match self
-            .call(
-                ctx,
-                Method::POST,
-                &format!("{base}/git/trees"),
-                Some(json!({ "base_tree": base_tree, "tree": entries })),
-                &[],
-            )
-            .await
-        {
-            Ok(tree) => tree,
-            Err(ApiError::Status {
-                status: StatusCode::NOT_FOUND,
-                method,
-                path,
-                message,
-            }) if touches_workflows => {
-                return Err(ApiError::Status {
-                    method,
-                    path,
-                    status: StatusCode::FORBIDDEN,
-                    message: format!(
-                        "{message} (404 on a tree with workflow files); {WORKFLOW_SCOPE_HINT}"
-                    ),
-                });
-            }
-            Err(error) => return Err(error),
-        };
+        let tree = self.create_tree(ctx, base, &base_tree, entries).await?;
         let (_, commit) = self
             .call(
                 ctx,
@@ -923,7 +968,7 @@ impl GithubAdapter {
                 &format!("{base}/git/commits"),
                 Some(json!({
                     "message": message,
-                    "tree": str_field(&tree, "sha"),
+                    "tree": tree,
                     "parents": [parent],
                 })),
                 &[],
@@ -943,6 +988,76 @@ impl GithubAdapter {
             ctx.artifacts.len()
         ));
         Ok(Some(sha))
+    }
+
+    /// Uploads every artifact of the run as a blob and returns `path ->
+    /// blob sha`. Git addresses blobs by content, so uploading a file that
+    /// is already in the repository changes nothing and names the same sha.
+    pub(super) async fn create_blobs(
+        &self,
+        ctx: &RunContext,
+        base: &str,
+    ) -> Result<BTreeMap<String, String>, ApiError> {
+        let mut blobs = BTreeMap::new();
+        for (path, content) in &ctx.artifacts {
+            let (_, blob) = self
+                .call(
+                    ctx,
+                    Method::POST,
+                    &format!("{base}/git/blobs"),
+                    Some(json!({ "content": content, "encoding": "utf-8" })),
+                    &[],
+                )
+                .await?;
+            blobs.insert(
+                path.trim_start_matches('/').to_owned(),
+                str_field(&blob, "sha"),
+            );
+        }
+        Ok(blobs)
+    }
+
+    /// Creates the tree that is `base_tree` with `entries` on top and
+    /// returns its sha. Trees are content-addressed too: the same entries
+    /// on the same base always name the same tree. GitHub answers 404 to a
+    /// tree touching `.github/workflows/` when the token lacks the
+    /// `workflow` scope; that becomes a 403 naming the scope.
+    pub(super) async fn create_tree(
+        &self,
+        ctx: &RunContext,
+        base: &str,
+        base_tree: &str,
+        entries: Vec<Value>,
+    ) -> Result<String, ApiError> {
+        let touches_workflows = entries
+            .iter()
+            .any(|entry| str_field(entry, "path").starts_with(".github/workflows/"));
+        match self
+            .call(
+                ctx,
+                Method::POST,
+                &format!("{base}/git/trees"),
+                Some(json!({ "base_tree": base_tree, "tree": entries })),
+                &[],
+            )
+            .await
+        {
+            Ok((_, tree)) => Ok(str_field(&tree, "sha")),
+            Err(ApiError::Status {
+                status: StatusCode::NOT_FOUND,
+                method,
+                path,
+                message,
+            }) if touches_workflows => Err(ApiError::Status {
+                method,
+                path,
+                status: StatusCode::FORBIDDEN,
+                message: format!(
+                    "{message} (404 on a tree with workflow files); {WORKFLOW_SCOPE_HINT}"
+                ),
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     /// Whether `tree` already contains every `path -> blob sha` in `blobs`.
@@ -985,6 +1100,30 @@ impl GithubAdapter {
     }
 }
 
+/// What `repo.open_pull_request` publishes.
+#[derive(Clone, Copy)]
+struct PullRequest<'a> {
+    repo: &'a str,
+    owner: &'a str,
+    branch: &'a str,
+    title: &'a str,
+    body: &'a str,
+    message: &'a str,
+    /// A repository path whose presence on the default branch makes the
+    /// step unnecessary.
+    skip_if_exists: Option<&'a str>,
+}
+
+/// The default branch a `GET /repos/{repo}` answer names.
+pub(super) fn default_branch_of(repository: &Value) -> String {
+    let branch = str_field(repository, "default_branch");
+    if branch.is_empty() {
+        "main".to_owned()
+    } else {
+        branch
+    }
+}
+
 pub(super) fn str_field(value: &Value, key: &str) -> String {
     value
         .get(key)
@@ -1015,7 +1154,12 @@ impl Adapter for GithubAdapter {
     async fn run(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
         let operation = step.params.get("operation").map_or("", |op| op.trim());
         match (step.action_type.as_str(), operation) {
-            ("repo.open_pull_request", _) => self.open_pull_request(step, ctx).await,
+            (super::OPEN_PULL_REQUEST, _) => self.open_pull_request(step, ctx).await,
+            (super::COMMIT_FIXES, _) => self.commit_fixes(step, ctx).await,
+            (super::VERIFY_MERGEABLE, _) => self.verify_mergeable(step, ctx).await,
+            (super::MERGE_PULL_REQUEST, _) => self.merge_pull_request(step, ctx).await,
+            (super::DELETE_BRANCH, _) => self.delete_branch(step, ctx).await,
+            (super::ENABLE_SECURITY_UPDATES, _) => self.enable_security_updates(step, ctx).await,
             (action, OP_WORKFLOW_DISPATCH) if super::is_deploy_action(action) => {
                 self.workflow_dispatch(step, ctx).await
             }

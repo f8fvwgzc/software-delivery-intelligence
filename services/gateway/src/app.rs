@@ -58,6 +58,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         (name = "documents", description = "Generated documents and reports"),
         (name = "diagrams", description = "Evidence-based diagrams generated from the knowledge graph"),
         (name = "reviews", description = "Pull request reviews: evidence first, a human decides, then SDI posts (§20)"),
+        (name = "autopilot", description = "Pull request autopilot: drafted fixes, fix commits, merge readiness and merges, vulnerabilities and Dependabot; everything that changes the repository is an execution (§23)"),
         (name = "executions", description = "Policy-gated plan execution"),
         (name = "approvals", description = "Human approvals"),
         (name = "policies", description = "Action policies and scoped identities"),
@@ -389,6 +390,24 @@ mod tests {
         }
     }
 
+    /// The audit entries the fake identity recorded, once at least `count`
+    /// arrived (they are written fire-and-forget after the response), in the
+    /// order they were recorded.
+    async fn audited(
+        recorder: &Recorder,
+        count: usize,
+    ) -> Vec<sdi_proto::identity::v1::AuditEntry> {
+        for _ in 0..100 {
+            if recorder.entries.lock().unwrap().len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Let a straggler that should not exist show up before the count is asserted.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        recorder.entries.lock().unwrap().clone()
+    }
+
     // --- Plumbing ---------------------------------------------------------
 
     #[tokio::test]
@@ -424,8 +443,9 @@ mod tests {
         // CONTRACT.md §8 enumerates 55 distinct paths under /api/v1, plus the
         // two code browser routes of §15, the two diagram routes of §16, the
         // 18 identity routes of §18 (with `/people`), the 8 review routes of
-        // §20 and the 14 continuous delivery paths of §22.
-        assert_eq!(paths.len(), 99, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // §20, the 14 continuous delivery paths of §22, the 6 pull request
+        // autopilot paths of §23 and the reasoner test of §19.
+        assert_eq!(paths.len(), 106, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -450,6 +470,7 @@ mod tests {
             "/api/v1/workspaces/{id}/members/{userId}",
             "/api/v1/workspaces/{id}/members/sync",
             "/api/v1/people",
+            "/api/v1/settings/reasoner/test",
             "/api/v1/github/app/install-url",
             "/api/v1/github/app/setup",
             "/api/v1/webhooks/github",
@@ -481,8 +502,81 @@ mod tests {
             "/api/v1/projects/{id}/delivery/artifacts",
             "/api/v1/workspaces/{id}/secrets",
             "/api/v1/workspaces/{id}/secrets/{name}",
+            // §23
+            "/api/v1/findings/{id}/draft-fix",
+            "/api/v1/reviews/{id}/apply-fixes",
+            "/api/v1/projects/{id}/pull-requests/{number}/merge-readiness",
+            "/api/v1/projects/{id}/pull-requests/{number}/merge",
+            "/api/v1/projects/{id}/security",
+            "/api/v1/projects/{id}/security/dependabot",
         ] {
             assert!(paths.contains_key(path), "missing {path}");
+        }
+        // §23: one method per path, and the three requests that create an
+        // execution answer 201.
+        for (path, method, status, body) in [
+            ("/api/v1/findings/{id}/draft-fix", "post", "200", "Finding"),
+            ("/api/v1/reviews/{id}/apply-fixes", "post", "201", "Review"),
+            (
+                "/api/v1/projects/{id}/pull-requests/{number}/merge-readiness",
+                "get",
+                "200",
+                "MergeReadiness",
+            ),
+            (
+                "/api/v1/projects/{id}/pull-requests/{number}/merge",
+                "post",
+                "201",
+                "MergeResult",
+            ),
+            (
+                "/api/v1/projects/{id}/security",
+                "get",
+                "200",
+                "SecurityOverview",
+            ),
+            (
+                "/api/v1/projects/{id}/security/dependabot",
+                "post",
+                "201",
+                "ConfigureDependabotResult",
+            ),
+        ] {
+            let operations = paths[path].as_object().unwrap();
+            assert_eq!(
+                operations.keys().map(String::as_str).collect::<Vec<_>>(),
+                [method],
+                "{path}"
+            );
+            assert_eq!(
+                operations[method]["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{body}"),
+                "{path}"
+            );
+            assert!(
+                operations[method]["responses"]["412"].is_object(),
+                "{path} documents its refusal"
+            );
+        }
+        assert_eq!(
+            paths["/api/v1/projects/{id}/security"]["get"]["parameters"][1]["name"],
+            "refresh"
+        );
+        for (path, body) in [
+            (
+                "/api/v1/projects/{id}/pull-requests/{number}/merge",
+                "MergePullRequestRequest",
+            ),
+            (
+                "/api/v1/projects/{id}/security/dependabot",
+                "ConfigureDependabotRequest",
+            ),
+        ] {
+            assert_eq!(
+                paths[path]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{body}"),
+                "{path}"
+            );
         }
         // Every method §22 lists is there, with flat request bodies.
         for (path, methods) in [
@@ -542,6 +636,146 @@ mod tests {
             "bodies are flat, camelCase"
         );
         assert!(schemas["SecretInfo"]["properties"]["value"].is_null());
+        // §23: the new shapes, and the fields the feature adds to old ones.
+        for schema in [
+            "MergeReadiness",
+            "MergeBlocker",
+            "MergeMethod",
+            "MergePullRequestRequest",
+            "MergeResult",
+            "SecurityOverview",
+            "Vulnerability",
+            "SeverityCount",
+            "ConfigureDependabotRequest",
+            "ConfigureDependabotResult",
+        ] {
+            assert!(schemas[schema].is_object(), "missing schema {schema}");
+        }
+        for (schema, fields) in [
+            (
+                "PullRequestSummary",
+                vec!["headRepo", "isFork", "isBot", "isDependabot"],
+            ),
+            (
+                "Finding",
+                vec!["suggestionSource", "fixExecutionId", "canDraftFix"],
+            ),
+            (
+                "Review",
+                vec!["fixExecutionId", "mergeExecutionId", "fixesReady"],
+            ),
+            (
+                "IntelligenceSettings",
+                vec![
+                    "autoDraftFixes",
+                    "autoMerge",
+                    "mergeRequiresReview",
+                    "prWatchIntervalSeconds",
+                    "prWatchLastRunAt",
+                    "prWatchLastError",
+                ],
+            ),
+            (
+                "IntelligenceSettingsPatch",
+                vec!["autoDraftFixes", "autoMerge", "mergeRequiresReview"],
+            ),
+            ("DataControls", vec!["codeToModel"]),
+            ("UpdateDataControlsRequest", vec!["codeToModel"]),
+            (
+                "MergeReadiness",
+                vec![
+                    "blockers",
+                    "canMerge",
+                    "checksTotal",
+                    "checksPassed",
+                    "checksFailed",
+                    "checksPending",
+                    "failedChecks",
+                    "pendingChecks",
+                    "allowedMethods",
+                    "reviewId",
+                    "reviewStatus",
+                    "undecidedBlockingFindings",
+                    "mergeExecutionId",
+                    "checkedAt",
+                ],
+            ),
+            ("MergeResult", vec!["executionId", "readiness"]),
+            (
+                "SecurityOverview",
+                vec![
+                    "source",
+                    "sourceNote",
+                    "vulnerabilities",
+                    "bySeverity",
+                    "truncated",
+                    "configPresent",
+                    "configPath",
+                    "configEcosystems",
+                    "alerts",
+                    "securityUpdates",
+                    "openDependabotPullRequests",
+                    "configureExecutionId",
+                    "checkedAt",
+                ],
+            ),
+            (
+                "ConfigureDependabotRequest",
+                vec!["alerts", "securityUpdates", "configFile"],
+            ),
+        ] {
+            for field in fields {
+                let property = &schemas[schema]["properties"][field];
+                assert!(property.is_object(), "{schema}.{field}");
+                assert!(
+                    property["description"].is_string() || property["$ref"].is_string(),
+                    "{schema}.{field} is documented"
+                );
+            }
+        }
+        // The read-only watcher fields are not part of the patch.
+        for field in [
+            "prWatchIntervalSeconds",
+            "prWatchLastRunAt",
+            "prWatchLastError",
+        ] {
+            assert!(
+                schemas["IntelligenceSettingsPatch"]["properties"][field].is_null(),
+                "{field} is read-only"
+            );
+        }
+        // Nullable where the contract says "if any".
+        for (schema, field) in [
+            ("Finding", "suggestionSource"),
+            ("Finding", "fixExecutionId"),
+            ("Review", "fixExecutionId"),
+            ("Review", "mergeExecutionId"),
+            ("IntelligenceSettings", "prWatchLastRunAt"),
+            ("IntelligenceSettings", "prWatchLastError"),
+            ("MergeReadiness", "mergeExecutionId"),
+            ("MergeReadiness", "reviewId"),
+            ("SecurityOverview", "sourceNote"),
+            ("SecurityOverview", "configureExecutionId"),
+            ("Vulnerability", "fixedVersion"),
+        ] {
+            assert_eq!(
+                schemas[schema]["properties"][field]["type"],
+                json!(["string", "null"]),
+                "{schema}.{field}"
+            );
+        }
+        assert_eq!(
+            schemas["Vulnerability"]["properties"]["fixPullRequest"]["type"],
+            json!(["integer", "null"])
+        );
+        assert_eq!(
+            schemas["MergeMethod"]["enum"],
+            json!(["merge", "squash", "rebase"])
+        );
+        assert_eq!(
+            schemas["MergeBlocker"]["required"],
+            json!(["code", "message"])
+        );
         // The knowledge service's observed deployments keep their own enum.
         assert_eq!(
             schemas["DeploymentStatus"]["enum"],
@@ -1164,6 +1398,7 @@ mod tests {
         assert_eq!(json["codeCache"], "session");
         assert_eq!(json["reasonerKeyConfigured"], false);
         assert_eq!(json["reasonerKeyHint"], Value::Null);
+        assert_eq!(json["codeToModel"], "off", "nothing leaves by default");
         let (status, json) = send(
             stack.app.clone(),
             "PATCH",
@@ -1175,6 +1410,7 @@ mod tests {
         assert_eq!(json["codeCache"], "none");
         assert_eq!(json["minimalChunks"], true);
         assert_eq!(json["auditRetentionDays"], 365, "unset field kept");
+        assert_eq!(json["codeToModel"], "off", "unset field kept");
         let (status, json) = send(
             stack.app.clone(),
             "PUT",
@@ -1205,6 +1441,70 @@ mod tests {
         assert_eq!(json["deleted"]["identity"]["secret"], 0);
     }
 
+    /// `codeToModel` (CONTRACT.md §19, §23): read and patched through the
+    /// data-controls routes, admin only, audited like every data control.
+    #[tokio::test]
+    async fn code_to_model_is_read_patched_refused_and_audited() {
+        let stack = app_with_every_fake().await;
+        let app = stack.app.clone();
+        let path = "/api/v1/workspaces/w1/data-controls";
+
+        let (status, json, _) = send_as(app.clone(), Some("t-viewer"), "GET", path, None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["codeToModel"], "off");
+
+        let on = json!({"codeToModel": "changed_lines"});
+        let (status, json) = send(app.clone(), "PATCH", path, Some(on.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["codeToModel"], "changed_lines");
+        assert_eq!(json["codeCache"], "session", "nothing else moved");
+        assert_eq!(json["reasoner"], "off");
+        assert_eq!(json["auditRetentionDays"], 365);
+
+        // The service's refusal passes through with the allowed values.
+        let (status, json) = send(
+            app.clone(),
+            "PATCH",
+            path,
+            Some(json!({"codeToModel": "whole_file"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_argument");
+        assert_eq!(
+            json["message"],
+            "code_to_model must be one of off, changed_lines"
+        );
+        // Null is "not said", like every other field of the patch.
+        let (status, json) = send(
+            app.clone(),
+            "PATCH",
+            path,
+            Some(json!({"codeToModel": null, "minimalChunks": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["codeToModel"], "off");
+        assert_eq!(json["minimalChunks"], true);
+
+        // Below admin the patch never reaches identity.
+        let (status, _, _) = send_as(app, Some("t-approver"), "PATCH", path, Some(on)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let entries = audited(&stack.recorder, 3).await;
+        assert_eq!(entries.len(), 3, "the refused 403 is not audited");
+        for entry in &entries {
+            assert_eq!(entry.action, "data_controls.update");
+            assert_eq!(entry.entity, "workspace");
+            assert_eq!(entry.entity_id, "w1");
+            assert_eq!(entry.user_login, "octo");
+        }
+        // Two changes and the refused value; the value itself is not kept.
+        let mut details: Vec<&str> = entries.iter().map(|e| e.detail.as_str()).collect();
+        details.sort_unstable();
+        assert_eq!(details, ["", "", "http 400"]);
+    }
+
     #[tokio::test]
     async fn export_streams_one_json_object_and_survives_a_missing_service() {
         let stack = app_with_every_fake().await;
@@ -1226,6 +1526,10 @@ mod tests {
         assert_eq!(json["workspace"]["id"], "w1");
         assert_eq!(json["members"][0]["user"]["login"], "octo");
         assert_eq!(json["dataControls"]["codeCache"], "session");
+        assert_eq!(
+            json["dataControls"]["codeToModel"], "off",
+            "the export says whether source lines may reach the model"
+        );
         assert_eq!(json["knowledge"]["projects"][0]["id"], "p1");
         assert_eq!(json["knowledge"]["facts"].as_array().unwrap().len(), 2);
         assert_eq!(json["intelligence"]["proposals"][0]["title"], "Deploy");
@@ -1485,13 +1789,26 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{json}");
         let prs = json["pullRequests"].as_array().unwrap();
-        assert_eq!(prs.len(), 2);
+        assert_eq!(prs.len(), 3);
         assert_eq!(prs[0]["number"], 1);
         assert_eq!(prs[0]["state"], "all");
         // The newest review of PR 1 wins; PR 2 has its own.
         assert_eq!(prs[0]["latestReviewId"], "r-new");
         assert_eq!(prs[1]["latestReviewId"], "r-2");
         assert_eq!(json["syncedAt"], "2023-11-14T22:15:00Z");
+        assert_eq!(prs[2]["latestReviewId"], Value::Null, "never reviewed");
+        // §23: where the head lives and who wrote it. PR 1 is a person's
+        // branch, PR 2 is Dependabot's, PR 3 comes from a fork.
+        for (pr, head_repo, fork, bot, dependabot) in [
+            (&prs[0], "acme/repo", false, false, false),
+            (&prs[1], "acme/repo", false, true, true),
+            (&prs[2], "eve/repo", true, false, false),
+        ] {
+            assert_eq!(pr["headRepo"], head_repo, "{pr}");
+            assert_eq!(pr["isFork"], fork, "{pr}");
+            assert_eq!(pr["isBot"], bot, "{pr}");
+            assert_eq!(pr["isDependabot"], dependabot, "{pr}");
+        }
 
         let (status, json) = send(
             app.clone(),
@@ -1502,6 +1819,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(json["summary"]["number"], 2);
+        assert_eq!(json["summary"]["headRepo"], "acme/repo");
+        assert_eq!(json["summary"]["isFork"], false);
+        assert_eq!(json["summary"]["isBot"], true);
+        assert_eq!(json["summary"]["isDependabot"], true);
         assert_eq!(json["body"], "Adds a Dockerfile.");
         assert_eq!(json["files"][0]["path"], "Dockerfile");
         assert_eq!(
@@ -1510,6 +1831,17 @@ mod tests {
         );
         assert_eq!(json["files"][0]["previousPath"], Value::Null);
         assert_eq!(json["touchedFactIds"][0], "f1");
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/pull-requests/3",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["summary"]["headRepo"], "eve/repo");
+        assert_eq!(json["summary"]["isFork"], true);
+        assert_eq!(json["summary"]["isDependabot"], false);
 
         let (status, json) = send(app, "GET", "/api/v1/projects/p1/pull-requests/9", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
@@ -1555,6 +1887,10 @@ mod tests {
         assert_eq!(listed.len(), 3);
         assert!(listed[0]["findings"].as_array().unwrap().is_empty());
         assert_eq!(listed[0]["summary"], Value::Null);
+        // §23: the list says which executions exist without their content.
+        assert_eq!(listed[0]["fixExecutionId"], Value::Null);
+        assert_eq!(listed[0]["mergeExecutionId"], Value::Null);
+        assert_eq!(listed[0]["fixesReady"], 0);
 
         let (status, json) = send(stack.app.clone(), "GET", "/api/v1/reviews/r1", None).await;
         assert_eq!(status, StatusCode::OK, "{json}");
@@ -1563,6 +1899,21 @@ mod tests {
         assert_eq!(json["findings"][0]["severity"], "medium");
         assert_eq!(json["findings"][0]["decision"], "pending");
         assert_eq!(json["findings"][0]["suggestion"], "FROM node:22");
+        // §23: the analyzer wrote that one; the other has no suggestion yet
+        // and the model may be asked for one.
+        assert_eq!(json["findings"][0]["suggestionSource"], "rule");
+        assert_eq!(json["findings"][0]["canDraftFix"], false);
+        assert_eq!(json["findings"][0]["fixExecutionId"], Value::Null);
+        assert_eq!(json["findings"][1]["suggestion"], Value::Null);
+        assert_eq!(json["findings"][1]["suggestionSource"], Value::Null);
+        assert_eq!(json["findings"][1]["canDraftFix"], true);
+        assert_eq!(json["fixExecutionId"], Value::Null);
+        assert_eq!(json["mergeExecutionId"], Value::Null);
+        assert_eq!(json["fixesReady"], 0);
+        let (status, json) = send(stack.app.clone(), "GET", "/api/v1/reviews/r-ready", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["findingsAccepted"], 1);
+        assert_eq!(json["fixesReady"], 1, "an accepted suggestion waits");
 
         let (status, json, _) = send_as(
             stack.app.clone(),
@@ -1632,6 +1983,598 @@ mod tests {
         assert_eq!(activity.len(), 1);
         assert_eq!(activity[0]["action"], "review.started");
         assert_eq!(activity[0]["actor"], "u-member");
+    }
+
+    // --- Pull request autopilot (§23) ----------------------------------------
+
+    /// Drafting a fix answers the finding (200) with the model's suggestion;
+    /// applying fixes answers the review (201) with its fix execution. What
+    /// the service refuses arrives as 412 with its sentence.
+    #[tokio::test]
+    async fn fixes_are_drafted_by_the_model_and_applied_through_an_execution() {
+        let app = app_with_every_fake().await.app;
+        let member = Some("t-member");
+
+        // A viewer may not ask the model for anything.
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-viewer"),
+            "POST",
+            "/api/v1/findings/f2/draft-fix",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/findings/f2/draft-fix",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "f2");
+        assert_eq!(json["suggestion"], "FROM node:22-slim");
+        assert_eq!(json["suggestionSource"], "model");
+        assert_eq!(json["canDraftFix"], false, "it has its suggestion now");
+        assert_eq!(json["fixExecutionId"], Value::Null);
+        assert_eq!(json["decision"], "pending", "a draft decides nothing");
+        assert_eq!(json["decidedBy"], Value::Null);
+        assert_eq!(json["decidedAt"], Value::Null);
+        assert_eq!(json["severity"], "medium");
+        // A body is not part of the contract, and one that is sent is ignored.
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/findings/f3/draft-fix",
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "f3");
+
+        // Refusals: the data controls keep source lines from the model, or
+        // the finding cannot be drafted. Both are 412 with the sentence.
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/findings/f-off/draft-fix",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert_eq!(json["code"], "failed_precondition");
+        let message = json["message"].as_str().unwrap();
+        assert!(
+            message.contains("reasoner") && message.contains("code_to_model"),
+            "names the two switches: {message}"
+        );
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/findings/f1/draft-fix",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert_eq!(json["message"], "this finding already has a suggestion");
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/findings/missing/draft-fix",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+        // Applying the accepted fixes: 201, the review with its execution.
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-viewer"),
+            "POST",
+            "/api/v1/reviews/r1/apply-fixes",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        // Committing to the repository needs an approver, like opening a
+        // pull request does (§18).
+        let (status, json, _) = send_as(
+            app.clone(),
+            member,
+            "POST",
+            "/api/v1/reviews/r1/apply-fixes",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        let approver = Some("t-approver");
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/reviews/r1/apply-fixes",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["id"], "r1");
+        assert_eq!(json["fixExecutionId"], "x-fix-r1");
+        assert_eq!(json["mergeExecutionId"], Value::Null);
+        assert_eq!(json["fixesReady"], 0, "nothing is left to commit");
+        assert_eq!(json["findingsAccepted"], 1);
+        assert_eq!(json["status"], "proposed");
+        assert_eq!(json["findings"][0]["decision"], "accepted");
+        assert_eq!(json["findings"][0]["fixExecutionId"], "x-fix-r1");
+        assert_eq!(json["findings"][0]["suggestionSource"], "rule");
+        assert_eq!(json["findings"][1]["fixExecutionId"], Value::Null);
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/reviews/r-none/apply-fixes",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert_eq!(json["code"], "failed_precondition");
+        assert_eq!(
+            json["message"],
+            "no accepted finding has a suggestion left to commit"
+        );
+        let (status, json, _) = send_as(
+            app,
+            approver,
+            "POST",
+            "/api/v1/reviews/missing/apply-fixes",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+    }
+
+    /// Readiness is a read; the merge is an approver's, answers 201 with
+    /// the execution and the readiness it was requested on, and a blocked
+    /// pull request is a 412 carrying the first blocker's sentence.
+    #[tokio::test]
+    async fn merge_readiness_is_read_by_anyone_and_a_merge_needs_an_approver_and_no_blocker() {
+        let app = app_with_every_fake().await.app;
+        let (viewer, member, approver) = (Some("t-viewer"), Some("t-member"), Some("t-approver"));
+
+        let (status, json, _) = send_as(
+            app.clone(),
+            viewer,
+            "GET",
+            "/api/v1/projects/p1/pull-requests/1/merge-readiness",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["projectId"], "p1");
+        assert_eq!(json["prNumber"], 1);
+        assert_eq!(json["title"], "PR 1");
+        assert_eq!(json["state"], "open");
+        assert_eq!(json["headSha"], "sha1");
+        assert_eq!(json["headRef"], "feat/1");
+        assert_eq!(json["baseRef"], "main");
+        assert_eq!(json["isFork"], false);
+        assert_eq!(json["isDependabot"], false);
+        assert_eq!(json["mergeable"], "mergeable");
+        assert_eq!(json["mergeableState"], "clean");
+        assert_eq!(json["checksTotal"], 3);
+        assert_eq!(json["checksPassed"], 3);
+        assert_eq!(json["checksFailed"], 0);
+        assert_eq!(json["checksPending"], 0);
+        assert_eq!(json["failedChecks"], json!([]));
+        assert_eq!(json["pendingChecks"], json!([]));
+        assert_eq!(json["approvals"], 1);
+        assert_eq!(json["changesRequested"], 0);
+        assert_eq!(json["allowedMethods"], json!(["squash", "merge"]));
+        assert_eq!(json["baseProtected"], true);
+        assert_eq!(json["behindBy"], 0);
+        assert_eq!(json["reviewId"], "r-new");
+        assert_eq!(json["reviewStatus"], "proposed");
+        assert_eq!(json["undecidedBlockingFindings"], 0);
+        assert_eq!(json["blockers"], json!([]));
+        assert_eq!(json["canMerge"], true);
+        assert_eq!(json["mergeExecutionId"], Value::Null);
+        assert_eq!(json["checkedAt"], "2023-11-14T22:18:20Z");
+
+        // Blocked: the reasons in order, each with a code and a sentence,
+        // and nulls where there is no review.
+        let (status, json, _) = send_as(
+            app.clone(),
+            viewer,
+            "GET",
+            "/api/v1/projects/p1/pull-requests/2/merge-readiness",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["canMerge"], false);
+        assert_eq!(json["isDependabot"], true);
+        assert_eq!(json["mergeableState"], "unstable");
+        assert_eq!(json["checksFailed"], 1);
+        assert_eq!(json["checksPending"], 1);
+        assert_eq!(json["failedChecks"], json!(["ci / test"]));
+        assert_eq!(json["pendingChecks"], json!(["ci / lint"]));
+        assert_eq!(json["behindBy"], 2);
+        assert_eq!(json["reviewId"], Value::Null);
+        assert_eq!(json["reviewStatus"], Value::Null);
+        let blockers = json["blockers"].as_array().unwrap();
+        assert_eq!(blockers.len(), 2);
+        assert_eq!(blockers[0]["code"], "checks_failing");
+        assert!(
+            blockers[0]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("1 check failed")
+        );
+        assert_eq!(blockers[1]["code"], "no_review");
+        assert_eq!(
+            blockers[0].as_object().unwrap().len(),
+            2,
+            "a blocker is {{code, message}}"
+        );
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/pull-requests/9/merge-readiness",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/pull-requests/one/merge-readiness",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_path");
+
+        // Merging: a member is refused before anything is asked of GitHub.
+        let merge = "/api/v1/projects/p1/pull-requests/1/merge";
+        let body = json!({"method": "squash", "deleteBranch": true});
+        let (status, json, _) =
+            send_as(app.clone(), member, "POST", merge, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        assert_eq!(
+            json["message"], "requires the approver role in this workspace (you are member)",
+            "refused by the gateway, like publishing a review"
+        );
+        let (status, json, _) = send_as(app.clone(), approver, "POST", merge, Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(
+            json["executionId"], "x-merge-1-squash-delete",
+            "method and branch handling reached the service"
+        );
+        assert_eq!(json["readiness"]["prNumber"], 1);
+        assert_eq!(json["readiness"]["canMerge"], true);
+        assert_eq!(json["readiness"]["headSha"], "sha1");
+        assert_eq!(
+            json["readiness"]["mergeExecutionId"],
+            "x-merge-1-squash-delete"
+        );
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            2,
+            "the answer is {{executionId, readiness}}"
+        );
+        // Both fields are optional, and so is the body: the service picks
+        // the method and the branch stays.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            merge,
+            Some(json!({"method": null})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["executionId"], "x-merge-1-default-keep");
+        let (status, json, _) = send_as(app.clone(), approver, "POST", merge, None).await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["executionId"], "x-merge-1-default-keep");
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            merge,
+            Some(json!({"method": "rebase", "deleteBranch": false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["executionId"], "x-merge-1-rebase-keep");
+        // A method GitHub does not have never leaves the gateway.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            merge,
+            Some(json!({"method": "fast-forward"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_body");
+
+        // A blocked pull request: 412 with the first blocker's sentence.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/projects/p1/pull-requests/2/merge",
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert_eq!(json["code"], "failed_precondition");
+        assert_eq!(
+            json["message"],
+            "1 check failed (ci / test): fix it or re-run it, then ask again"
+        );
+        let (status, json, _) = send_as(
+            app,
+            approver,
+            "POST",
+            "/api/v1/projects/p1/pull-requests/9/merge",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+    }
+
+    /// The security overview says where its list came from; turning
+    /// Dependabot on is an admin's and answers 201 with the execution.
+    #[tokio::test]
+    async fn security_overview_names_its_source_and_dependabot_is_configured_by_an_admin() {
+        let app = app_with_every_fake().await.app;
+
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-viewer"),
+            "GET",
+            "/api/v1/projects/p1/security",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["projectId"], "p1");
+        assert_eq!(json["source"], "dependabot");
+        assert_eq!(json["sourceNote"], Value::Null);
+        assert_eq!(json["truncated"], false);
+        assert_eq!(json["configPresent"], true);
+        assert_eq!(json["configPath"], ".github/dependabot.yml");
+        assert_eq!(json["configEcosystems"], json!(["npm"]));
+        assert_eq!(json["alerts"], "enabled");
+        assert_eq!(json["securityUpdates"], "paused");
+        assert_eq!(json["openDependabotPullRequests"], 1);
+        assert_eq!(json["configureExecutionId"], Value::Null);
+        assert_eq!(json["checkedAt"], "2023-11-14T22:13:20Z", "from the cache");
+        assert_eq!(
+            json["bySeverity"],
+            json!([
+                {"severity": "critical", "count": 1},
+                {"severity": "medium", "count": 1},
+            ])
+        );
+        let vulnerabilities = json["vulnerabilities"].as_array().unwrap();
+        assert_eq!(vulnerabilities.len(), 2);
+        let first = &vulnerabilities[0];
+        assert_eq!(first["source"], "dependabot");
+        assert_eq!(first["id"], "GHSA-35jh-r3h4-6jhm");
+        assert_eq!(first["cveId"], "CVE-2021-23337");
+        assert_eq!(first["ecosystem"], "npm");
+        assert_eq!(first["package"], "lodash");
+        assert_eq!(first["currentVersion"], Value::Null);
+        assert_eq!(first["vulnerableRange"], "< 4.17.21");
+        assert_eq!(first["fixedVersion"], "4.17.21");
+        assert_eq!(first["severity"], "critical");
+        assert_eq!(first["summary"], "lodash is vulnerable");
+        assert_eq!(first["manifestPath"], "package.json");
+        assert_eq!(first["scope"], "runtime");
+        assert_eq!(
+            first["url"],
+            "https://github.com/acme/repo/security/dependabot/7"
+        );
+        assert_eq!(first["fixPullRequest"], 2);
+        assert_eq!(first["detectedAt"], "2023-11-03T08:26:40Z");
+        // No fix yet: no version, no pull request.
+        assert_eq!(vulnerabilities[1]["cveId"], Value::Null);
+        assert_eq!(vulnerabilities[1]["fixedVersion"], Value::Null);
+        assert_eq!(vulnerabilities[1]["fixPullRequest"], Value::Null);
+        assert_eq!(vulnerabilities[1]["scope"], "development");
+
+        // `refresh` reaches the service.
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/security?refresh=true",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["checkedAt"], "2023-11-14T22:15:00Z");
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/p1/security?refresh=maybe",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_query");
+
+        // Alerts are off: the list is OSV's and the note says why.
+        let (status, json) =
+            send(app.clone(), "GET", "/api/v1/projects/p-osv/security", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["source"], "osv");
+        assert!(json["sourceNote"].as_str().unwrap().contains("OSV"));
+        assert_eq!(json["alerts"], "disabled");
+        assert_eq!(json["configPresent"], false);
+        assert_eq!(json["configPath"], Value::Null);
+        assert_eq!(json["configEcosystems"], json!([]));
+        let osv = &json["vulnerabilities"][0];
+        assert_eq!(osv["source"], "osv");
+        assert_eq!(osv["currentVersion"], "4.17.20");
+        for field in [
+            "cveId",
+            "vulnerableRange",
+            "fixedVersion",
+            "scope",
+            "url",
+            "fixPullRequest",
+            "detectedAt",
+        ] {
+            assert_eq!(osv[field], Value::Null, "{field}");
+        }
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/projects/missing/security",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+        // Turning Dependabot on changes repository settings: admin.
+        let path = "/api/v1/projects/p1/security/dependabot";
+        let body = json!({"alerts": true, "securityUpdates": true, "configFile": true});
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-approver"),
+            "POST",
+            path,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        assert_eq!(
+            json["message"], "requires the admin role in this workspace (you are approver)",
+            "refused by the gateway, like editing an environment"
+        );
+        let (status, json, _) =
+            send_as(app.clone(), Some("t-admin"), "POST", path, Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(
+            json,
+            json!({"executionId": "x-dependabot-p1-alerts+updates+config"})
+        );
+        // Each switch is optional and travels on its own.
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            path,
+            Some(json!({"configFile": true, "alerts": null})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["executionId"], "x-dependabot-p1-config");
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            path,
+            Some(json!({"securityUpdates": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["executionId"], "x-dependabot-p1-updates");
+        // Asking for nothing is the service's 400, body or no body.
+        for nothing in [Some(json!({})), Some(json!({"alerts": false})), None] {
+            let (status, json) = send(app.clone(), "POST", path, nothing).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+            assert_eq!(json["code"], "invalid_argument");
+            assert!(json["message"].as_str().unwrap().contains("at least one"));
+        }
+    }
+
+    /// CONTRACT.md §23.6: the four requests are audited under their own
+    /// actions with the entity they name, and nothing of what was drafted
+    /// or committed is in the entry.
+    #[tokio::test]
+    async fn autopilot_requests_are_audited_with_their_entity() {
+        let stack = app_with_every_fake().await;
+        let app = stack.app.clone();
+        for (path, body, expected) in [
+            ("/api/v1/findings/f2/draft-fix", None, StatusCode::OK),
+            ("/api/v1/reviews/r1/apply-fixes", None, StatusCode::CREATED),
+            (
+                "/api/v1/projects/p1/pull-requests/1/merge",
+                Some(json!({"method": "squash"})),
+                StatusCode::CREATED,
+            ),
+            (
+                "/api/v1/projects/p1/security/dependabot",
+                Some(json!({"alerts": true})),
+                StatusCode::CREATED,
+            ),
+            // Refused requests are part of the trail too.
+            (
+                "/api/v1/projects/p1/pull-requests/2/merge",
+                None,
+                StatusCode::PRECONDITION_FAILED,
+            ),
+            (
+                "/api/v1/findings/f-off/draft-fix",
+                None,
+                StatusCode::PRECONDITION_FAILED,
+            ),
+        ] {
+            let (status, json) = send(app.clone(), "POST", path, body).await;
+            assert_eq!(status, expected, "{path}: {json}");
+        }
+        // Reads leave no entry.
+        for path in [
+            "/api/v1/projects/p1/pull-requests/1/merge-readiness",
+            "/api/v1/projects/p1/security",
+        ] {
+            let (status, json) = send(app.clone(), "GET", path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {json}");
+        }
+
+        let entries = audited(&stack.recorder, 6).await;
+        let mut seen: Vec<(&str, &str, &str, &str)> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e.action.as_str(),
+                    e.entity.as_str(),
+                    e.entity_id.as_str(),
+                    e.detail.as_str(),
+                )
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            [
+                ("pull_request.merge_requested", "pull_request", "1", ""),
+                (
+                    "pull_request.merge_requested",
+                    "pull_request",
+                    "2",
+                    "http 412"
+                ),
+                ("review.fix_drafted", "finding", "f-off", "http 412"),
+                ("review.fix_drafted", "finding", "f2", ""),
+                ("review.fixes_requested", "review", "r1", ""),
+                ("security.dependabot_requested", "project", "p1", ""),
+            ]
+        );
+        for entry in &entries {
+            assert_eq!(entry.workspace_id, "w1");
+            assert_eq!(entry.user_id, "u1");
+            assert_eq!(entry.user_login, "octo");
+            // Neither the drafted lines nor a refusal's sentence is kept.
+            assert!(!entry.detail.contains("node"), "{entry:?}");
+        }
     }
 
     #[tokio::test]
@@ -2036,6 +2979,16 @@ mod tests {
         assert_eq!(json["intelligence"]["reasoner"], "heuristic");
         assert_eq!(json["intelligence"]["defaultWeights"]["policy"], 0.2);
         assert_eq!(json["intelligence"]["apiKeyConfigured"], false);
+        // Pull request autopilot (§23.6): the defaults and the watcher.
+        assert_eq!(json["intelligence"]["autoDraftFixes"], false);
+        assert_eq!(json["intelligence"]["autoMerge"], "off");
+        assert_eq!(json["intelligence"]["mergeRequiresReview"], true);
+        assert_eq!(json["intelligence"]["prWatchIntervalSeconds"], 60);
+        assert_eq!(
+            json["intelligence"]["prWatchLastRunAt"],
+            "2023-11-14T22:13:20Z"
+        );
+        assert_eq!(json["intelligence"]["prWatchLastError"], Value::Null);
 
         // One service down: the composition cannot be answered honestly.
         let (status, json) = send(
@@ -2047,6 +3000,32 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(json["code"], "unavailable");
+    }
+
+    /// The reasoner test is an admin's question, and a misconfiguration is
+    /// an answer (200 with a status and a sentence), not an error.
+    #[tokio::test]
+    async fn reasoner_test_reports_what_the_model_call_did() {
+        let app = app_with_every_fake().await.app;
+        let (status, json, _) = send_as(
+            app.clone(),
+            Some("t-approver"),
+            "POST",
+            "/api/v1/settings/reasoner/test",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        let (status, json) = send(app, "POST", "/api/v1/settings/reasoner/test", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["provider"], "openai_compatible");
+        assert_eq!(json["model"], "test-model");
+        assert_eq!(json["endpoint"], "https://api.openai.com");
+        assert_eq!(json["latencyMs"], 412);
+        assert_eq!(json["inputTokens"], 21);
+        assert_eq!(json["outputTokens"], 3);
+        assert!(json["message"].as_str().unwrap().contains("answered"));
     }
 
     #[tokio::test]
@@ -2076,7 +3055,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(json["intelligence"]["reasoner"], "claude");
         assert_eq!(json["intelligence"]["costCeilingUsd"], 50.0);
-        assert_eq!(json["intelligence"]["model"], "claude-sonnet-5-5");
+        // The fake echoes what it was sent: an unpatched model travels as
+        // empty ("keep what is stored"), never as the effective value read.
+        assert_eq!(json["intelligence"]["model"], "");
         assert_eq!(json["intelligence"]["defaultWeights"]["cost"], 0.1);
         assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
 
@@ -2089,6 +3070,80 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
+    }
+
+    /// CONTRACT.md §23.6: the three autopilot switches go through the
+    /// existing settings route with its partial-update semantics; what the
+    /// watcher reports about itself cannot be written.
+    #[tokio::test]
+    async fn autopilot_settings_round_trip_and_the_watcher_fields_are_read_only() {
+        let app = app_with_every_fake().await.app;
+        let (status, json) = send(
+            app.clone(),
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"intelligence": {"autoMerge": "dependabot"}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let intelligence = &json["intelligence"];
+        assert_eq!(intelligence["autoMerge"], "dependabot");
+        assert_eq!(intelligence["autoDraftFixes"], false, "unset field kept");
+        assert_eq!(
+            intelligence["mergeRequiresReview"], true,
+            "an unset switch does not travel as false"
+        );
+        assert_eq!(intelligence["reasoner"], "heuristic");
+        assert_eq!(json["knowledge"]["scanMaxFiles"], 2000);
+
+        let (status, json) = send(
+            app.clone(),
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"intelligence": {
+                "autoDraftFixes": true,
+                "mergeRequiresReview": false,
+                "prWatchIntervalSeconds": 5,
+                "prWatchLastRunAt": null,
+                "prWatchLastError": "edited",
+            }})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let intelligence = &json["intelligence"];
+        assert_eq!(intelligence["autoDraftFixes"], true);
+        assert_eq!(intelligence["mergeRequiresReview"], false);
+        assert_eq!(
+            intelligence["autoMerge"], "off",
+            "each patch starts from what is stored"
+        );
+        // The fake echoes what the gateway sent: the read-only fields
+        // travelled as they were read, not as the body tried to set them.
+        assert_eq!(intelligence["prWatchIntervalSeconds"], 60);
+        assert_eq!(intelligence["prWatchLastRunAt"], "2023-11-14T22:13:20Z");
+        assert_eq!(intelligence["prWatchLastError"], Value::Null);
+
+        // A switch with the wrong type is a 400, not a silent false.
+        let (status, json) = send(
+            app.clone(),
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"intelligence": {"mergeRequiresReview": "no"}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_body");
+
+        // Settings are an admin's.
+        let (status, _, _) = send_as(
+            app,
+            Some("t-approver"),
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({"intelligence": {"autoMerge": "dependabot"}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -3025,8 +4080,11 @@ mod tests {
         assert_eq!(json["outcome"], "failed");
     }
 
+    /// A call the service behind the route does not have (an older build
+    /// than the gateway) says so, with the remedy and without the service's
+    /// own words.
     #[tokio::test]
-    async fn unimplemented_rpc_is_a_500_without_detail() {
+    async fn unimplemented_rpc_is_a_501_that_names_the_remedy() {
         let (status, json) = send(
             app_with_fake_execution().await,
             "GET",
@@ -3034,9 +4092,11 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(json["code"], "internal");
-        assert_eq!(json["message"], "internal error");
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(json["code"], "unimplemented");
+        let message = json["message"].as_str().unwrap();
+        assert!(message.contains("older version"), "{message}");
+        assert!(message.contains("same version"), "{message}");
     }
 
     #[tokio::test]

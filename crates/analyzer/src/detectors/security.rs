@@ -94,24 +94,30 @@ fn env_example(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// GitHub reads either spelling of the file name.
+const DEPENDABOT_PATHS: [&str; 2] = [".github/dependabot.yml", ".github/dependabot.yaml"];
+
 fn dependabot(ctx: &mut Ctx<'_>) {
-    let path = ".github/dependabot.yml";
+    let Some(path) = DEPENDABOT_PATHS
+        .into_iter()
+        .find(|path| ctx.file(path).is_some() || ctx.tree_has(|p| p == *path))
+    else {
+        return;
+    };
     let Some(content) = ctx.file(path) else {
-        if ctx.tree_has(|p| p == path) {
-            ctx.out.dependabot = DependabotDraft {
-                configured: true,
-                config_path: path.into(),
-                ecosystems: Vec::new(),
-            };
-            ctx.detected(
-                FactCategory::Security,
-                "security:dependabot",
-                "Dependabot",
-                "configured",
-                path,
-                "dependabot.yml in tree",
-            );
-        }
+        ctx.out.dependabot = DependabotDraft {
+            configured: true,
+            config_path: path.into(),
+            ecosystems: Vec::new(),
+        };
+        ctx.detected(
+            FactCategory::Security,
+            "security:dependabot",
+            "Dependabot",
+            "configured",
+            path,
+            "Dependabot configuration file in tree",
+        );
         return;
     };
     let ecosystems: Vec<String> = yaml::first(content)

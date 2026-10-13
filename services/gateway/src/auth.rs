@@ -107,13 +107,23 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (&Method::POST | &Method::PUT | &Method::DELETE, ["registries", ..]) => Role::Admin,
         (&Method::POST, ["projects", _, "environments"]) => Role::Admin,
         (&Method::PUT | &Method::DELETE, ["environments", _]) => Role::Admin,
+        // Pull request autopilot (§23): turning Dependabot on changes the
+        // repository's settings.
+        (&Method::POST, ["projects", _, "security", "dependabot"]) => Role::Admin,
         (&Method::PATCH, ["policies", ..]) | (&Method::PATCH, ["settings"]) => Role::Admin,
+        // Spends the workspace's tokens and reads its model configuration.
+        (&Method::POST, ["settings", "reasoner", "test"]) => Role::Admin,
         (&Method::GET | &Method::HEAD | &Method::OPTIONS, _) => Role::Viewer,
         (&Method::POST, ["auth", "logout"]) => Role::Viewer,
         (&Method::POST, ["approvals", _, "decide"]) => Role::Approver,
         (&Method::POST, ["identities", _, "grants"]) => Role::Approver,
         (&Method::POST, ["proposals", _, "pull-request"]) => Role::Approver,
         (&Method::POST, ["reviews", _, "publish"]) => Role::Approver,
+        // Commits to the repository through a `github` execution (§18, §23.2).
+        (&Method::POST, ["reviews", _, "apply-fixes"]) => Role::Approver,
+        // Asking for a merge (§23). Drafting and applying fixes stay member
+        // work: the commit itself waits for an approval.
+        (&Method::POST, ["projects", _, "pull-requests", _, "merge"]) => Role::Approver,
         // Promoting and rolling back start a real deployment.
         (&Method::POST, ["environments", _, "promote" | "rollback"]) => Role::Approver,
         (&Method::POST, ["executions"]) if real_adapter => Role::Approver,
@@ -258,6 +268,21 @@ pub fn audit_action(method: &Method, path: &str) -> (String, String, String) {
         }
         (&Method::POST, ["findings", id, "decide"]) => (owned("finding.decide"), "finding", id),
         (&Method::POST, ["reviews", id, "publish"]) => (owned("review.publish"), "review", id),
+        // Pull request autopilot (§23).
+        (&Method::POST, ["findings", id, "draft-fix"]) => {
+            (owned("review.fix_drafted"), "finding", id)
+        }
+        (&Method::POST, ["reviews", id, "apply-fixes"]) => {
+            (owned("review.fixes_requested"), "review", id)
+        }
+        (&Method::POST, ["projects", _, "pull-requests", number, "merge"]) => (
+            owned("pull_request.merge_requested"),
+            "pull_request",
+            number,
+        ),
+        (&Method::POST, ["projects", id, "security", "dependabot"]) => {
+            (owned("security.dependabot_requested"), "project", id)
+        }
         (&Method::DELETE, ["diagrams", id]) => (owned("diagram.delete"), "diagram", id),
         (&Method::POST, ["executions"]) => (owned("execution.create"), "execution", ""),
         (&Method::POST, ["executions", id, verb]) => (format!("execution.{verb}"), "execution", id),
@@ -287,6 +312,9 @@ pub fn audit_action(method: &Method, path: &str) -> (String, String, String) {
             (owned("secret.delete"), "secret", name)
         }
         (&Method::PATCH, ["settings"]) => (owned("settings.update"), "settings", ""),
+        (&Method::POST, ["settings", "reasoner", "test"]) => {
+            (owned("settings.reasoner_test"), "settings", "")
+        }
         (&Method::PATCH, ["workspaces", _, "members", user_id]) => {
             (owned("member.override"), "member", user_id)
         }
@@ -585,6 +613,34 @@ mod tests {
             Role::Approver
         );
         assert_eq!(r(Method::GET, "/api/v1/activity", None), Role::Viewer);
+        // Pull request autopilot (§23): reads viewer, drafting a fix member,
+        // committing fixes and merging approver, configuring Dependabot admin.
+        for path in [
+            "/api/v1/projects/p/pull-requests/4/merge-readiness",
+            "/api/v1/projects/p/security",
+        ] {
+            assert_eq!(r(Method::GET, path, None), Role::Viewer, "{path}");
+        }
+        assert_eq!(
+            r(Method::POST, "/api/v1/findings/f/draft-fix", None),
+            Role::Member
+        );
+        assert_eq!(
+            r(Method::POST, "/api/v1/reviews/r/apply-fixes", None),
+            Role::Approver
+        );
+        assert_eq!(
+            r(
+                Method::POST,
+                "/api/v1/projects/p/pull-requests/4/merge",
+                None
+            ),
+            Role::Approver
+        );
+        assert_eq!(
+            r(Method::POST, "/api/v1/projects/p/security/dependabot", None),
+            Role::Admin
+        );
         // Continuous delivery (§22): reads viewer, create release member,
         // promote/rollback approver, registries, secrets and environment
         // edits admin.
@@ -672,6 +728,39 @@ mod tests {
             a(Method::POST, "/api/v1/reviews/r1/publish"),
             ("review.publish".into(), "review".into(), "r1".into())
         );
+        // Pull request autopilot (§23.6).
+        for (path, action, entity, id) in [
+            (
+                "/api/v1/findings/f1/draft-fix",
+                "review.fix_drafted",
+                "finding",
+                "f1",
+            ),
+            (
+                "/api/v1/reviews/r1/apply-fixes",
+                "review.fixes_requested",
+                "review",
+                "r1",
+            ),
+            (
+                "/api/v1/projects/p1/pull-requests/4/merge",
+                "pull_request.merge_requested",
+                "pull_request",
+                "4",
+            ),
+            (
+                "/api/v1/projects/p1/security/dependabot",
+                "security.dependabot_requested",
+                "project",
+                "p1",
+            ),
+        ] {
+            assert_eq!(
+                a(Method::POST, path),
+                (action.to_owned(), entity.to_owned(), id.to_owned()),
+                "{path}"
+            );
+        }
         // Continuous delivery (§22).
         for (method, path, action, entity, id) in [
             (

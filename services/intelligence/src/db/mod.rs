@@ -2,6 +2,7 @@
 //! crate builds without a database. Every function takes the workspace it
 //! operates in (CONTRACT.md §18): an id alone never addresses a row.
 
+pub mod autopilot;
 pub mod decisions;
 pub mod diagrams;
 pub mod documents;

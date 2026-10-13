@@ -65,8 +65,14 @@ pub struct Finding {
     /// Line in the new file; 0 for a file-level finding.
     pub line: u32,
     pub end_line: u32,
-    /// Replacement for the referenced lines, when the fix is mechanical.
+    /// Code that goes with the finding: the exact replacement for the
+    /// referenced lines when `suggestion_exact`, otherwise an example to
+    /// adapt by hand.
     pub suggestion: Option<String>,
+    /// `suggestion` replaces lines `line..=end_line` exactly and can be
+    /// committed as it is (CONTRACT.md §23.2). False for an illustration:
+    /// a line to add rather than replace, or text with a placeholder.
+    pub suggestion_exact: bool,
     /// `<category>.<check>`.
     pub rule: String,
     /// Set by the project's learnings (CONTRACT.md §20): the rule was
@@ -96,13 +102,29 @@ impl Finding {
             line,
             end_line: line,
             suggestion: None,
+            suggestion_exact: false,
             rule: format!("{category}.{check}"),
             suppressed: false,
         }
     }
 
+    /// An example of the fix, shown with the finding and never committed:
+    /// something to add rather than replace, or text a person has to fill
+    /// in. Use [`with_replacement`](Self::with_replacement) only when the
+    /// text is exactly what lines `line..=end_line` should become.
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
+        self.suggestion_exact = false;
+        self
+    }
+
+    /// The exact text lines `line..=end_line` should become. "Apply fixes"
+    /// commits it as it is once a person accepted the finding, so a rule
+    /// may only say this when replacing those lines with it is the whole
+    /// fix and nothing in it needs filling in.
+    pub fn with_replacement(mut self, replacement: impl Into<String>) -> Self {
+        self.suggestion = Some(replacement.into());
+        self.suggestion_exact = true;
         self
     }
 }
