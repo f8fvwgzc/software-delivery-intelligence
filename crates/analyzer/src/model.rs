@@ -335,6 +335,8 @@ pub const DEPLOYER_KINDS: &[&str] = &[
     "azure_devops",
     "webhook",
     "docker_local",
+    // SDI's own GitOps engine (CONTRACT.md §24): an application on a registered cluster.
+    "sdi_gitops",
 ];
 
 /// `.sdi.yml` `delivery:` — where images go and which environments a

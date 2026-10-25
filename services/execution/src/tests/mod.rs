@@ -5,3 +5,4 @@ mod autopilot;
 mod delivery;
 mod e2e;
 pub(crate) mod fakes;
+mod gitops;

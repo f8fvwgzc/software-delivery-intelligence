@@ -161,12 +161,7 @@ pub(crate) async fn insert_plan(
             status: convert::step_status_to_db(StepStatus::Pending).to_owned(),
             risk: convert::risk_to_db(rule.risk).to_owned(),
             policy_decision: convert::decision_to_db(rule.decision).to_owned(),
-            required_permissions: step
-                .required_permissions
-                .iter()
-                .map(|p| p.trim().to_owned())
-                .filter(|p| !p.is_empty())
-                .collect(),
+            required_permissions: required_permissions(step),
             approval_id: None,
             params: Json(
                 step.params
@@ -198,6 +193,25 @@ pub(crate) async fn insert_plan(
     .await
     .map_err(db_status)?;
     Ok((id, event))
+}
+
+/// What the step's plan asks for, plus what its action type always needs
+/// (`adapters::implied_permissions`): a GitOps sync whose plan forgot
+/// `cluster:write` still pauses for the timed grant (CONTRACT.md §24.7).
+fn required_permissions(step: &PlanStep) -> Vec<String> {
+    let mut permissions: Vec<String> = step
+        .required_permissions
+        .iter()
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .collect();
+    let operation = step.params.get("operation").map_or("", |op| op.trim());
+    for implied in adapters::implied_permissions(step.action_type.trim(), operation) {
+        if !permissions.iter().any(|p| p == implied) {
+            permissions.push((*implied).to_owned());
+        }
+    }
+    permissions
 }
 
 /// Tells the watchers about an execution `insert_plan` stored, once its

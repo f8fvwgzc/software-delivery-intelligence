@@ -2,7 +2,7 @@
 //! the gateway boots (and serves `/health`, docs and the OpenAPI document)
 //! before any service is up, and reconnects on its own once they are.
 //!
-//! Every call to knowledge, intelligence or execution carries the caller's
+//! Every call to knowledge, intelligence, execution or gitops carries the caller's
 //! `Principal` as gRPC metadata (CONTRACT.md §18): handlers get their
 //! clients from a [`Scoped`] extractor, never from the bare state.
 
@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use sdi_common::{cache::TtlCache, grpc::MAX_MESSAGE_BYTES, principal::Principal};
 use sdi_proto::{
     execution::v1::execution_service_client::ExecutionServiceClient,
+    gitops::v1::gitops_service_client::GitopsServiceClient,
     identity::v1::identity_service_client::IdentityServiceClient,
     intelligence::v1::intelligence_service_client::IntelligenceServiceClient,
     knowledge::v1::knowledge_service_client::KnowledgeServiceClient,
@@ -42,6 +43,8 @@ pub const DEFAULT_SSE_MAX_PER_WORKSPACE: usize = 50;
 pub const DEFAULT_WEBHOOK_QUEUE_MAX: usize = 256;
 /// Outcomes of the latest webhook deliveries kept for diagnostics.
 const WEBHOOK_LOG_MAX: usize = 256;
+/// `GITOPS_GRPC_URL` when unset: the GitOps engine's port (CONTRACT.md §24.1).
+pub const DEFAULT_GITOPS_URL: &str = "http://127.0.0.1:50055";
 
 /// One backing service, as the system status page reports it.
 #[derive(Debug, Clone)]
@@ -153,7 +156,8 @@ pub struct WebhookDelivery {
 /// one `Identity.Authorize` (docs/self-hosting.md).
 #[derive(Clone)]
 pub struct AppState {
-    pub services: Arc<[ServiceLink; 4]>,
+    /// knowledge, intelligence, execution, identity, gitops (in that order).
+    pub services: Arc<[ServiceLink; 5]>,
     pub settings: Arc<GatewaySettings>,
     pub started_at: DateTime<Utc>,
     pub version: &'static str,
@@ -168,8 +172,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Reads the four `*_GRPC_URL` variables and the gateway's own settings
-    /// (CONTRACT.md §3, §18).
+    /// Reads the five `*_GRPC_URL` variables and the gateway's own settings
+    /// (CONTRACT.md §3, §18, §24.1).
     pub fn from_env() -> Result<Self> {
         use sdi_common::config;
         let settings = GatewaySettings {
@@ -189,6 +193,7 @@ impl AppState {
             &config::intelligence_url(),
             &config::execution_url(),
             &config::identity_url(),
+            &config::env_or("GITOPS_GRPC_URL", DEFAULT_GITOPS_URL),
             settings,
         )
     }
@@ -198,6 +203,7 @@ impl AppState {
         intelligence: &str,
         execution: &str,
         identity: &str,
+        gitops: &str,
         settings: GatewaySettings,
     ) -> Result<Self> {
         let link = |name, url: &str| -> Result<ServiceLink> {
@@ -215,6 +221,7 @@ impl AppState {
                 link("intelligence", intelligence)?,
                 link("execution", execution)?,
                 link("identity", identity)?,
+                link("gitops", gitops)?,
             ]),
             auth_cache: Arc::new(Mutex::new(TtlCache::new(
                 settings.auth_cache_max,
@@ -376,6 +383,7 @@ pub type KnowledgeClient = KnowledgeServiceClient<InterceptedService<Channel, Fo
 pub type IdentityCallerClient = IdentityServiceClient<InterceptedService<Channel, Forward>>;
 pub type IntelligenceClient = IntelligenceServiceClient<InterceptedService<Channel, Forward>>;
 pub type ExecutionClient = ExecutionServiceClient<InterceptedService<Channel, Forward>>;
+pub type GitopsClient = GitopsServiceClient<InterceptedService<Channel, Forward>>;
 
 /// The state plus the caller: the only way handlers reach a service.
 #[derive(Clone)]
@@ -406,6 +414,17 @@ impl Scoped {
     pub fn execution(&self) -> ExecutionClient {
         ExecutionServiceClient::with_interceptor(
             self.state.services[2].channel.clone(),
+            Forward(self.principal.clone()),
+        )
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The GitOps engine (CONTRACT.md §24). It checks the forwarded role
+    /// itself, like every service.
+    pub fn gitops(&self) -> GitopsClient {
+        GitopsServiceClient::with_interceptor(
+            self.state.services[4].channel.clone(),
             Forward(self.principal.clone()),
         )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)

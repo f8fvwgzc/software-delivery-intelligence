@@ -10,7 +10,7 @@ use axum::{Json, http::StatusCode};
 use sdi_proto::{execution::v1 as proto, intelligence::v1 as intelligence};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use super::map_all;
+use super::{map_all, require_id};
 use crate::{
     dto::delivery::{
         CreateReleaseRequest, DeliveryArtifacts, DeliveryPipeline, DeploymentRun, Environment,
@@ -116,15 +116,6 @@ async fn delete_registry(state: Scoped, ApiPath(id): ApiPath<String>) -> ApiResu
         .delete_registry(proto::DeleteRegistryRequest { id })
         .await?;
     Ok(StatusCode::OK)
-}
-
-/// An empty path id would turn an update into a create.
-fn require_id(id: String) -> ApiResult<String> {
-    if id.trim().is_empty() {
-        Err(ApiError::bad_request("id is required"))
-    } else {
-        Ok(id)
-    }
 }
 
 // --- environments -----------------------------------------------------------

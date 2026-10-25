@@ -16,6 +16,7 @@ export const routes = {
   projectSecurity: (projectId: string) => `/projects/${projectId}/security`,
   projectDelivery: (projectId: string) => `/projects/${projectId}/delivery`,
   projectPipeline: (projectId: string) => `/projects/${projectId}/pipeline`,
+  projectApplications: (projectId: string) => `/projects/${projectId}/applications`,
   projectProposals: (projectId: string) => `/projects/${projectId}/proposals`,
   projectDocuments: (projectId: string) => `/projects/${projectId}/documents`,
   projectExecutions: (projectId: string) => `/projects/${projectId}/executions`,
@@ -23,6 +24,8 @@ export const routes = {
   projectPullRequests: (projectId: string) => `/projects/${projectId}/pull-requests`,
 
   diagram: (diagramId: string) => `/diagrams/${diagramId}`,
+  /** A GitOps application (CONTRACT.md §24): its resources, diff, manifests and history. */
+  application: (applicationId: string) => `/applications/${applicationId}`,
 
   proposals: () => '/proposals',
   proposal: (proposalId: string) => `/proposals/${proposalId}`,
@@ -43,6 +46,7 @@ export const routes = {
   audit: () => '/workspace/audit',
   dataPrivacy: () => '/workspace/data',
   registries: () => '/workspace/registries',
+  clusters: () => '/workspace/clusters',
   secrets: () => '/workspace/secrets',
 
   policies: () => '/policies',

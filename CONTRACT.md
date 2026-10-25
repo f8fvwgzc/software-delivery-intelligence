@@ -34,10 +34,11 @@ Four principles every component honours:
 |---|---|---|---|
 | `web` | React 19 + Vite + shadcn/ui + TanStack Query | 5173 (dev) | gateway over HTTP |
 | `nginx` | web server, reverse proxy, rate limiter, load balancer | 80 (host) / 8080 (container, unprivileged) | web static files, gateway replicas |
-| `services/gateway` | axum REST + OpenAPI (public API) | 8080 | knowledge, intelligence, execution over gRPC |
+| `services/gateway` | axum REST + OpenAPI (public API) | 8080 | knowledge, intelligence, execution, identity, gitops over gRPC |
 | `services/knowledge` | tonic gRPC | 50051 | Postgres (`knowledge` schema), GitHub API |
 | `services/intelligence` | tonic gRPC | 50052 | Postgres (`intelligence` schema), knowledge, execution |
 | `services/execution` | tonic gRPC | 50053 | Postgres (`execution` schema), knowledge |
+| `services/gitops` | Go gRPC, Argo CD's gitops-engine embedded (§24) | 50055 | Postgres (`gitops` schema), identity, knowledge, Kubernetes clusters, GitHub API |
 | `postgres` | pgvector/pgvector:pg16 | 5440 (dev host), 5432 (docker) | — |
 
 Service-to-service calls are **gRPC only** (`/proto/sdi/*/v1/*.proto`, compiled
@@ -68,6 +69,10 @@ Shared crates:
 | `LLM_MODEL` / `ANTHROPIC_MODEL` | `claude-sonnet-5-5` for `anthropic`, none otherwise | intelligence (`LLM_MODEL` names the model for whichever provider is configured; `ANTHROPIC_MODEL` is the older name and applies to the Anthropic provider only. An OpenAI-compatible provider has no default: until a model is named nothing is called, §19) |
 | `OSV_API_URL` | `https://api.osv.dev` | intelligence (§20 dependency vulnerabilities; `off` disables) |
 | `KNOWLEDGE_GRPC_URL` | `http://127.0.0.1:50051` | gateway, intelligence, execution |
+| `GITOPS_GRPC_URL` | `http://127.0.0.1:50055` | gateway, execution (§24) |
+| `GITOPS_LISTEN` | `0.0.0.0:50055` | gitops |
+| `GITOPS_RECONCILE_SECONDS` | `180` | gitops: seconds between two comparisons of every application; minimum 30, `0` turns the loop and automated sync off |
+| `GITOPS_MAX_CLUSTERS` | `64` | gitops: cluster caches held at once |
 | `IDENTITY_GRPC_URL` | `http://127.0.0.1:50054` | gateway, knowledge (tokens, data controls, audit), intelligence, execution |
 | `INTELLIGENCE_GRPC_URL` | `http://127.0.0.1:50052` | gateway |
 | `EXECUTION_GRPC_URL` | `http://127.0.0.1:50053` | gateway, intelligence |
@@ -186,6 +191,10 @@ design conversation. `editable=false` rows can never be relaxed.
 | `repo.merge_pull_request` | Merge a pull request | high | approval | yes |
 | `repo.delete_branch` | Delete a merged branch | medium | auto | yes |
 | `repo.enable_security_updates` | Turn on Dependabot alerts and security updates | medium | approval | yes |
+| `gitops.preview` | Preview what a sync would change | safe | auto | no |
+| `gitops.sync` | Sync an application to its cluster | high | approval | yes |
+| `gitops.rollback` | Roll an application back to an earlier sync | high | approval | yes |
+| `gitops.verify_health` | Wait for an application to be healthy | safe | auto | no |
 
 ### 5.3 Permissions (`PlanStep.required_permissions`, identity grants)
 
@@ -203,7 +212,12 @@ every 5 minutes, and creating a `github` execution there answers
 `FAILED_PRECONDITION` naming the three ways to get one); everything else must be granted (TTL, default 30
 minutes) and a missing grant produces a `PERMISSION_DENIED` failure **before**
 the step runs. `repository:admin` (changing repository settings,
-§23) is held by nobody: it is always a timed grant.
+§23) is held by nobody: it is always a timed grant. `cluster:read` (reading an application's
+state on a cluster, §24) is held by the seeded `gitops` and `delivery`
+identities; `cluster:write` (syncing or rolling back an application) is
+held by nobody: always a timed grant. The `gitops` runtime executes as the
+seeded `gitops` identity and forwards the approver (else the requester,
+else the workspace's system principal) to the gitops service.
 
 ### 5.4 Adapters
 
@@ -217,6 +231,7 @@ runtime cannot provide.
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
 | `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/` and writes `CreateExecutionRequest.artifacts` on top of it (so an option's generated Dockerfile is what gets built), `container.build` runs `docker build -f params.dockerfile params.context` (the application directory's Dockerfile in a monorepo), `container.run` starts the image detached (no `--rm`, so a crashed container keeps its logs for the failure) with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, or, when the plan names `params.test_image` (a compiled stack whose runtime image has no toolchain), in that image with `params.test_dir` of the checkout mounted at `/src`; `env.destroy_temporary` stops and removes everything, and a cancelled or finished run removes its container and workdir either way; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
 | `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Files under `.github/workflows/` need the token's `workflow` scope; without it GitHub answers 404 on the tree and the step fails `PERMISSION_DENIED` naming that scope. `params.branch` names the branch instead when there is no proposal. The pull request operations of §23 run here too | `repo.checkout`, `repo.open_pull_request`, `repo.commit_fixes`, `repo.verify_mergeable`, `repo.merge_pull_request`, `repo.delete_branch`, `repo.enable_security_updates` |
+| `gitops` | calls the gitops service (§24): dry-run preview, sync, rollback, health wait of an application on a registered cluster | `gitops.preview`, `gitops.sync`, `gitops.rollback`, `gitops.verify_health` |
 | `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
 
 A plan may mix families (build locally, then open a PR): the service routes
@@ -232,7 +247,8 @@ approval → run → verify → checkpoint. The `docker` adapter requires the
 `TIMEOUT`, `HEALTH_CHECK_FAILED`, `BUILD_FAILED`, `TESTS_FAILED`,
 `DEPENDENCY_CONFLICT`, `IMAGE_NOT_FOUND`, `DEPLOYER_FAILED`,
 `DEPLOYER_TIMEOUT`, `GITOPS_CONFLICT`, `HEAD_MOVED`, `MERGE_CONFLICT`,
-`CHECKS_FAILING`, `MERGE_BLOCKED`, `UNKNOWN`. Each has at least two remediation options
+`CHECKS_FAILING`, `MERGE_BLOCKED`, `RENDER_FAILED`, `CLUSTER_UNREACHABLE`,
+`SYNC_FAILED`, `UNKNOWN`. Each has at least two remediation options
 plus the free-text instruction path.
 
 ### 5.6 Pattern catalog (seeded by knowledge, `source=catalog`, scope `public_template`)
@@ -445,7 +461,7 @@ Every DTO carries `#[derive(ToSchema)]` and every route `#[utoipa::path]`;
 | `GET /scans/{id}/stream` (SSE, `data: <Scan>`, final `event: end`) | Knowledge.WatchScan |
 | `GET /projects/{id}/maturity` | Knowledge.GetMaturity |
 | `GET /projects/{id}/config` | gateway: `ProjectContext.config` via Knowledge.GetProjectContext |
-| `GET /events/stream` (SSE, `data: <PlatformEvent>`, never ends, keep-alive 15s) | gateway merges Knowledge/Intelligence/Execution.WatchEvents |
+| `GET /events/stream` (SSE, `data: <PlatformEvent>`, never ends, keep-alive 15s) | gateway merges Knowledge/Intelligence/Execution/Gitops.WatchEvents |
 | `GET /settings`, `PATCH /settings {knowledge?, intelligence?}` | Knowledge.Get/UpdateSettings + Intelligence.Get/UpdateSettings, composed as `{knowledge, intelligence}` |
 | `GET /proposals/{id}/options/{optionId}/artifacts` | gateway: the option's artifacts (omitted from `GET /proposals/{id}` and list responses to keep them small; `GET /proposals/{id}` carries `artifactCount` per option) |
 | `POST /proposals/{id}/pull-request {optionId?}` | Intelligence.AcceptProposal(create_execution) with a `github`-adapter plan of `repo.checkout → repo.open_pull_request`; returns the proposal (201) whose `executionId` is that execution, where `outputs.pull_request_url` appears once the approved step ran |
@@ -1169,6 +1185,7 @@ checkpoint, and stops on failure.
   | `azure_devops` | `POST dev.azure.com/<organization>/<project>/_apis/pipelines/<pipeline_id>/runs` and polls the run | `organization`, `project`, `pipeline_id`, `pat_secret` |
   | `webhook` | signed `POST` (HMAC-SHA256 in `X-SDI-Signature-256`) with the release JSON; 2xx is success | `url`, `secret`, `timeout_seconds` |
   | `docker_local` | runs the image on the host's Docker (development only; needs the `local-exec` profile) | `port`, `env` (JSON) |
+  | `sdi_gitops` | syncs an application of SDI's own GitOps engine with the release image, then waits for it to be healthy (§24.7) | `application` (required, a UUID) |
 
   `protected=true` gives production semantics. `auto_promote=true` promotes
   into the stage as soon as the previous one succeeds (still gated).
@@ -1607,3 +1624,215 @@ What SDI does not do: it does not write features. The code it writes is
 the files of §14 and §22 (generated from facts) and the replacements of
 §23.2 (a finding's lines). Lockfiles are never regenerated by SDI;
 dependency updates are Dependabot's pull requests.
+
+## 24. GitOps engine (from Argo CD)
+
+Argo CD's core inside SDI, so a team can deploy to Kubernetes without
+running Argo CD: declare an application (a path in a repository, a cluster,
+a namespace), and SDI renders it, compares it with the cluster, syncs it,
+keeps it healthy and remembers every sync. Contract:
+`proto/sdi/gitops/v1/gitops.proto`.
+
+### 24.1 The service
+
+`services/gitops`, **Go** (the only Go service), gRPC on **50055**
+(`GITOPS_LISTEN`, peers reach it at `GITOPS_GRPC_URL`), Postgres schema
+`gitops`. It embeds Argo CD's own **gitops-engine** library
+(`github.com/argoproj/argo-cd/gitops-engine`, Apache-2.0), pinned to the
+commit of the latest stable Argo CD release (v3.5.6 when this was
+written), for what makes Argo CD reliable: the cluster cache (informers on
+every watched kind), diffing with Kubernetes normalisation, sync planning
+with phases, waves and hooks, pruning, and health assessment. Around it,
+the service does what Argo CD's repo-server and application controller
+do. `NOTICE` names Argo CD; the engine is a module dependency, not a copy.
+Go stubs are generated from `/proto` into `services/gitops/gen` (committed,
+`make gen-go` refreshes them); every proto carries a `go_package`.
+
+Principal and roles: the same `x-sdi-user` / `x-sdi-workspace` /
+`x-sdi-role` metadata as every service (`internal/principal` mirrors
+`crates/common/src/principal.rs`, including `system`). Reads VIEWER,
+`RefreshApplication` MEMBER, clusters and applications ADMIN to change,
+`SyncApplication` / `RollbackApplication` APPROVER (in practice the
+execution service's `gitops` adapter, §24.7, forwarding the approver).
+
+### 24.2 Clusters
+
+A cluster is a name plus the **name of a workspace secret** holding a
+kubeconfig (§22 secrets), an optional context, a default namespace and an
+optional list of namespaces (namespaced mode: the engine watches and writes
+only those). The kubeconfig is read through `Identity.ResolveSecret` as
+the workspace's system principal, only in memory, never logged, never
+returned. The kubeconfig's user must carry inline credentials (a token, a
+client certificate or basic auth): exec and auth-provider plugins are
+refused, and so is a user with no credentials, which client libraries
+would otherwise fill in with the pod's own service account. For the
+engine's apply path the credentials and manifests are written for the
+duration of one call to a private (0700) directory, under `/dev/shm`
+where it exists, and removed after. `UpsertCluster` connects once (server
+version) and answers `status`/`message`, so a bad kubeconfig is reported
+when it is saved; an unreachable cluster (including one refused by the
+address check below) is still saved, with the reason in `message`. The API server address is checked like
+every deploy target (§22): loopback, private and metadata addresses are
+refused unless `SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1` (`make dev` sets it,
+since a local cluster is one). One engine cluster cache per cluster, built
+on first use, dropped when the cluster changes or after 30 minutes unused,
+at most `GITOPS_MAX_CLUSTERS` (64) at once. A workspace holds at most 200
+clusters and 2 000 applications. A kubeconfig is a workspace secret, so
+its size limit (32 KiB) applies; inline certificates fit in it.
+
+### 24.3 Rendering the desired state
+
+The source (`ApplicationSource`) is a repository on the workspace's GitHub
+(default: the project's, from `Knowledge.GetProject`), a revision (branch,
+tag or SHA; default the default branch) and a path. The revision is
+resolved to a commit SHA, and the repository is read as GitHub's tarball at
+that SHA with the workspace's token (`Identity.GetInstallationToken`, the
+same access every service uses), extracted into a temporary directory and
+removed afterwards. Rendering happens **in process, with no network**:
+
+| type | how |
+|---|---|
+| `directory` | every `.yaml`, `.yml`, `.json` under the path (`recurse` for subdirectories), split into documents |
+| `kustomize` | the kustomize Go API (krusty), loading restricted to the checkout, no remote bases; `kustomize_images` applied as `images:` overrides |
+| `helm` | the Helm Go SDK, client-only template of the chart at the path with `helm_value_files` then `helm_parameters`, release name and destination namespace; dependencies must be vendored under `charts/` |
+| `""` | `kustomization.yaml`/`.yml` → kustomize, `Chart.yaml` → helm, else directory |
+
+Limits: tarball 200 MB, 1 GiB and 100 000 files unpacked, 5 000
+resources, 10 MB per file; a source over a limit is a condition, not a
+crash. Rendered manifests are cached by
+`(source, commit)` for 24 h (bounded); a hard refresh drops the entry.
+
+Every rendered resource gets the tracking annotation
+`sdi.dev/tracking-id: <application id>:<group>/<kind>:<namespace>/<name>`
+(Argo CD's annotation tracking). A live resource is the application's only
+when that annotation names this application and this exact resource, so
+SDI never adopts, overwrites or prunes what it did not create.
+
+### 24.4 Comparing and health
+
+A comparison renders the source, takes the managed live objects from the
+cluster cache and diffs each pair with the engine (`diff`, with the same
+normalisation Argo CD applies). Per resource `sync_status` is `synced`,
+`out_of_sync`, `missing` (desired, not live) or `extraneous` (live, no
+longer desired); the application is `synced` when every non-hook resource
+is. A live hook resource is listed with `hook: true` and `sync_status`
+`synced`. Health comes from the engine's health checks per resource
+(`healthy`, `progressing`, `degraded`, `suspended`, `missing`, `unknown`);
+the application's health is the worst of its resources, so one desired
+resource that is not live makes the application `missing`. A comparison that
+cannot finish keeps the last known statuses and adds a sentence to
+`conditions`. Diffs and manifests mask every value of a `Secret`'s `data`
+and `stringData` (`++++++++`, as Argo CD does), live and desired alike.
+
+### 24.5 Syncing
+
+`SyncApplication` stores any `kustomize_images` / `helm_parameters` into
+the source first (the desired state stays declared; a dry run stores
+nothing), renders, and calls
+the engine's sync: phases PreSync → Sync → PostSync with `SyncFail` hooks
+(`argocd.argoproj.io/hook`, `hook-delete-policy`), waves by
+`argocd.argoproj.io/sync-wave`, kinds in dependency order, `prune` and
+`dry_run` as asked, the destination namespace created when the policy
+says so, a partial sync when `resources` is set. It waits for the
+operation to end (`timeout_seconds`, default 600, then terminate) and
+answers each resource's result and the application's health right after.
+Every sync that is not a dry run appends a history entry (revision, the
+source as synced, phase, who, the execution); the last 50 are kept.
+`RollbackApplication` syncs a history entry's source at its revision;
+as in Argo CD it is refused (`FAILED_PRECONDITION`) while
+`sync_policy.automated` is on, since the next reconcile would sync the
+current source again. One operation per application at a time
+(`FAILED_PRECONDITION` while one runs; the gateway answers 412 before
+creating an execution). `DeleteApplication` with `cascade` deletes the
+managed live resources first, as an operation of kind `delete`.
+
+### 24.6 Reconciling and automation
+
+A loop compares every application every `GITOPS_RECONCILE_SECONDS`
+(default 180; minimum 30; `0` turns it off), up to 8 at once, one replica
+at a time (`pg_try_advisory_lock`), and emits a PlatformEvent (entity
+`application`, `data["workspace_id"]`) when sync or health status changes.
+An application whose `sync_policy.automated` is set is synced by the loop
+as the system principal when it is out of sync: on a new rendered state
+always, on drift of the same state only with `self_heal`; `prune` as the
+policy says; a self-heal sync of drift is a partial sync of the drifted
+resources, without hooks. A failed automated sync is retried with backoff
+(10 s, 20 s, 40 s, …, capped at 5 min): the first attempt and then up to
+`retry_limit` retries (default 3, at most 10), after which it waits for a
+new rendered state. Automated syncs are history entries with `automated: true`
+and audit entries (`application.auto_sync`, user `system`). Events are
+emitted by the replica that observed the change, and `WatchEvents` streams
+that replica's events: run one replica (the Kubernetes manifest does). Turning
+automation on is an ADMIN's explicit choice per application: it is the
+only way anything reaches a cluster without an execution's approval.
+
+### 24.7 Executions and continuous delivery
+
+The execution service gains the adapter **`gitops`** (it calls this
+service over gRPC) and the action types:
+
+| action_type | label | risk | default decision | editable |
+|---|---|---|---|---|
+| `gitops.preview` | Preview what a sync would change | safe | auto | no |
+| `gitops.sync` | Sync an application to its cluster | high | approval | yes |
+| `gitops.rollback` | Roll an application back to an earlier sync | high | approval | yes |
+| `gitops.verify_health` | Wait for an application to be healthy | safe | auto | no |
+
+`gitops.sync` and `gitops.rollback` need `cluster:write`, held by nobody:
+always a timed grant (§5.3). `gitops.preview` is a dry-run sync whose
+output lists what would be created, changed or pruned;
+`gitops.verify_health` polls the application until it is healthy
+(`params.timeout_seconds`, default 300), degraded or missing failing it.
+Params: `application` (id), `prune`, `revision`, `history_id` (rollback),
+`kustomize_images` / `helm_parameters` (JSON). New failure codes:
+`RENDER_FAILED`, `CLUSTER_UNREACHABLE`, `SYNC_FAILED`, each with retry /
+cancel remediations.
+
+Continuous delivery (§22) gains the environment kind **`sdi_gitops`**,
+config `application` (its id, a UUID; `.sdi.yml` validates the same):
+promoting a release runs `registry.verify_image` → the stage's own deploy
+step (`deploy.development` / `deploy.staging` / `deploy.production`, or
+`deploy.rollback`, with `params.operation = gitops.sync`, so a protected
+stage keeps its required, non-editable approval whatever the `gitops.sync`
+policy says) syncing the application with the release image as the
+kustomize image override (or `helm_parameters` `image.repository` /
+`image.tag` for a helm source) → `gitops.verify_health` → `deploy.record`.
+`gitops.verify_health` refreshes the application on every poll (a live
+comparison, not the loop's last snapshot) and fails on degraded or missing
+seen twice in a row.
+
+### 24.8 Gateway, web, events
+
+Routes (each also in §8's table by reference): `GET/POST /clusters`, `PUT/DELETE /clusters/{id}` (ADMIN to
+change); `GET /applications?projectId=`, `POST /applications`,
+`GET/PUT/DELETE /applications/{id}` (`DELETE ?cascade=`);
+`POST /applications/{id}/refresh {hard?}` (MEMBER);
+`GET /applications/{id}/manifests`, `GET /applications/{id}/diff`,
+`GET /applications/{id}/history`; `POST /applications/{id}/sync {prune?,
+dryRun?, revision?}` and `POST /applications/{id}/rollback {historyId,
+prune?}` (APPROVER) create and start an execution with the plan
+`gitops.preview → gitops.sync → gitops.verify_health` (or `gitops.rollback`
+in place of the sync) and answer `201 {executionId}`. A sync with
+`dryRun` is a preview-only execution (`gitops.preview` alone). A rollback
+is previewed as a dry-run sync of the application's current source at the
+history entry's revision, which differs from the rollback itself when the
+path, images or parameters changed since. History is read 50 entries at a
+time (`limit = 0` means 50). Deleting or exporting a workspace (§19)
+includes `Gitops.DeleteWorkspaceData` / `ExportWorkspaceData`. The platform event
+stream merges `Gitops.WatchEvents`. Audit: `cluster.upsert`,
+`cluster.delete`, `application.upsert`, `application.delete`,
+`application.refresh`, `application.sync`, `application.rollback`.
+
+Web: a project tab **Applications** (list with sync and health tags, the
+cluster and namespace, the revision) and an application page (the resource
+tree grouped by kind with each resource's sync and health, the diff per
+resource, the rendered manifests, history with rollback, Sync and Refresh
+with the execution link); **Workspace, Clusters** for the cluster list
+and editor.
+
+### 24.9 Not included
+
+ApplicationSets, multi-source applications, config management plugins,
+remote Helm dependencies and remote Kustomize bases, Argo CD's own UI,
+SSO and RBAC (SDI's roles apply), notifications (SDI's events and audit
+do that), and non-GitHub repositories. Each is a separate decision.

@@ -89,7 +89,7 @@ not paste its output anywhere.
 | `OSV_API_URL` | where reviews look up added dependencies (`off` for an air-gapped instance) |
 | `GITHUB_API_URL` | GitHub Enterprise Server (`https://<host>/api/v3`); organisations on other hosts get their base from their installation |
 | `SDI_HTTP_PORT`, `SDI_TAG`, `RUST_LOG` | the port the edge publishes, the image tag, log verbosity |
-| `DB_MAX_CONNECTIONS` (20), `DB_STATEMENT_TIMEOUT_MS` (30000) | Postgres pool per service and the session statement timeout; five services × the pool must fit the server's `max_connections` (§9) |
+| `DB_MAX_CONNECTIONS` (20), `DB_STATEMENT_TIMEOUT_MS` (30000) | Postgres pool per service and the session statement timeout; six services × the pool must fit the server's `max_connections` (§9) |
 | `GATEWAY_AUTH_CACHE_MAX` (10000), `SSE_MAX_PER_WORKSPACE` (50), `WEBHOOK_QUEUE_MAX` (256) | per-replica bounds of the gateway (§9) |
 | `SCAN_STAGE_TIMEOUT_SECS` (600), `SCAN_TIMEOUT_SECS` (1800) | a scan stage, or a whole scan, that overruns fails with the stage named instead of sitting `running` |
 | `SHUTDOWN_GRACE_SECS` (20) | how long a stopping service waits for scans, runners and audit entries in flight |
@@ -103,7 +103,7 @@ internet ──TLS──▶ your reverse proxy ──http──▶ web (nginx :8
                                                   │ /api/ least_conn
                                             gateway-1 · gateway-2
                                                   │ gRPC, backend network
-                        identity :50054 · knowledge :50051 · intelligence :50052 · execution :50053
+                        identity :50054 · knowledge :50051 · intelligence :50052 · execution :50053 · gitops :50055
                                                   │
                                            postgres :5432 (volume pgdata)
 ```
@@ -201,7 +201,7 @@ services:
 ## 5. Backups of Postgres
 
 Everything SDI stores is in the one Postgres volume (`pgdata`): four
-schemas, `knowledge`, `intelligence`, `execution`, `identity`. A backup of
+schemas, `knowledge`, `intelligence`, `execution`, `identity`, `gitops`. A backup of
 that database plus your `.env` (for `SDI_SESSION_SECRET`, without which the
 stored credentials in a restore are unreadable) is a complete backup.
 
@@ -333,7 +333,7 @@ the web container `GET /healthz`, and `GET /api/v1/system/status` reports
 the gRPC health of each service behind a gateway.
 
 **Kubernetes.** `deploy/k8s/` is a kustomization of the same stack:
-Deployments and Services for the five services and the web pods, a
+Deployments and Services for the six services and the web pods, a
 StatefulSet for Postgres (swap it for a managed instance by setting
 `DATABASE_URL` and dropping `postgres.yaml` from `resources`), an
 ingress-nginx Ingress with buffering off and an hour of read timeout for

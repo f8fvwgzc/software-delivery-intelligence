@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { useSetSecret } from '@/features/delivery-cd/api/mutations'
 import type { SecretInfo } from '@/features/delivery-cd/api/types'
 import { aliasesOf, toSaveError, type SaveError } from '@/features/delivery-cd/lib/field-errors'
@@ -47,6 +48,7 @@ function SetSecretForm({ workspaceId, secret, taken, onDone }: SetSecretFormProp
   const setSecret = useSetSecret(workspaceId)
   const [name, setName] = useState(secret?.name ?? '')
   const [value, setValue] = useState('')
+  const [multiline, setMultiline] = useState(false)
   const [description, setDescription] = useState(secret?.description ?? '')
   const [submitted, setSubmitted] = useState(false)
   const [refused, setRefused] = useState<SaveError | null>(null)
@@ -130,28 +132,63 @@ function SetSecretForm({ workspaceId, secret, taken, onDone }: SetSecretFormProp
         </Field>
         <Field data-invalid={valueError ? true : undefined}>
           <FieldLabel htmlFor={`${id}-value`}>Value</FieldLabel>
-          <Input
-            id={`${id}-value`}
-            type="password"
-            value={value}
-            onChange={(event) => {
-              setValue(event.target.value)
-              setRefused(null)
-            }}
-            autoComplete="new-password"
-            spellCheck={false}
-            autoFocus={Boolean(secret)}
-            aria-invalid={valueError ? true : undefined}
-            aria-describedby={`${id}-value-hint`}
-            className="font-mono text-xs md:text-xs"
-          />
+          {multiline ? (
+            // A kubeconfig or a PEM key: a password input would join its lines into one.
+            <Textarea
+              id={`${id}-value`}
+              value={value}
+              onChange={(event) => {
+                setValue(event.target.value)
+                setRefused(null)
+              }}
+              rows={8}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={valueError ? true : undefined}
+              aria-describedby={`${id}-value-hint`}
+              className="font-mono text-xs md:text-xs"
+            />
+          ) : (
+            <Input
+              id={`${id}-value`}
+              type="password"
+              value={value}
+              onChange={(event) => {
+                setValue(event.target.value)
+                setRefused(null)
+              }}
+              onPaste={(event) => {
+                // Pasted text with line breaks would lose them here: keep them by switching to several lines.
+                const text = event.clipboardData.getData('text')
+                if (text.includes('\n')) {
+                  event.preventDefault()
+                  setValue(text)
+                  setMultiline(true)
+                  setRefused(null)
+                }
+              }}
+              autoComplete="new-password"
+              spellCheck={false}
+              autoFocus={Boolean(secret)}
+              aria-invalid={valueError ? true : undefined}
+              aria-describedby={`${id}-value-hint`}
+              className="font-mono text-xs md:text-xs"
+            />
+          )}
           {valueError ? (
             <FieldError id={`${id}-value-hint`} className="text-xs">
               {valueError}
             </FieldError>
           ) : (
             <FieldDescription id={`${id}-value-hint`} className="text-xs">
-              Write-only. To change it later, set the secret again.
+              Write-only. To change it later, set the secret again.{' '}
+              <button
+                type="button"
+                onClick={() => setMultiline((current) => !current)}
+                className="rounded-sm underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                {multiline ? 'Use one hidden line' : 'The value has several lines (a kubeconfig, a key)'}
+              </button>
             </FieldDescription>
           )}
         </Field>

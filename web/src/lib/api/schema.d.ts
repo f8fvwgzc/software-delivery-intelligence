@@ -21,6 +21,180 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Applications, optionally of one project: summaries with their sync and
+         *     health status, revision and first condition, without resources.
+         */
+        get: operations["list_applications"];
+        put?: never;
+        /**
+         * Declares an application (admin): a path in a repository, a cluster and
+         *     a namespace. Turning `syncPolicy.automated` on lets the service sync it
+         *     without an execution.
+         */
+        post: operations["create_application"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One application with the resources it manages, each with its sync and
+         *     health status, and its conditions.
+         */
+        get: operations["get_application"];
+        /** Replaces an application's settings (admin). */
+        put: operations["update_application"];
+        post?: never;
+        /**
+         * Deletes an application (admin). With `cascade=true` the resources it
+         *     manages are deleted from the cluster too; without, they stay unmanaged.
+         */
+        delete: operations["delete_application"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per resource, how the cluster differs from the desired state: a unified
+         *     diff and both sides as normalised YAML, `Secret` values masked.
+         */
+        get: operations["diff_application"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The application's syncs, newest first (dry runs are not kept). */
+        get: operations["list_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/manifests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The desired state as rendered, one YAML document per resource, with
+         *     every `Secret` value masked.
+         */
+        get: operations["get_manifests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renders and compares now instead of waiting for the next reconcile
+         *     (member). `hard` renders again even when the commit did not change. The
+         *     body may be left out.
+         */
+        post: operations["refresh_application"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Asks for the application to be rolled back to a history entry
+         *     (approver): creates and starts an execution that previews, syncs that
+         *     entry's source again (waiting for its approval and a timed
+         *     `cluster:write` grant) and waits for the application to be healthy. 404
+         *     when the application or the entry does not exist.
+         */
+        post: operations["rollback_application"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Asks for the application to be synced (approver): creates and starts an
+         *     execution that previews the change, syncs (waiting for its approval and
+         *     a timed `cluster:write` grant) and waits for the application to be
+         *     healthy. With `dryRun` the execution only previews. The body may be left
+         *     out. 404 when the application does not exist.
+         */
+        post: operations["sync_application"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals": {
         parameters: {
             query?: never;
@@ -124,6 +298,48 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The workspace's clusters with the status of their last check. */
+        get: operations["list_clusters"];
+        put?: never;
+        /**
+         * Adds a cluster (admin). The kubeconfig is a workspace secret named by
+         *     `kubeconfigSecret`. The cluster is reached once: a bad kubeconfig or an
+         *     unreachable API server is saved anyway and said in `status` / `message`.
+         *     A loopback or private API server address is refused unless the
+         *     deployment allows private targets.
+         */
+        post: operations["create_cluster"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces a cluster's settings (admin) and reaches it again. */
+        put: operations["update_cluster"];
+        post?: never;
+        /** Deletes a cluster (admin). 412 while an application deploys to it. */
+        delete: operations["delete_cluster"];
         options?: never;
         head?: never;
         patch?: never;
@@ -310,8 +526,9 @@ export interface paths {
         };
         /**
          * Every change in the caller's workspace as it happens, merged from the
-         *     three services (CONTRACT.md §8, "Live events"). Each `data:` line is a
-         *     `PlatformEvent`. The stream never ends: a service that goes away is
+         *     knowledge, intelligence, execution and gitops services (CONTRACT.md §8,
+         *     "Live events", and §24.8). Each `data:` line is a `PlatformEvent`. The
+         *     stream never ends: a service that goes away is
          *     reconnected with backoff while the others keep flowing, so the web app
          *     opens it once per tab and invalidates its caches by `entity`. Events
          *     of other workspaces (or without one) are dropped here (§18).
@@ -1830,7 +2047,7 @@ export interface paths {
         post?: never;
         /**
          * Deletes everything the platform stores for the workspace (owner):
-         *     every knowledge, intelligence and execution row, the workspace's
+         *     every knowledge, intelligence, execution and gitops row, the workspace's
          *     secrets, then the GitHub App installation record. The deletion itself
          *     is audited.
          */
@@ -2065,6 +2282,144 @@ export interface components {
             /** @description One of the options, or free text when allowed. */
             answer: string;
         };
+        /** @description A path in a repository deployed to a namespace of a cluster. */
+        Application: {
+            /** @description Cluster it deploys to. */
+            clusterId: string;
+            /** @description That cluster's name. */
+            clusterName: string;
+            /** @description Why the last comparison could not complete, as sentences (render failed, cluster unreachable, …); empty when it did. Lists carry the first only. */
+            conditions: string[];
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            createdAt: string;
+            /** @description Why it has that health; null when nothing was said. */
+            healthMessage?: string | null;
+            /** @description The worst health of its resources. */
+            healthStatus: components["schemas"]["HealthStatus"];
+            /** @description Application id. */
+            id: string;
+            /** @description Name, unique within the project. */
+            name: string;
+            /** @description Destination namespace; null uses the cluster's default namespace. */
+            namespace?: string | null;
+            operation?: components["schemas"]["ApplicationOperation"] | null;
+            /**
+             * Format: int32
+             * @description Of those, the ones that are not synced.
+             */
+            outOfSyncCount: number;
+            /** @description Project it belongs to (its executions run there). */
+            projectId: string;
+            /**
+             * Format: date-time
+             * @description When it was last compared with the cluster; null before the first comparison.
+             */
+            reconciledAt?: string | null;
+            /**
+             * Format: int32
+             * @description Resources it manages.
+             */
+            resourceCount: number;
+            /** @description What it manages, live or desired. Only `GET /applications/{id}` and the refresh answer carry them; lists leave this empty. */
+            resources: components["schemas"]["ResourceStatus"][];
+            /** @description The commit the last comparison rendered; null before the first. */
+            revision?: string | null;
+            /** @description Where the desired state comes from. */
+            source: components["schemas"]["ApplicationSource"];
+            /** @description When it syncs without an execution. */
+            syncPolicy: components["schemas"]["SyncPolicy"];
+            /** @description `synced`, `out_of_sync` or `unknown`. */
+            syncStatus: components["schemas"]["SyncStatus"];
+            /** @description The commit the last successful sync applied; null before the first. */
+            syncedRevision?: string | null;
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updatedAt: string;
+        };
+        /** @description Per-resource differences between desired and live. */
+        ApplicationDiff: {
+            /** @description Every managed resource, matching or not. */
+            resources: components["schemas"]["ResourceDiff"][];
+            /** @description The commit the desired state was rendered from; null when the service did not say. */
+            revision?: string | null;
+        };
+        /** @description The operation in flight, or the last one that ran. */
+        ApplicationOperation: {
+            /** @description The execution that runs it; null for an automated sync. */
+            executionId?: string | null;
+            /**
+             * Format: date-time
+             * @description When it ended; null while it runs.
+             */
+            finishedAt?: string | null;
+            /** @description The user id that asked, `system` for an automated sync. */
+            initiatedBy: string;
+            /** @description `sync` or `rollback`. */
+            kind: components["schemas"]["OperationKind"];
+            /** @description What happened, as a sentence; null when there is nothing to say. */
+            message?: string | null;
+            /** @description Where it is, or how it ended. */
+            phase: components["schemas"]["OperationPhase"];
+            /** @description The commit it applies; null before it was resolved. */
+            revision?: string | null;
+            /**
+             * Format: date-time
+             * @description When it started.
+             */
+            startedAt: string;
+        };
+        /** @description Where the desired state comes from (Argo CD's `spec.source`). */
+        ApplicationSource: {
+            /** @description Helm: `--set` parameters, applied after the values files. */
+            helmParameters: {
+                [key: string]: string;
+            };
+            /** @description Helm: release name; null uses the application name. */
+            helmReleaseName?: string | null;
+            /** @description Helm: values files relative to `path`, applied in order. */
+            helmValueFiles: string[];
+            /** @description Kustomize: image overrides (`name=newName:tag`, `name:tag` or `name@sha256:…`). */
+            kustomizeImages: string[];
+            /** @description Directory inside the repository; null is its root. */
+            path?: string | null;
+            /** @description Directory sources: include subdirectories. */
+            recurse: boolean;
+            /** @description `owner/name` on the workspace's GitHub; null is the project's repository. */
+            repo?: string | null;
+            /** @description Branch, tag or commit SHA; null is the repository's default branch. */
+            revision?: string | null;
+            type?: components["schemas"]["SourceType"] | null;
+        };
+        /**
+         * @description The source in an application's create or update body; every field may
+         *     be left out.
+         */
+        ApplicationSourceInput: {
+            /** @description Helm: `--set` parameters, applied after the values files. */
+            helmParameters?: {
+                [key: string]: string;
+            } | null;
+            /** @description Helm: release name; null uses the application name. */
+            helmReleaseName?: string | null;
+            /** @description Helm: values files relative to `path`, applied in order. */
+            helmValueFiles?: string[] | null;
+            /** @description Kustomize: image overrides (`name=newName:tag`, `name:tag` or `name@sha256:…`). */
+            kustomizeImages?: string[] | null;
+            /** @description Directory inside the repository; null is its root. */
+            path?: string | null;
+            /** @description Directory sources: include subdirectories. Default false. */
+            recurse?: boolean | null;
+            /** @description `owner/name` on the workspace's GitHub; null is the project's repository. */
+            repo?: string | null;
+            /** @description Branch, tag or commit SHA; null is the repository's default branch. */
+            revision?: string | null;
+            type?: components["schemas"]["SourceType"] | null;
+        };
         /** @description A human decision requested before a step runs. */
         Approval: {
             /** @description Policy key of the action. */
@@ -2190,6 +2545,57 @@ export interface components {
             /** @description The patch was larger than the limit (300 KB across the pull request) and was not read. */
             truncated: boolean;
         };
+        /**
+         * @description A Kubernetes cluster applications deploy to. Its kubeconfig lives in a
+         *     workspace secret and is never part of this shape.
+         */
+        Cluster: {
+            /**
+             * Format: int32
+             * @description Applications that deploy to it.
+             */
+            applicationCount: number;
+            /**
+             * Format: date-time
+             * @description When it was last reached; null before the first check.
+             */
+            checkedAt?: string | null;
+            /** @description Context inside the kubeconfig; null uses its current context. */
+            context?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            createdAt: string;
+            /** @description Namespace for resources that name none; null when not set. */
+            defaultNamespace?: string | null;
+            /** @description Cluster id. */
+            id: string;
+            /** @description Name of the workspace secret that holds the kubeconfig (never its value). */
+            kubeconfigSecret: string;
+            /** @description Why it is unreachable, as a sentence; null when it is not. */
+            message?: string | null;
+            /** @description Name shown in the workspace. */
+            name: string;
+            /** @description When not empty, SDI only watches and writes these namespaces; empty watches the whole cluster. */
+            namespaces: string[];
+            /** @description API server URL read from the kubeconfig, for display; null until it was read. */
+            server?: string | null;
+            /** @description Kubernetes version the API server reported; null until it answered. */
+            serverVersion?: string | null;
+            /** @description Whether the cluster answered the last check. */
+            status: components["schemas"]["ClusterStatus"];
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updatedAt: string;
+        };
+        /**
+         * @description Whether the cluster answered the last time SDI reached it.
+         * @enum {string}
+         */
+        ClusterStatus: "connected" | "unreachable" | "unknown";
         /**
          * @description Body of `POST /projects/{id}/security/dependabot` (admin). At least one
          *     of the three must be true.
@@ -2418,6 +2824,14 @@ export interface components {
          * @enum {string}
          */
         DecisionStatus: "unspecified" | "active" | "superseded";
+        /** @description Response of `DELETE /applications/{id}`. */
+        DeletedApplication: {
+            /**
+             * Format: int32
+             * @description Resources deleted from the cluster; 0 unless `cascade` was asked.
+             */
+            deletedResources: number;
+        };
         /**
          * @description The files that wire a project's CI to its registry and its
          *     environments' deployers, generated from facts (CONTRACT.md §14, §22).
@@ -3283,6 +3697,42 @@ export interface components {
             /** @description Always `ok` when the gateway can answer at all. */
             status: string;
         };
+        /**
+         * @description Health from Argo CD's checks; an application's is the worst of its resources'.
+         * @enum {string}
+         */
+        HealthStatus: "healthy" | "progressing" | "degraded" | "suspended" | "missing" | "unknown";
+        /** @description One sync that was not a dry run. */
+        HistoryEntry: {
+            /** @description Application it belongs to. */
+            applicationId: string;
+            /** @description True when the sync policy did it, not a person. */
+            automated: boolean;
+            /** @description The execution that ran it; null for an automated sync. */
+            executionId?: string | null;
+            /**
+             * Format: date-time
+             * @description When it ended.
+             */
+            finishedAt: string;
+            /** @description History entry id (what a rollback names). */
+            id: string;
+            /** @description The user id that asked, `system` for an automated sync. */
+            initiatedBy: string;
+            /** @description What happened, as a sentence; null when there is nothing to say. */
+            message?: string | null;
+            /** @description `succeeded`, `failed` or `error`. */
+            phase: components["schemas"]["OperationPhase"];
+            /** @description The commit that was synced. */
+            revision: string;
+            /** @description The source as it was synced; a rollback syncs it again. */
+            source: components["schemas"]["ApplicationSource"];
+            /**
+             * Format: date-time
+             * @description When it started.
+             */
+            startedAt: string;
+        };
         /** @description The scoped identity actions run as. Never an administrator. */
         Identity: {
             /** @description Description. */
@@ -3575,6 +4025,13 @@ export interface components {
              */
             projects: number;
         };
+        /** @description The desired state as rendered, `Secret` values masked. */
+        Manifests: {
+            /** @description One YAML document per resource, sorted by sync wave then kind order. */
+            manifests: string[];
+            /** @description The commit that was rendered; null when the service did not say. */
+            revision?: string | null;
+        };
         /** @description One of the eight delivery maturity axes (CONTRACT.md §13). */
         MaturityAxis: {
             /** @description Findings that lowered the score, e.g. `No Dockerfile`. */
@@ -3818,6 +4275,22 @@ export interface components {
         OpenPullRequestRequest: {
             /** @description Option whose artifacts to commit. Empty uses the recommended option. */
             optionId?: string | null;
+        };
+        /**
+         * @description What an operation does.
+         * @enum {string}
+         */
+        OperationKind: "sync" | "rollback" | "unknown";
+        /**
+         * @description Where an operation is, or how it ended. History entries are
+         *     `succeeded`, `failed` or `error`.
+         * @enum {string}
+         */
+        OperationPhase: "running" | "succeeded" | "failed" | "error" | "terminating" | "unknown";
+        /** @description Response of `POST /applications/{id}/sync` and `/rollback`. */
+        OperationStarted: {
+            /** @description The started execution that previews, applies and verifies the change; its approval (the `gitops.sync` or `gitops.rollback` policy and a timed `cluster:write` grant) and its outcome are there. */
+            executionId: string;
         };
         /** @description A reusable, outcome-tracked way of doing something. */
         Pattern: {
@@ -4103,7 +4576,8 @@ export interface components {
              * @description `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,
              *     for continuous delivery `release`, `deployment` or `environment`, and for code review
              *     and the pull request autopilot `review` (also when a fix or merge execution is
-             *     attached to it) or `finding` (also when a fix was drafted for it).
+             *     attached to it) or `finding` (also when a fix was drafted for it), and for the GitOps
+             *     engine `application` (its sync or health status changed).
              */
             entity: string;
             /** @description Id of the entity that changed. */
@@ -4501,6 +4975,11 @@ export interface components {
              */
             status: string;
         };
+        /** @description Body of `POST /applications/{id}/refresh` (member). It may be left out. */
+        RefreshApplicationRequest: {
+            /** @description Render again instead of using the cached manifests of the same commit (Argo CD's hard refresh). Default false. */
+            hard?: boolean | null;
+        };
         /** @description Where images live. One per workspace is the default; GHCR needs no secret. */
         Registry: {
             /** @description `github_token` (GHCR), `oidc` (cloud registries, reachable from CI only) or `secret`. */
@@ -4647,6 +5126,50 @@ export interface components {
             /** @description One of the failure's remediation option ids. */
             optionId?: string | null;
         };
+        /** @description How one resource differs between the cluster and the desired state. */
+        ResourceDiff: {
+            /** @description Unified diff from live to desired; null when they match. */
+            diff?: string | null;
+            /** @description API group; `""` is the core group. */
+            group: string;
+            /** @description Kind. */
+            kind: string;
+            /** @description The live object, normalised YAML with `Secret` values masked; null when it is not in the cluster. */
+            live?: string | null;
+            /** @description Name. */
+            name: string;
+            /** @description Namespace; null for cluster-scoped resources. */
+            namespace?: string | null;
+            /** @description `synced`, `out_of_sync`, `missing` or `extraneous`. */
+            syncStatus: components["schemas"]["SyncStatus"];
+            /** @description The desired object, normalised YAML with `Secret` values masked; null when it is no longer desired. */
+            target?: string | null;
+        };
+        /** @description One resource the application manages, live or desired. */
+        ResourceStatus: {
+            /** @description API group; `""` is the core group, as Kubernetes writes it. */
+            group: string;
+            /** @description Why it has that health, as the check said it; null when it said nothing. */
+            healthMessage?: string | null;
+            healthStatus?: components["schemas"]["HealthStatus"] | null;
+            /** @description A sync hook (`argocd.argoproj.io/hook`), not part of the steady state. */
+            hook: boolean;
+            /** @description Kind, e.g. `Deployment`. */
+            kind: string;
+            /** @description Name. */
+            name: string;
+            /** @description Namespace; null for cluster-scoped resources. */
+            namespace?: string | null;
+            /** @description `synced`, `out_of_sync`, `missing` or `extraneous`. */
+            syncStatus: components["schemas"]["SyncStatus"];
+            /**
+             * Format: int32
+             * @description `argocd.argoproj.io/sync-wave`.
+             */
+            syncWave: number;
+            /** @description API version. */
+            version: string;
+        };
         /** @description A review of one pull request at one head commit. */
         Review: {
             /**
@@ -4775,6 +5298,13 @@ export interface components {
          * @enum {string}
          */
         Role: "unspecified" | "viewer" | "member" | "approver" | "admin" | "owner";
+        /** @description Body of `POST /applications/{id}/rollback` (approver). */
+        RollbackApplicationRequest: {
+            /** @description The history entry whose source is synced again (`GET /applications/{id}/history`). */
+            historyId: string;
+            /** @description Also delete resources the earlier state did not have. Default false. */
+            prune?: boolean | null;
+        };
         /** @description Body of `POST /environments/{id}/rollback` (approver). */
         RollbackRequest: {
             /** @description Why, for the audit trail. */
@@ -5103,6 +5633,13 @@ export interface components {
             overall: number;
         };
         /**
+         * @description How the source is rendered. Null (not said) detects it:
+         *     `kustomization.yaml` means kustomize, `Chart.yaml` helm, else a directory.
+         *     A request body naming any other type is a 400 here.
+         * @enum {string}
+         */
+        SourceType: "directory" | "kustomize" | "helm";
+        /**
          * @description Lifecycle of one scan stage.
          * @enum {string}
          */
@@ -5178,6 +5715,58 @@ export interface components {
             /** @description Decision that replaces it, if any. */
             supersededBy?: string | null;
         };
+        /** @description Body of `POST /applications/{id}/sync` (approver). It may be left out. */
+        SyncApplicationRequest: {
+            /** @description Only preview what would change: the execution has the preview step alone and applies nothing. Default false. */
+            dryRun?: boolean | null;
+            /** @description Also delete resources that left the desired state. Default false. */
+            prune?: boolean | null;
+            /** @description Branch, tag or SHA to sync; omitted syncs the source's revision. */
+            revision?: string | null;
+        };
+        /** @description When the application syncs without an execution (Argo CD's `syncPolicy`). */
+        SyncPolicy: {
+            /** @description Sync on its own when out of sync, as the system user: the only way anything reaches the cluster without an approval. */
+            automated: boolean;
+            /** @description Create the destination namespace when it is missing. */
+            createNamespace: boolean;
+            /** @description Automated syncs also delete resources that left the desired state. */
+            prune: boolean;
+            /**
+             * Format: int32
+             * @description Attempts of a failed automated sync before it waits for a new revision; 0 means 3.
+             */
+            retryLimit: number;
+            /** @description Automated syncs also undo changes made to the cluster by hand, not only new commits. */
+            selfHeal: boolean;
+        };
+        /**
+         * @description The sync policy in an application's create or update body; every field
+         *     may be left out (false, and 3 retries).
+         */
+        SyncPolicyInput: {
+            /** @description Sync on its own when out of sync (an admin's explicit choice). */
+            automated?: boolean | null;
+            /** @description Create the destination namespace when it is missing. */
+            createNamespace?: boolean | null;
+            /** @description Automated syncs also delete resources that left the desired state. */
+            prune?: boolean | null;
+            /**
+             * Format: int32
+             * @description Attempts of a failed automated sync before it waits for a new revision; 0 or null means 3.
+             */
+            retryLimit?: number | null;
+            /** @description Automated syncs also undo changes made to the cluster by hand. */
+            selfHeal?: boolean | null;
+        };
+        /**
+         * @description How the live state compares with the desired state. An application is
+         *     `synced`, `out_of_sync` or `unknown`; a resource is also `missing`
+         *     (desired, not in the cluster) or `extraneous` (in the cluster, no
+         *     longer desired: a sync with prune deletes it).
+         * @enum {string}
+         */
+        SyncStatus: "synced" | "out_of_sync" | "missing" | "extraneous" | "unknown";
         /** @description Response of `GET /system/status`. */
         SystemStatus: {
             /** @description One entry per backing service. */
@@ -5276,6 +5865,39 @@ export interface components {
         UpdateSettingsRequest: {
             intelligence?: components["schemas"]["IntelligenceSettingsPatch"] | null;
             knowledge?: components["schemas"]["KnowledgeSettingsPatch"] | null;
+        };
+        /**
+         * @description Body of `POST /applications` and `PUT /applications/{id}` (admin). An
+         *     update replaces every field.
+         */
+        UpsertApplicationRequest: {
+            /** @description Cluster it deploys to. */
+            clusterId: string;
+            /** @description Name, unique within the project. */
+            name: string;
+            /** @description Destination namespace; null uses the cluster's default namespace. */
+            namespace?: string | null;
+            /** @description Project it belongs to. */
+            projectId: string;
+            source?: components["schemas"]["ApplicationSourceInput"] | null;
+            syncPolicy?: components["schemas"]["SyncPolicyInput"] | null;
+        };
+        /**
+         * @description Body of `POST /clusters` and `PUT /clusters/{id}` (admin). Store the
+         *     kubeconfig as a workspace secret first and name it here; the cluster is
+         *     reached once on save and the answer says whether it connected.
+         */
+        UpsertClusterRequest: {
+            /** @description Context inside the kubeconfig; null uses its current context. */
+            context?: string | null;
+            /** @description Namespace for resources that name none. */
+            defaultNamespace?: string | null;
+            /** @description Name of the workspace secret that holds the kubeconfig (YAML). */
+            kubeconfigSecret: string;
+            /** @description Name shown in the workspace. */
+            name: string;
+            /** @description Only watch and write these namespaces; null or empty watches the whole cluster. */
+            namespaces?: string[] | null;
         };
         /** @description Body of `POST /projects/{id}/environments` and `PUT /environments/{id}` (admin). */
         UpsertEnvironmentRequest: {
@@ -5479,6 +6101,1066 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewActivity"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_applications: {
+        parameters: {
+            query?: {
+                /** @description Only this project's; omitted lists every project's. */
+                projectId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertApplicationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertApplicationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_application: {
+        parameters: {
+            query?: {
+                /** @description Also delete the resources it manages from the cluster. Default false: they stay, unmanaged. */
+                cascade?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedApplication"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    diff_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationDiff"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_history: {
+        parameters: {
+            query?: {
+                /** @description Entries, newest first; omitted answers all that are kept (the last 50). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryEntry"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_manifests: {
+        parameters: {
+            query?: {
+                /** @description Branch, tag or SHA to render; omitted renders the source's revision. */
+                revision?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Manifests"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    refresh_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshApplicationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    rollback_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackApplicationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationStarted"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    sync_application: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncApplicationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationStarted"];
                 };
             };
             /** @description Malformed path, query or body, or a rejected argument. */
@@ -6047,6 +7729,383 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Me"];
                 };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_clusters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cluster"][];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertClusterRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cluster"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cluster id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertClusterRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cluster"];
+                };
+            };
+            /** @description Malformed path, query or body, or a rejected argument. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No session cookie, or an expired or revoked one. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The workspace is not accessible, or the role is too low for this route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource exists already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The resource is not in a state that allows this. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service is unreachable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description A backing service did not answer in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cluster id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Malformed path, query or body, or a rejected argument. */
             400: {

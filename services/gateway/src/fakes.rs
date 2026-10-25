@@ -1,4 +1,4 @@
-//! Real tonic servers in-process standing in for the four services, so the
+//! Real tonic servers in-process standing in for the five services, so the
 //! auth middleware, the SSE bridges, the gRPC status mapping, the settings
 //! composition and the health check are exercised against actual streams
 //! and calls instead of a closed port. Each fake implements the handful of
@@ -116,6 +116,17 @@ pub mod execution {
     /// asked: webhook tests read here what the gateway sent, and as whom.
     pub static RELEASES: std::sync::Mutex<Vec<(String, proto::CreateReleaseRequest)>> =
         std::sync::Mutex::new(Vec::new());
+
+    /// Every `gitops` execution the fake created: its id, the role that
+    /// asked and the request, so a test reads the plan the gateway built.
+    pub static GITOPS_EXECUTIONS: std::sync::Mutex<
+        Vec<(String, String, proto::CreateExecutionRequest)>,
+    > = std::sync::Mutex::new(Vec::new());
+
+    /// Ids of the executions the fake was asked to start, in order.
+    pub static STARTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    static NEXT_GITOPS: AtomicUsize = AtomicUsize::new(1);
 
     pub fn registry(id: &str) -> proto::Registry {
         proto::Registry {
@@ -255,14 +266,32 @@ pub mod execution {
                 ))
             }
 
+            /// `gitops` executions get an id of their own and are
+            /// remembered with their plan; every other one is `e-new`.
             async fn create_execution(
                 &self,
                 request: Request<proto::CreateExecutionRequest>,
             ) -> Result<Response<proto::Execution>, Status> {
                 let caller = principal(&request)?;
                 let request = request.into_inner();
+                let id = if request.adapter == "gitops" {
+                    // The project of `a-blocked`: its start is refused.
+                    let id = if request.project_id == "blocked" {
+                        "refuse-start".to_owned()
+                    } else {
+                        format!("x-gitops-{}", NEXT_GITOPS.fetch_add(1, Ordering::SeqCst))
+                    };
+                    GITOPS_EXECUTIONS.lock().unwrap().push((
+                        id.clone(),
+                        caller.role.as_str().to_owned(),
+                        request.clone(),
+                    ));
+                    id
+                } else {
+                    "e-new".to_owned()
+                };
                 Ok(Response::new(proto::Execution {
-                    id: "e-new".into(),
+                    id,
                     project_id: request.project_id,
                     title: request.title,
                     adapter: request.adapter,
@@ -270,6 +299,25 @@ pub mod execution {
                     outputs: request.artifacts,
                     // The caller's role, so a test can see what was forwarded.
                     last_checkpoint: caller.role.as_str().into(),
+                    ..Default::default()
+                }))
+            }
+
+            /// Remembers the id; `refuse-start` is refused the way a policy
+            /// that blocks the plan would be.
+            async fn start_execution(
+                &self,
+                request: Request<proto::StartExecutionRequest>,
+            ) -> Result<Response<proto::Execution>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                if id == "refuse-start" {
+                    return Err(Status::failed_precondition("a step of this plan is blocked by policy"));
+                }
+                STARTED.lock().unwrap().push(id.clone());
+                Ok(Response::new(proto::Execution {
+                    id,
+                    status: proto::ExecutionStatus::WaitingForApproval as i32,
                     ..Default::default()
                 }))
             }
@@ -587,7 +635,6 @@ pub mod execution {
             sync_environments: proto::SyncEnvironmentsRequest => proto::ListEnvironmentsResponse,
             list_executions: proto::ListExecutionsRequest => proto::ListExecutionsResponse,
             get_execution: proto::GetExecutionRequest => proto::Execution,
-            start_execution: proto::StartExecutionRequest => proto::Execution,
             resolve_failure: proto::ResolveFailureRequest => proto::Execution,
             cancel_execution: proto::CancelExecutionRequest => proto::Execution,
             list_events: proto::ListEventsRequest => proto::ListEventsResponse,
@@ -1733,6 +1780,585 @@ pub mod intelligence {
 
     pub async fn serve() -> SocketAddr {
         super::serve(|router| router.add_service(IntelligenceServiceServer::new(Fake))).await
+    }
+}
+
+pub mod gitops {
+    use super::*;
+    use sdi_common::principal::Role;
+    use sdi_proto::gitops::v1::{
+        self as proto,
+        gitops_service_server::{GitopsService, GitopsServiceServer},
+    };
+
+    pub struct Fake;
+
+    /// The commit the fake renders, and the one it synced before.
+    pub const REVISION: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    pub const PREVIOUS: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567";
+
+    /// A connected cluster named after its id (`c1` is `prod`).
+    pub fn cluster(id: &str) -> proto::Cluster {
+        let name = if id == "c1" { "prod" } else { id };
+        proto::Cluster {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kubeconfig_secret: "PROD_KUBECONFIG".into(),
+            context: String::new(),
+            server: format!("https://{name}.k8s.example.com:6443"),
+            default_namespace: "default".into(),
+            namespaces: Vec::new(),
+            status: "connected".into(),
+            message: String::new(),
+            server_version: "v1.31.2".into(),
+            application_count: 1,
+            checked_at: at(1_700_000_100),
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+        }
+    }
+
+    fn not_found(id: &str) -> Result<(), Status> {
+        if id == "missing" {
+            Err(Status::not_found("no such application"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn resource(
+        group: &str,
+        kind: &str,
+        namespace: &str,
+        name: &str,
+        sync: &str,
+        health: &str,
+    ) -> proto::ResourceStatus {
+        proto::ResourceStatus {
+            group: group.into(),
+            version: "v1".into(),
+            kind: kind.into(),
+            namespace: namespace.into(),
+            name: name.into(),
+            sync_status: sync.into(),
+            health_status: health.into(),
+            ..Default::default()
+        }
+    }
+
+    /// `web` in `prod/shop`, out of sync and progressing, with a resource
+    /// of each kind of status; `never` has never been compared and its
+    /// cluster is unreachable. `a-blocked` belongs to the project whose
+    /// executions are refused a start.
+    pub fn application(id: &str) -> proto::Application {
+        let mut application = proto::Application {
+            id: id.to_owned(),
+            project_id: if id == "a-blocked" { "blocked" } else { "p1" }.into(),
+            name: "web".into(),
+            cluster_id: "c1".into(),
+            cluster_name: "prod".into(),
+            namespace: "shop".into(),
+            source: Some(proto::ApplicationSource {
+                repo: String::new(),
+                revision: "main".into(),
+                path: "deploy/overlays/prod".into(),
+                r#type: "kustomize".into(),
+                kustomize_images: vec!["ghcr.io/acme/web=ghcr.io/acme/web:a1b2c3d".into()],
+                ..Default::default()
+            }),
+            sync_policy: Some(proto::SyncPolicy {
+                create_namespace: true,
+                ..Default::default()
+            }),
+            sync_status: "out_of_sync".into(),
+            health_status: "progressing".into(),
+            health_message: "Waiting for rollout to finish".into(),
+            revision: REVISION.into(),
+            synced_revision: PREVIOUS.into(),
+            operation: Some(proto::Operation {
+                kind: "sync".into(),
+                phase: "succeeded".into(),
+                message: "successfully synced (all tasks run)".into(),
+                revision: PREVIOUS.into(),
+                initiated_by: "u1".into(),
+                execution_id: "x1".into(),
+                started_at: at(1_700_000_000),
+                finished_at: at(1_700_000_060),
+            }),
+            resources: vec![
+                proto::ResourceStatus {
+                    health_message: "1 of 2 updated replicas are available".into(),
+                    ..resource(
+                        "apps",
+                        "Deployment",
+                        "shop",
+                        "web",
+                        "out_of_sync",
+                        "progressing",
+                    )
+                },
+                resource("", "Service", "shop", "web", "synced", "healthy"),
+                // Cluster-scoped, no health check.
+                resource(
+                    "rbac.authorization.k8s.io",
+                    "ClusterRole",
+                    "",
+                    "web-reader",
+                    "missing",
+                    "",
+                ),
+                proto::ResourceStatus {
+                    hook: true,
+                    sync_wave: -1,
+                    ..resource("batch", "Job", "shop", "migrate", "synced", "healthy")
+                },
+            ],
+            conditions: Vec::new(),
+            resource_count: 4,
+            out_of_sync_count: 2,
+            reconciled_at: at(1_700_000_200),
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+        };
+        if id == "never" {
+            application.sync_status = "unknown".into();
+            application.health_status = "unknown".into();
+            application.health_message.clear();
+            application.revision.clear();
+            application.synced_revision.clear();
+            application.operation = None;
+            application.resources.clear();
+            application.resource_count = 0;
+            application.out_of_sync_count = 0;
+            application.reconciled_at = None;
+            application.conditions = vec![
+                "the cluster prod is unreachable: dial tcp 10.0.0.1:6443: i/o timeout".into(),
+                "the last comparison kept the statuses it had".into(),
+            ];
+        }
+        application
+    }
+
+    /// What `ListApplications` answers: no resources, the first condition only.
+    fn summary(mut application: proto::Application) -> proto::Application {
+        application.resources.clear();
+        application.conditions.truncate(1);
+        application
+    }
+
+    fn history(application_id: &str) -> Vec<proto::HistoryEntry> {
+        let source = application(application_id).source;
+        vec![
+            proto::HistoryEntry {
+                id: "h2".into(),
+                application_id: application_id.into(),
+                revision: PREVIOUS.into(),
+                source: source.clone(),
+                phase: "succeeded".into(),
+                message: "successfully synced (all tasks run)".into(),
+                initiated_by: "u1".into(),
+                execution_id: "x1".into(),
+                automated: false,
+                started_at: at(1_700_000_000),
+                finished_at: at(1_700_000_060),
+            },
+            proto::HistoryEntry {
+                id: "h1".into(),
+                application_id: application_id.into(),
+                revision: "c0ffee0".into(),
+                source,
+                phase: "failed".into(),
+                message: "one or more objects failed to apply: Deployment/web".into(),
+                initiated_by: sdi_common::principal::SYSTEM_USER.into(),
+                execution_id: String::new(),
+                automated: true,
+                started_at: at(1_699_990_000),
+                finished_at: at(1_699_990_030),
+            },
+        ]
+    }
+
+    fn sync_result(id: String, revision: String, history_id: &str) -> proto::SyncResult {
+        proto::SyncResult {
+            application_id: id,
+            phase: "succeeded".into(),
+            message: "successfully synced (all tasks run)".into(),
+            revision,
+            resources: vec![proto::ResourceResult {
+                group: "apps".into(),
+                kind: "Deployment".into(),
+                namespace: "shop".into(),
+                name: "web".into(),
+                status: "synced".into(),
+                message: "deployment.apps/web configured".into(),
+                hook_phase: String::new(),
+                sync_wave: 0,
+            }],
+            history_id: history_id.into(),
+            health_status: "healthy".into(),
+            started_at: at(1_700_000_300),
+            finished_at: at(1_700_000_330),
+        }
+    }
+
+    const DEPLOYMENT: &str = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: shop\nspec:\n  replicas: 2\n";
+    const SECRET: &str = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: web\n  namespace: shop\ndata:\n  DATABASE_URL: ++++++++\n";
+
+    fake_service! {
+        GitopsService for Fake {
+            type WatchEventsStream = ServerStream<common::PlatformEvent>;
+            type ExportWorkspaceDataStream = ServerStream<proto::WorkspaceDataRecord>;
+
+            // --- clusters ---------------------------------------------------
+
+            async fn list_clusters(
+                &self,
+                request: Request<proto::ListClustersRequest>,
+            ) -> Result<Response<proto::ListClustersResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::ListClustersResponse {
+                    clusters: vec![
+                        cluster("c1"),
+                        proto::Cluster {
+                            status: "unreachable".into(),
+                            message: "dial tcp 10.0.0.9:6443: i/o timeout".into(),
+                            server_version: String::new(),
+                            application_count: 0,
+                            context: "staging-admin".into(),
+                            namespaces: vec!["shop".into(), "jobs".into()],
+                            ..cluster("c2")
+                        },
+                    ],
+                }))
+            }
+
+            /// Reads only what the contract says it reads and derives the
+            /// rest: a `BROKEN` kubeconfig is saved and reported unreachable.
+            async fn upsert_cluster(
+                &self,
+                request: Request<proto::UpsertClusterRequest>,
+            ) -> Result<Response<proto::Cluster>, Status> {
+                principal(&request)?.require(Role::Admin)?;
+                let sent = request.into_inner().cluster.unwrap_or_default();
+                if sent.kubeconfig_secret.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "kubeconfig_secret: name the workspace secret that holds the kubeconfig",
+                    ));
+                }
+                if sent.name == "taken" {
+                    return Err(Status::already_exists(
+                        "name: this workspace already has a cluster named taken",
+                    ));
+                }
+                let id = if sent.id.is_empty() { "c-new".to_owned() } else { sent.id };
+                let mut cluster = proto::Cluster {
+                    name: sent.name,
+                    kubeconfig_secret: sent.kubeconfig_secret,
+                    context: sent.context,
+                    default_namespace: sent.default_namespace,
+                    namespaces: sent.namespaces,
+                    application_count: 0,
+                    updated_at: at(1_700_000_100),
+                    ..cluster(&id)
+                };
+                cluster.server = format!("https://{}.k8s.example.com:6443", cluster.name);
+                if cluster.kubeconfig_secret == "BROKEN" {
+                    cluster.status = "unreachable".into();
+                    cluster.message =
+                        "the kubeconfig in BROKEN does not parse: yaml: line 3: did not find expected key".into();
+                    cluster.server.clear();
+                    cluster.server_version.clear();
+                }
+                Ok(Response::new(cluster))
+            }
+
+            async fn delete_cluster(
+                &self,
+                request: Request<proto::DeleteClusterRequest>,
+            ) -> Result<Response<proto::DeleteClusterResponse>, Status> {
+                principal(&request)?.require(Role::Admin)?;
+                match request.into_inner().id.as_str() {
+                    "missing" => Err(Status::not_found("no such cluster")),
+                    "in-use" => Err(Status::failed_precondition(
+                        "1 application deploys to this cluster: delete it or move it first",
+                    )),
+                    _ => Ok(Response::new(proto::DeleteClusterResponse {})),
+                }
+            }
+
+            // --- applications -------------------------------------------------
+
+            /// `empty` has none; any other project has `a1` and `never`.
+            async fn list_applications(
+                &self,
+                request: Request<proto::ListApplicationsRequest>,
+            ) -> Result<Response<proto::ListApplicationsResponse>, Status> {
+                principal(&request)?;
+                let project_id = request.into_inner().project_id;
+                if project_id == "empty" {
+                    return Ok(Response::new(proto::ListApplicationsResponse::default()));
+                }
+                let applications = ["a1", "never"]
+                    .into_iter()
+                    .map(|id| {
+                        let mut application = summary(application(id));
+                        if !project_id.is_empty() {
+                            application.project_id = project_id.clone();
+                        }
+                        application
+                    })
+                    .collect();
+                Ok(Response::new(proto::ListApplicationsResponse { applications }))
+            }
+
+            async fn get_application(
+                &self,
+                request: Request<proto::GetApplicationRequest>,
+            ) -> Result<Response<proto::Application>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                not_found(&id)?;
+                let mut found = application(&id);
+                // `busy` names an application whose sync is still running.
+                if id == "busy"
+                    && let Some(operation) = found.operation.as_mut()
+                {
+                    operation.phase = "running".into();
+                    operation.finished_at = None;
+                }
+                Ok(Response::new(found))
+            }
+
+            /// Echoes what it reads, derives the rest as a new application.
+            async fn upsert_application(
+                &self,
+                request: Request<proto::UpsertApplicationRequest>,
+            ) -> Result<Response<proto::Application>, Status> {
+                principal(&request)?.require(Role::Admin)?;
+                let sent = request.into_inner().application.unwrap_or_default();
+                if sent.name == "taken" {
+                    return Err(Status::already_exists(
+                        "name: this project already has an application named taken",
+                    ));
+                }
+                if sent.cluster_id == "missing" {
+                    return Err(Status::invalid_argument("cluster_id: no such cluster"));
+                }
+                let id = if sent.id.is_empty() { "a-new".to_owned() } else { sent.id };
+                Ok(Response::new(proto::Application {
+                    id,
+                    cluster_name: cluster(&sent.cluster_id).name,
+                    project_id: sent.project_id,
+                    name: sent.name,
+                    cluster_id: sent.cluster_id,
+                    namespace: sent.namespace,
+                    source: sent.source,
+                    sync_policy: sent.sync_policy,
+                    sync_status: "unknown".into(),
+                    health_status: "unknown".into(),
+                    created_at: at(1_700_000_000),
+                    updated_at: at(1_700_000_100),
+                    ..Default::default()
+                }))
+            }
+
+            async fn delete_application(
+                &self,
+                request: Request<proto::DeleteApplicationRequest>,
+            ) -> Result<Response<proto::DeleteApplicationResponse>, Status> {
+                principal(&request)?.require(Role::Admin)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                Ok(Response::new(proto::DeleteApplicationResponse {
+                    deleted_resources: if request.cascade { 4 } else { 0 },
+                }))
+            }
+
+            /// The application, with `hard` said in its health message.
+            async fn refresh_application(
+                &self,
+                request: Request<proto::RefreshApplicationRequest>,
+            ) -> Result<Response<proto::Application>, Status> {
+                principal(&request)?.require(Role::Member)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                let mut refreshed = application(&request.id);
+                refreshed.health_message = if request.hard { "hard refresh" } else { "refresh" }.into();
+                refreshed.reconciled_at = at(1_700_000_500);
+                Ok(Response::new(refreshed))
+            }
+
+            async fn get_manifests(
+                &self,
+                request: Request<proto::GetManifestsRequest>,
+            ) -> Result<Response<proto::Manifests>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                Ok(Response::new(proto::Manifests {
+                    revision: if request.revision.is_empty() {
+                        REVISION.into()
+                    } else {
+                        request.revision
+                    },
+                    manifests: vec![DEPLOYMENT.into(), SECRET.into()],
+                }))
+            }
+
+            async fn diff_application(
+                &self,
+                request: Request<proto::DiffApplicationRequest>,
+            ) -> Result<Response<proto::ApplicationDiff>, Status> {
+                principal(&request)?;
+                let id = request.into_inner().id;
+                not_found(&id)?;
+                Ok(Response::new(proto::ApplicationDiff {
+                    revision: REVISION.into(),
+                    resources: vec![
+                        proto::ResourceDiff {
+                            group: "apps".into(),
+                            kind: "Deployment".into(),
+                            namespace: "shop".into(),
+                            name: "web".into(),
+                            sync_status: "out_of_sync".into(),
+                            diff: "--- live\n+++ desired\n@@ -6 +6 @@\n-  replicas: 1\n+  replicas: 2\n".into(),
+                            live: DEPLOYMENT.replace("replicas: 2", "replicas: 1"),
+                            target: DEPLOYMENT.into(),
+                        },
+                        proto::ResourceDiff {
+                            group: String::new(),
+                            kind: "Secret".into(),
+                            namespace: "shop".into(),
+                            name: "web".into(),
+                            sync_status: "synced".into(),
+                            diff: String::new(),
+                            live: SECRET.into(),
+                            target: SECRET.into(),
+                        },
+                        proto::ResourceDiff {
+                            group: "rbac.authorization.k8s.io".into(),
+                            kind: "ClusterRole".into(),
+                            namespace: String::new(),
+                            name: "web-reader".into(),
+                            sync_status: "missing".into(),
+                            diff: "+kind: ClusterRole\n".into(),
+                            live: String::new(),
+                            target: "kind: ClusterRole\n".into(),
+                        },
+                    ],
+                }))
+            }
+
+            // --- operations ---------------------------------------------------
+
+            /// Approvers only (in practice the execution's adapter); `busy`
+            /// has an operation running.
+            async fn sync_application(
+                &self,
+                request: Request<proto::SyncApplicationRequest>,
+            ) -> Result<Response<proto::SyncResult>, Status> {
+                principal(&request)?.require(Role::Approver)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                if request.id == "busy" {
+                    return Err(Status::failed_precondition("an operation of web is running"));
+                }
+                let revision = if request.revision.is_empty() {
+                    REVISION.to_owned()
+                } else {
+                    request.revision
+                };
+                let history_id = if request.dry_run { "" } else { "h-new" };
+                Ok(Response::new(sync_result(request.id, revision, history_id)))
+            }
+
+            async fn rollback_application(
+                &self,
+                request: Request<proto::RollbackApplicationRequest>,
+            ) -> Result<Response<proto::SyncResult>, Status> {
+                principal(&request)?.require(Role::Approver)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                let Some(entry) = history(&request.id)
+                    .into_iter()
+                    .find(|entry| entry.id == request.history_id)
+                else {
+                    return Err(Status::not_found("no such history entry"));
+                };
+                Ok(Response::new(sync_result(request.id, entry.revision, "h-back")))
+            }
+
+            /// `h2` then `h1`, newest first; `limit` keeps the newest.
+            async fn list_history(
+                &self,
+                request: Request<proto::ListHistoryRequest>,
+            ) -> Result<Response<proto::ListHistoryResponse>, Status> {
+                principal(&request)?;
+                let request = request.into_inner();
+                not_found(&request.id)?;
+                let mut entries = history(&request.id);
+                if request.limit > 0 {
+                    entries.truncate(request.limit as usize);
+                }
+                Ok(Response::new(proto::ListHistoryResponse { entries }))
+            }
+
+            // --- events and workspace data --------------------------------------
+
+            /// One status change of w1, one of w2 (must not leak), then
+            /// open for ever.
+            async fn watch_events(
+                &self,
+                request: Request<common::WatchEventsRequest>,
+            ) -> Result<Response<Self::WatchEventsStream>, Status> {
+                principal(&request)?;
+                let events = stream::iter(vec![
+                    Ok(common::PlatformEvent {
+                        status: "out_of_sync".into(),
+                        ..platform_event("application", "a1", "updated")
+                    }),
+                    Ok(platform_event_in("w2", "application", "other", "updated")),
+                ]);
+                Ok(Response::new(events.chain(stream::pending()).boxed()))
+            }
+
+            async fn delete_workspace_data(
+                &self,
+                request: Request<proto::DeleteWorkspaceDataRequest>,
+            ) -> Result<Response<proto::DeleteWorkspaceDataResponse>, Status> {
+                principal(&request)?;
+                Ok(Response::new(proto::DeleteWorkspaceDataResponse {
+                    deleted: [
+                        ("application".to_owned(), 2u64),
+                        ("cluster".to_owned(), 1u64),
+                    ]
+                    .into(),
+                }))
+            }
+
+            async fn export_workspace_data(
+                &self,
+                request: Request<proto::ExportWorkspaceDataRequest>,
+            ) -> Result<Response<Self::ExportWorkspaceDataStream>, Status> {
+                principal(&request)?;
+                let records = vec![
+                    Ok(proto::WorkspaceDataRecord {
+                        entity: "cluster".into(),
+                        json: r#"{"id":"c1","name":"prod","kubeconfig_secret":"PROD_KUBECONFIG"}"#.into(),
+                    }),
+                    Ok(proto::WorkspaceDataRecord {
+                        entity: "application".into(),
+                        json: r#"{"id":"a1","name":"web"}"#.into(),
+                    }),
+                ];
+                Ok(Response::new(stream::iter(records).boxed()))
+            }
+        }
+        unimplemented {}
+    }
+
+    pub async fn serve() -> SocketAddr {
+        super::serve(|router| router.add_service(GitopsServiceServer::new(Fake))).await
     }
 }
 

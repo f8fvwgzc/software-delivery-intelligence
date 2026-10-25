@@ -138,8 +138,9 @@ async fn watch_scan(
 }
 
 /// Every change in the caller's workspace as it happens, merged from the
-/// three services (CONTRACT.md §8, "Live events"). Each `data:` line is a
-/// `PlatformEvent`. The stream never ends: a service that goes away is
+/// knowledge, intelligence, execution and gitops services (CONTRACT.md §8,
+/// "Live events", and §24.8). Each `data:` line is a `PlatformEvent`. The
+/// stream never ends: a service that goes away is
 /// reconnected with backoff while the others keep flowing, so the web app
 /// opens it once per tab and invalidates its caches by `entity`. Events
 /// of other workspaces (or without one) are dropped here (§18).
@@ -193,8 +194,21 @@ async fn watch_platform_events(
         }
     });
 
+    let gitops = resilient("gitops", {
+        let state = state.clone();
+        move || {
+            let mut client = state.gitops();
+            async move {
+                client
+                    .watch_events(common::WatchEventsRequest {})
+                    .await
+                    .map(|response| response.into_inner())
+            }
+        }
+    });
+
     let workspace_id = state.workspace_id().to_owned();
-    let merged = stream::select_all([knowledge, intelligence, execution])
+    let merged = stream::select_all([knowledge, intelligence, execution, gitops])
         .filter(move |event| {
             std::future::ready(event.data.get(WORKSPACE_KEY) == Some(&workspace_id))
         })

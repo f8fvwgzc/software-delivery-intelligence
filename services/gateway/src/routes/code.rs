@@ -95,6 +95,7 @@ mod tests {
                 DEAD,
                 DEAD,
                 &format!("http://{identity}"),
+                DEAD,
                 Default::default(),
             )
             .unwrap(),

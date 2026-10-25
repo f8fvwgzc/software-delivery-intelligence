@@ -1,0 +1,25 @@
+Software Delivery Intelligence
+Copyright 2026 f8fvwgzc
+
+This product is licensed under the Apache License, Version 2.0 (see
+LICENSE).
+
+The gitops service (services/gitops) embeds the GitOps engine of Argo CD
+as a Go module dependency, not a copy:
+
+  Argo CD gitops-engine
+  github.com/argoproj/argo-cd/gitops-engine
+  at the commit of the Argo CD v3.5.6 release (c2b1e3017e2c)
+  Copyright 2017-2018 The Argo Authors
+  Licensed under the Apache License, Version 2.0
+  https://github.com/argoproj/argo-cd
+
+Its cluster cache, diffing, sync (phases, waves, hooks, pruning) and
+health assessment are Argo CD's. The application-level behaviour around
+the engine in services/gitops/internal (rendering, comparison, automated
+sync and self-heal decisions, Secret masking) follows Argo CD's
+repo-server and application controller and is SDI's own code.
+
+The gitops service also uses, as module dependencies under the Apache
+License, Version 2.0: Kubernetes client libraries (k8s.io), Kustomize
+(sigs.k8s.io/kustomize) and Helm (helm.sh/helm/v3).

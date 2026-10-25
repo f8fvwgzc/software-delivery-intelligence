@@ -59,6 +59,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         (name = "diagrams", description = "Evidence-based diagrams generated from the knowledge graph"),
         (name = "reviews", description = "Pull request reviews: evidence first, a human decides, then SDI posts (§20)"),
         (name = "autopilot", description = "Pull request autopilot: drafted fixes, fix commits, merge readiness and merges, vulnerabilities and Dependabot; everything that changes the repository is an execution (§23)"),
+        (name = "gitops", description = "GitOps engine: clusters, applications, rendered manifests, diff and sync history; syncs and rollbacks are executions (§24)"),
         (name = "executions", description = "Policy-gated plan execution"),
         (name = "approvals", description = "Human approvals"),
         (name = "policies", description = "Action policies and scoped identities"),
@@ -258,13 +259,24 @@ mod tests {
         state: AppState,
     }
 
+    /// Fake identity; the gitops engine dead.
     async fn stack(knowledge: &str, intelligence: &str, execution: &str) -> Stack {
+        stack_with_gitops(knowledge, intelligence, execution, DEAD).await
+    }
+
+    async fn stack_with_gitops(
+        knowledge: &str,
+        intelligence: &str,
+        execution: &str,
+        gitops: &str,
+    ) -> Stack {
         let (identity, recorder) = fakes::identity::serve().await;
         let state = AppState::with_urls(
             knowledge,
             intelligence,
             execution,
             &format!("http://{identity}"),
+            gitops,
             settings(),
         )
         .unwrap();
@@ -296,15 +308,30 @@ mod tests {
     }
 
     async fn app_with_every_fake() -> Stack {
-        let (knowledge, intelligence, execution) = tokio::join!(
+        let (knowledge, intelligence, execution, gitops) = tokio::join!(
             fakes::knowledge::serve(),
             fakes::intelligence::serve(),
-            fakes::execution::serve()
+            fakes::execution::serve(),
+            fakes::gitops::serve()
         );
-        stack(
+        stack_with_gitops(
             &format!("http://{knowledge}"),
             &format!("http://{intelligence}"),
             &format!("http://{execution}"),
+            &format!("http://{gitops}"),
+        )
+        .await
+    }
+
+    /// The gitops engine and the execution service its sync and rollback
+    /// routes create executions in.
+    async fn app_with_fake_gitops() -> Stack {
+        let (execution, gitops) = tokio::join!(fakes::execution::serve(), fakes::gitops::serve());
+        stack_with_gitops(
+            DEAD,
+            DEAD,
+            &format!("http://{execution}"),
+            &format!("http://{gitops}"),
         )
         .await
     }
@@ -444,8 +471,9 @@ mod tests {
         // two code browser routes of §15, the two diagram routes of §16, the
         // 18 identity routes of §18 (with `/people`), the 8 review routes of
         // §20, the 14 continuous delivery paths of §22, the 6 pull request
-        // autopilot paths of §23 and the reasoner test of §19.
-        assert_eq!(paths.len(), 106, "{:#?}", paths.keys().collect::<Vec<_>>());
+        // autopilot paths of §23, the 10 GitOps engine paths of §24.8 and
+        // the reasoner test of §19.
+        assert_eq!(paths.len(), 116, "{:#?}", paths.keys().collect::<Vec<_>>());
         for path in [
             "/api/v1/health",
             "/api/v1/system/status",
@@ -509,6 +537,17 @@ mod tests {
             "/api/v1/projects/{id}/pull-requests/{number}/merge",
             "/api/v1/projects/{id}/security",
             "/api/v1/projects/{id}/security/dependabot",
+            // §24.8
+            "/api/v1/clusters",
+            "/api/v1/clusters/{id}",
+            "/api/v1/applications",
+            "/api/v1/applications/{id}",
+            "/api/v1/applications/{id}/refresh",
+            "/api/v1/applications/{id}/manifests",
+            "/api/v1/applications/{id}/diff",
+            "/api/v1/applications/{id}/history",
+            "/api/v1/applications/{id}/sync",
+            "/api/v1/applications/{id}/rollback",
         ] {
             assert!(paths.contains_key(path), "missing {path}");
         }
@@ -578,8 +617,18 @@ mod tests {
                 "{path}"
             );
         }
-        // Every method §22 lists is there, with flat request bodies.
+        // Every method §22 and §24.8 list is there, with flat request bodies.
         for (path, methods) in [
+            ("/api/v1/clusters", vec!["get", "post"]),
+            ("/api/v1/clusters/{id}", vec!["put", "delete"]),
+            ("/api/v1/applications", vec!["get", "post"]),
+            ("/api/v1/applications/{id}", vec!["get", "put", "delete"]),
+            ("/api/v1/applications/{id}/refresh", vec!["post"]),
+            ("/api/v1/applications/{id}/manifests", vec!["get"]),
+            ("/api/v1/applications/{id}/diff", vec!["get"]),
+            ("/api/v1/applications/{id}/history", vec!["get"]),
+            ("/api/v1/applications/{id}/sync", vec!["post"]),
+            ("/api/v1/applications/{id}/rollback", vec!["post"]),
             ("/api/v1/registries", vec!["get", "post"]),
             ("/api/v1/registries/{id}", vec!["put", "delete"]),
             ("/api/v1/projects/{id}/environments", vec!["get", "post"]),
@@ -636,6 +685,230 @@ mod tests {
             "bodies are flat, camelCase"
         );
         assert!(schemas["SecretInfo"]["properties"]["value"].is_null());
+        // §24.8: what each GitOps route answers, and the request bodies.
+        for (path, method, status, body) in [
+            ("/api/v1/clusters", "post", "201", "Cluster"),
+            ("/api/v1/clusters/{id}", "put", "200", "Cluster"),
+            ("/api/v1/applications", "post", "201", "Application"),
+            ("/api/v1/applications/{id}", "get", "200", "Application"),
+            ("/api/v1/applications/{id}", "put", "200", "Application"),
+            (
+                "/api/v1/applications/{id}",
+                "delete",
+                "200",
+                "DeletedApplication",
+            ),
+            (
+                "/api/v1/applications/{id}/refresh",
+                "post",
+                "200",
+                "Application",
+            ),
+            (
+                "/api/v1/applications/{id}/manifests",
+                "get",
+                "200",
+                "Manifests",
+            ),
+            (
+                "/api/v1/applications/{id}/diff",
+                "get",
+                "200",
+                "ApplicationDiff",
+            ),
+            (
+                "/api/v1/applications/{id}/sync",
+                "post",
+                "201",
+                "OperationStarted",
+            ),
+            (
+                "/api/v1/applications/{id}/rollback",
+                "post",
+                "201",
+                "OperationStarted",
+            ),
+        ] {
+            let operation = &paths[path][method];
+            assert_eq!(
+                operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{body}"),
+                "{method} {path}"
+            );
+            assert_eq!(operation["tags"], json!(["gitops"]), "{method} {path}");
+            assert!(operation["responses"]["404"].is_object(), "{method} {path}");
+        }
+        for path in [
+            "/api/v1/clusters",
+            "/api/v1/applications",
+            "/api/v1/applications/{id}/history",
+        ] {
+            assert_eq!(
+                paths[path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["type"],
+                "array",
+                "{path}: lists are bare arrays"
+            );
+        }
+        for (path, method, body) in [
+            ("/api/v1/clusters", "post", "UpsertClusterRequest"),
+            ("/api/v1/applications", "post", "UpsertApplicationRequest"),
+            (
+                "/api/v1/applications/{id}/refresh",
+                "post",
+                "RefreshApplicationRequest",
+            ),
+            (
+                "/api/v1/applications/{id}/sync",
+                "post",
+                "SyncApplicationRequest",
+            ),
+            (
+                "/api/v1/applications/{id}/rollback",
+                "post",
+                "RollbackApplicationRequest",
+            ),
+        ] {
+            assert_eq!(
+                paths[path][method]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{body}"),
+                "{path}"
+            );
+        }
+        for (path, method, parameter) in [
+            ("/api/v1/applications", "get", "projectId"),
+            ("/api/v1/applications/{id}", "delete", "cascade"),
+            ("/api/v1/applications/{id}/manifests", "get", "revision"),
+            ("/api/v1/applications/{id}/history", "get", "limit"),
+        ] {
+            let parameters = paths[path][method]["parameters"].as_array().unwrap();
+            assert!(
+                parameters
+                    .iter()
+                    .any(|p| p["name"] == parameter && p["in"] == "query"),
+                "{method} {path} ?{parameter}"
+            );
+        }
+        for schema in [
+            "Cluster",
+            "UpsertClusterRequest",
+            "Application",
+            "ApplicationSource",
+            "ApplicationSourceInput",
+            "SyncPolicy",
+            "SyncPolicyInput",
+            "ResourceStatus",
+            "ApplicationOperation",
+            "UpsertApplicationRequest",
+            "DeletedApplication",
+            "RefreshApplicationRequest",
+            "Manifests",
+            "ResourceDiff",
+            "ApplicationDiff",
+            "HistoryEntry",
+            "SyncApplicationRequest",
+            "RollbackApplicationRequest",
+            "OperationStarted",
+        ] {
+            let properties = schemas[schema]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("missing schema {schema}"));
+            for (field, property) in properties {
+                assert!(
+                    property["description"].is_string()
+                        || property["oneOf"][0]["description"].is_string(),
+                    "{schema}.{field} is documented"
+                );
+            }
+        }
+        // A kubeconfig is named, never carried, in either direction.
+        for schema in ["Cluster", "UpsertClusterRequest"] {
+            let properties = schemas[schema]["properties"].as_object().unwrap();
+            assert!(properties.contains_key("kubeconfigSecret"), "{schema}");
+            assert!(
+                properties.keys().all(|key| key == "kubeconfigSecret"
+                    || !key.to_ascii_lowercase().contains("kubeconfig")),
+                "{schema}: {:?}",
+                properties.keys().collect::<Vec<_>>()
+            );
+        }
+        for (schema, values) in [
+            (
+                "SyncStatus",
+                json!(["synced", "out_of_sync", "missing", "extraneous", "unknown"]),
+            ),
+            (
+                "HealthStatus",
+                json!([
+                    "healthy",
+                    "progressing",
+                    "degraded",
+                    "suspended",
+                    "missing",
+                    "unknown"
+                ]),
+            ),
+            (
+                "ClusterStatus",
+                json!(["connected", "unreachable", "unknown"]),
+            ),
+            ("SourceType", json!(["directory", "kustomize", "helm"])),
+            ("OperationKind", json!(["sync", "rollback", "unknown"])),
+            (
+                "OperationPhase",
+                json!([
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "error",
+                    "terminating",
+                    "unknown"
+                ]),
+            ),
+        ] {
+            assert_eq!(schemas[schema]["enum"], values, "{schema}");
+        }
+        for (schema, field) in [
+            ("Cluster", "context"),
+            ("Cluster", "server"),
+            ("Cluster", "message"),
+            ("Cluster", "serverVersion"),
+            ("Application", "namespace"),
+            ("Application", "revision"),
+            ("Application", "syncedRevision"),
+            ("Application", "healthMessage"),
+            ("ApplicationSource", "repo"),
+            ("ApplicationSource", "revision"),
+            ("ApplicationSource", "path"),
+            ("ResourceStatus", "namespace"),
+            ("ResourceDiff", "diff"),
+            ("ResourceDiff", "live"),
+            ("ResourceDiff", "target"),
+            ("HistoryEntry", "executionId"),
+            ("ApplicationOperation", "executionId"),
+        ] {
+            assert_eq!(
+                schemas[schema]["properties"][field]["type"],
+                json!(["string", "null"]),
+                "{schema}.{field}"
+            );
+        }
+        for (schema, field, target) in [
+            ("Application", "operation", "ApplicationOperation"),
+            ("ResourceStatus", "healthStatus", "HealthStatus"),
+            ("ApplicationSource", "type", "SourceType"),
+        ] {
+            let one_of = &schemas[schema]["properties"][field]["oneOf"];
+            assert_eq!(
+                one_of[0]["$ref"],
+                format!("#/components/schemas/{target}"),
+                "{schema}.{field}"
+            );
+            assert_eq!(one_of[1]["type"], "null", "{schema}.{field} is nullable");
+        }
+        assert_eq!(
+            schemas["RollbackApplicationRequest"]["required"],
+            json!(["historyId"])
+        );
         // §23: the new shapes, and the fields the feature adds to old ones.
         for schema in [
             "MergeReadiness",
@@ -842,11 +1115,14 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["status"], "degraded");
         let services = json["services"].as_array().unwrap();
-        assert_eq!(services.len(), 4);
+        assert_eq!(services.len(), 5);
         assert_eq!(services[0]["name"], "knowledge");
         assert_eq!(services[3]["name"], "identity");
         assert_eq!(services[3]["status"], "serving");
         assert!(services[..3].iter().all(|s| s["status"] == "unreachable"));
+        assert_eq!(services[4]["name"], "gitops");
+        assert_eq!(services[4]["url"], DEAD);
+        assert_eq!(services[4]["status"], "unreachable");
     }
 
     #[tokio::test]
@@ -1745,6 +2021,7 @@ mod tests {
             DEAD,
             DEAD,
             &format!("http://{identity}"),
+            DEAD,
             GatewaySettings {
                 webhook_queue_max: 2,
                 ..settings()
@@ -2747,8 +3024,9 @@ mod tests {
     async fn events_stream_merges_the_services_filters_the_workspace_and_survives_a_drop() {
         // knowledge: two events of w1 and one of w2, then its stream ends (a
         // drop); intelligence: one event, stays open; execution: one event
-        // after 300ms, stays open. The late execution event proves the
-        // merged feed outlived the knowledge drop; the w2 event never shows.
+        // after 300ms, stays open; gitops: one event of w1 and one of w2,
+        // stays open. The late execution event proves the merged feed
+        // outlived the knowledge drop; the w2 events never show.
         let stack = app_with_every_fake().await;
         let response = stack
             .app
@@ -2768,8 +3046,17 @@ mod tests {
                 && has(seen, "proposal")
                 && has(seen, "execution")
                 && has(seen, "environment")
+                && has(seen, "application")
         })
         .await;
+        // The GitOps engine's status changes (§24.8).
+        let application = events
+            .iter()
+            .find(|e| e["entity"] == "application")
+            .unwrap();
+        assert_eq!(application["entityId"], "a1");
+        assert_eq!(application["status"], "out_of_sync");
+        assert_eq!(application["data"]["workspace_id"], "w1");
         // The delivery entities of CONTRACT.md §22 pass like any other.
         let deployment = events.iter().find(|e| e["entity"] == "deployment").unwrap();
         assert_eq!(deployment["entityId"], "d1");
@@ -2907,6 +3194,57 @@ mod tests {
             started.elapsed() >= Duration::from_secs(1),
             "reconnect waited"
         );
+    }
+
+    /// A gitops service that is down (or not deployed) costs the feed
+    /// nothing: the other three keep flowing.
+    #[tokio::test]
+    async fn events_stream_keeps_flowing_while_gitops_is_down() {
+        let (knowledge, intelligence, execution) = tokio::join!(
+            fakes::knowledge::serve(),
+            fakes::intelligence::serve(),
+            fakes::execution::serve()
+        );
+        let stack = stack_with_gitops(
+            &format!("http://{knowledge}"),
+            &format!("http://{intelligence}"),
+            &format!("http://{execution}"),
+            DEAD,
+        )
+        .await;
+        let response = stack
+            .app
+            .oneshot(request("GET", "/api/v1/events/stream", Some(OWNER), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let has = |seen: &[Value], entity: &str| seen.iter().any(|e| e["entity"] == entity);
+        let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
+            has(seen, "scan") && has(seen, "proposal") && has(seen, "execution")
+        })
+        .await;
+        assert!(!has(&events, "application"), "{events:?}");
+    }
+
+    /// The gitops watch alone reaches the browser, filtered to the workspace
+    /// and carrying the caller's principal (the fake refuses without it).
+    #[tokio::test]
+    async fn events_stream_carries_the_gitops_engine_alone() {
+        let gitops = fakes::gitops::serve().await;
+        let stack = stack_with_gitops(DEAD, DEAD, DEAD, &format!("http://{gitops}")).await;
+        let response = stack
+            .app
+            .oneshot(request("GET", "/api/v1/events/stream", Some(OWNER), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let events = read_until(response.into_body(), Duration::from_secs(10), |seen| {
+            seen.iter().any(|e| e["entity"] == "application")
+        })
+        .await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["entityId"], "a1");
+        assert_eq!(events[0]["projectId"], "p1");
     }
 
     // --- Existing composition routes --------------------------------------
@@ -3701,6 +4039,835 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    }
+
+    // --- GitOps engine (CONTRACT.md §24) -----------------------------------
+
+    /// Clusters: flat bodies, bare arrays, `null` for what is not set, the
+    /// service's refusals with their message, and no kubeconfig anywhere.
+    #[tokio::test]
+    async fn clusters_speak_flat_bodies_and_never_carry_a_kubeconfig() {
+        let app = app_with_fake_gitops().await.app;
+
+        let (status, json) = send(app.clone(), "GET", "/api/v1/clusters", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let clusters = json.as_array().expect("a bare array");
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0]["name"], "prod");
+        assert_eq!(clusters[0]["kubeconfigSecret"], "PROD_KUBECONFIG");
+        assert_eq!(clusters[0]["status"], "connected");
+        assert_eq!(clusters[0]["serverVersion"], "v1.31.2");
+        assert_eq!(clusters[0]["context"], Value::Null);
+        assert_eq!(clusters[0]["message"], Value::Null);
+        assert_eq!(clusters[0]["namespaces"], json!([]));
+        assert_eq!(clusters[0]["applicationCount"], 1);
+        assert_eq!(clusters[0]["checkedAt"], "2023-11-14T22:15:00Z");
+        assert_eq!(clusters[1]["status"], "unreachable");
+        assert_eq!(
+            clusters[1]["message"],
+            "dial tcp 10.0.0.9:6443: i/o timeout"
+        );
+        assert_eq!(clusters[1]["serverVersion"], Value::Null);
+        assert_eq!(clusters[1]["context"], "staging-admin");
+        assert_eq!(clusters[1]["namespaces"], json!(["shop", "jobs"]));
+        for cluster in clusters {
+            assert!(cluster.get("kubeconfig").is_none(), "{cluster}");
+        }
+
+        let body = json!({
+            "name": "staging", "kubeconfigSecret": "STAGING_KUBECONFIG",
+            "context": null, "defaultNamespace": "apps", "namespaces": ["apps"],
+        });
+        let (status, json) =
+            send(app.clone(), "POST", "/api/v1/clusters", Some(body.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["id"], "c-new");
+        assert_eq!(json["name"], "staging");
+        assert_eq!(json["defaultNamespace"], "apps");
+        assert_eq!(json["namespaces"], json!(["apps"]));
+        assert_eq!(json["server"], "https://staging.k8s.example.com:6443");
+        assert_eq!(json["status"], "connected");
+        // A kubeconfig pasted into the body goes nowhere: there is no field for it.
+        let mut pasted = body.clone();
+        pasted["kubeconfig"] = json!("apiVersion: v1\nkind: Config\n");
+        let (status, json) = send(app.clone(), "PUT", "/api/v1/clusters/c7", Some(pasted)).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "c7", "the path names what is updated");
+        assert!(json.get("kubeconfig").is_none(), "{json}");
+        assert!(!json.to_string().contains("kind: Config"), "{json}");
+        // A bad kubeconfig is saved and said, not refused.
+        let mut broken = body.clone();
+        broken["kubeconfigSecret"] = json!("BROKEN");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/clusters", Some(broken)).await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["status"], "unreachable");
+        assert!(json["message"].as_str().unwrap().contains("does not parse"));
+        assert_eq!(json["server"], Value::Null);
+        // Refusals pass through with their message.
+        let mut taken = body.clone();
+        taken["name"] = json!("taken");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/clusters", Some(taken)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{json}");
+        assert!(json["message"].as_str().unwrap().starts_with("name: "));
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/clusters",
+            Some(json!({"name": "x", "kubeconfigSecret": ""})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("kubeconfig_secret")
+        );
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/clusters",
+            Some(json!({"name": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_body");
+        let (status, json) = send(app.clone(), "DELETE", "/api/v1/clusters/in-use", None).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("deploys to this cluster")
+        );
+        let (status, _) = send(app.clone(), "DELETE", "/api/v1/clusters/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(app, "DELETE", "/api/v1/clusters/c7", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// Applications, their manifests, diff and history: the shapes the
+    /// Applications tab and the application page are written against.
+    #[tokio::test]
+    async fn applications_speak_flat_bodies_and_null_what_is_not_set() {
+        let app = app_with_fake_gitops().await.app;
+
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/applications?projectId=p9",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let list = json.as_array().expect("a bare array");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["projectId"], "p9", "the filter reached the service");
+        assert_eq!(list[0]["syncStatus"], "out_of_sync");
+        assert_eq!(list[0]["healthStatus"], "progressing");
+        assert_eq!(list[0]["clusterName"], "prod");
+        assert_eq!(list[0]["namespace"], "shop");
+        assert_eq!(list[0]["revision"], fakes::gitops::REVISION);
+        assert_eq!(
+            list[0]["resources"],
+            json!([]),
+            "summaries carry no resources"
+        );
+        assert_eq!(list[0]["resourceCount"], 4);
+        assert_eq!(list[0]["outOfSyncCount"], 2);
+        assert_eq!(list[1]["conditions"].as_array().unwrap().len(), 1);
+        let (_, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/applications?projectId=empty",
+            None,
+        )
+        .await;
+        assert_eq!(json, json!([]));
+        let (status, json) = send(app.clone(), "GET", "/api/v1/applications", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json[0]["projectId"], "p1");
+
+        // One application, with the tree of what it manages.
+        let (status, json) = send(app.clone(), "GET", "/api/v1/applications/a1", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "a1");
+        assert_eq!(json["source"]["type"], "kustomize");
+        assert_eq!(
+            json["source"]["repo"],
+            Value::Null,
+            "the project's repository"
+        );
+        assert_eq!(json["source"]["revision"], "main");
+        assert_eq!(json["source"]["helmReleaseName"], Value::Null);
+        assert_eq!(json["source"]["helmParameters"], json!({}));
+        assert_eq!(
+            json["source"]["kustomizeImages"],
+            json!(["ghcr.io/acme/web=ghcr.io/acme/web:a1b2c3d"])
+        );
+        assert_eq!(json["syncPolicy"]["automated"], false);
+        assert_eq!(json["syncPolicy"]["createNamespace"], true);
+        assert_eq!(json["syncPolicy"]["retryLimit"], 0);
+        assert_eq!(json["syncedRevision"], fakes::gitops::PREVIOUS);
+        assert_eq!(json["operation"]["kind"], "sync");
+        assert_eq!(json["operation"]["phase"], "succeeded");
+        assert_eq!(json["operation"]["executionId"], "x1");
+        assert_eq!(json["operation"]["finishedAt"], "2023-11-14T22:14:20Z");
+        assert_eq!(json["reconciledAt"], "2023-11-14T22:16:40Z");
+        assert_eq!(json["conditions"], json!([]));
+        let resources = json["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 4);
+        assert_eq!(resources[0]["kind"], "Deployment");
+        assert_eq!(resources[0]["group"], "apps");
+        assert_eq!(
+            resources[0]["healthMessage"],
+            "1 of 2 updated replicas are available"
+        );
+        assert_eq!(resources[1]["group"], "", "the core group");
+        assert_eq!(resources[1]["healthMessage"], Value::Null);
+        assert_eq!(resources[2]["namespace"], Value::Null, "cluster-scoped");
+        assert_eq!(resources[2]["syncStatus"], "missing");
+        assert_eq!(resources[2]["healthStatus"], Value::Null, "no health check");
+        assert_eq!(resources[3]["hook"], true);
+        assert_eq!(resources[3]["syncWave"], -1);
+        // Never compared: nothing to show is null, not an empty string.
+        let (status, json) = send(app.clone(), "GET", "/api/v1/applications/never", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["syncStatus"], "unknown");
+        assert_eq!(json["healthStatus"], "unknown");
+        assert_eq!(json["healthMessage"], Value::Null);
+        assert_eq!(json["revision"], Value::Null);
+        assert_eq!(json["syncedRevision"], Value::Null);
+        assert_eq!(json["operation"], Value::Null);
+        assert_eq!(json["reconciledAt"], Value::Null);
+        assert_eq!(json["conditions"].as_array().unwrap().len(), 2);
+        let (status, json) = send(app.clone(), "GET", "/api/v1/applications/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+        // Create and update: flat, the source and policy optional.
+        let body = json!({
+            "projectId": "p1", "name": "api", "clusterId": "c1", "namespace": "shop",
+            "source": {
+                "path": "charts/api", "type": "helm",
+                "helmValueFiles": ["values-prod.yaml"],
+                "helmParameters": {"image.tag": "a1b2c3d"},
+            },
+            "syncPolicy": {"automated": true, "selfHeal": true, "retryLimit": 5},
+        });
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/applications",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json["id"], "a-new");
+        assert_eq!(json["clusterName"], "prod");
+        assert_eq!(json["source"]["type"], "helm");
+        assert_eq!(json["source"]["path"], "charts/api");
+        assert_eq!(json["source"]["revision"], Value::Null);
+        assert_eq!(json["source"]["recurse"], false);
+        assert_eq!(
+            json["source"]["helmValueFiles"],
+            json!(["values-prod.yaml"])
+        );
+        assert_eq!(json["source"]["helmParameters"]["image.tag"], "a1b2c3d");
+        assert_eq!(json["syncPolicy"]["automated"], true);
+        assert_eq!(json["syncPolicy"]["selfHeal"], true);
+        assert_eq!(json["syncPolicy"]["prune"], false);
+        assert_eq!(json["syncPolicy"]["retryLimit"], 5);
+        assert_eq!(json["syncStatus"], "unknown");
+        assert_eq!(json["operation"], Value::Null);
+        let (status, json) = send(
+            app.clone(),
+            "PUT",
+            "/api/v1/applications/a7",
+            Some(json!({"projectId": "p1", "name": "api", "clusterId": "c1"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], "a7", "the path names what is updated");
+        assert_eq!(json["namespace"], Value::Null);
+        assert_eq!(json["source"]["type"], Value::Null, "detected");
+        assert_eq!(json["syncPolicy"]["automated"], false);
+        let mut jsonnet = body.clone();
+        jsonnet["source"]["type"] = json!("jsonnet");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/applications", Some(jsonnet)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_body");
+        let mut taken = body.clone();
+        taken["name"] = json!("taken");
+        let (status, _) = send(app.clone(), "POST", "/api/v1/applications", Some(taken)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let mut nowhere = body.clone();
+        nowhere["clusterId"] = json!("missing");
+        let (status, json) = send(app.clone(), "POST", "/api/v1/applications", Some(nowhere)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["message"], "cluster_id: no such cluster");
+
+        // Delete, with and without the cluster's resources.
+        let (status, json) = send(app.clone(), "DELETE", "/api/v1/applications/a7", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["deletedResources"], 0);
+        let (_, json) = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/applications/a7?cascade=true",
+            None,
+        )
+        .await;
+        assert_eq!(json["deletedResources"], 4, "cascade reached the service");
+        let (status, json) = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/applications/a7?cascade=maybe",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "invalid_query");
+        let (status, _) = send(app.clone(), "DELETE", "/api/v1/applications/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Refresh: the body may be left out; `hard` travels.
+        let (status, json) =
+            send(app.clone(), "POST", "/api/v1/applications/a1/refresh", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["healthMessage"], "refresh");
+        assert_eq!(json["resources"].as_array().unwrap().len(), 4);
+        let (_, json) = send(
+            app.clone(),
+            "POST",
+            "/api/v1/applications/a1/refresh",
+            Some(json!({"hard": true})),
+        )
+        .await;
+        assert_eq!(json["healthMessage"], "hard refresh");
+
+        // Manifests and diff, Secret values masked by the service.
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/applications/a1/manifests",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["revision"], fakes::gitops::REVISION);
+        let manifests = json["manifests"].as_array().unwrap();
+        assert_eq!(manifests.len(), 2);
+        assert!(
+            manifests[1]
+                .as_str()
+                .unwrap()
+                .contains("DATABASE_URL: ++++++++")
+        );
+        let (_, json) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/applications/a1/manifests?revision=v1.2.0",
+            None,
+        )
+        .await;
+        assert_eq!(
+            json["revision"], "v1.2.0",
+            "the revision reached the service"
+        );
+        let (status, json) = send(app.clone(), "GET", "/api/v1/applications/a1/diff", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let diffs = json["resources"].as_array().unwrap();
+        assert_eq!(diffs.len(), 3);
+        assert_eq!(diffs[0]["syncStatus"], "out_of_sync");
+        assert!(
+            diffs[0]["diff"]
+                .as_str()
+                .unwrap()
+                .contains("+  replicas: 2")
+        );
+        assert!(diffs[0]["live"].as_str().unwrap().contains("replicas: 1"));
+        assert_eq!(diffs[1]["diff"], Value::Null, "they match");
+        assert_eq!(diffs[1]["group"], "");
+        assert!(diffs[1]["live"].as_str().unwrap().contains("++++++++"));
+        assert_eq!(diffs[2]["live"], Value::Null, "not in the cluster");
+        assert_eq!(diffs[2]["namespace"], Value::Null);
+        let (status, _) = send(
+            app.clone(),
+            "GET",
+            "/api/v1/applications/missing/diff",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // History, newest first.
+        let (status, json) =
+            send(app.clone(), "GET", "/api/v1/applications/a1/history", None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let entries = json.as_array().expect("a bare array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "h2");
+        assert_eq!(entries[0]["applicationId"], "a1");
+        assert_eq!(entries[0]["phase"], "succeeded");
+        assert_eq!(entries[0]["executionId"], "x1");
+        assert_eq!(entries[0]["source"]["path"], "deploy/overlays/prod");
+        assert_eq!(entries[1]["automated"], true);
+        assert_eq!(entries[1]["initiatedBy"], "system");
+        assert_eq!(entries[1]["executionId"], Value::Null);
+        assert_eq!(entries[1]["phase"], "failed");
+        let (_, json) = send(app, "GET", "/api/v1/applications/a1/history?limit=1", None).await;
+        assert_eq!(
+            json.as_array().unwrap().len(),
+            1,
+            "the limit reached the service"
+        );
+    }
+
+    /// The `gitops` executions created for `application`, oldest first.
+    fn gitops_executions(
+        application: &str,
+    ) -> Vec<(
+        String,
+        String,
+        sdi_proto::execution::v1::CreateExecutionRequest,
+    )> {
+        fakes::execution::GITOPS_EXECUTIONS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, request)| {
+                request.steps.first().is_some_and(|step| {
+                    step.params.get("application").map(String::as_str) == Some(application)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn started(id: &str) -> bool {
+        fakes::execution::STARTED
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|started| started == id)
+    }
+
+    /// Sync and rollback create the plans of §24.7 in the application's
+    /// project, start them and answer the execution; nothing else changes.
+    #[tokio::test]
+    async fn sync_and_rollback_create_and_start_a_gitops_execution() {
+        let app = app_with_fake_gitops().await.app;
+        let approver = Some("t-approver");
+
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/a-sync/sync",
+            Some(json!({"prune": true, "revision": "v1.2.0"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        assert_eq!(json.as_object().unwrap().len(), 1, "{json}");
+        let execution_id = json["executionId"].as_str().unwrap().to_owned();
+        let created = gitops_executions("a-sync");
+        assert_eq!(created.len(), 1);
+        let (id, role, request) = &created[0];
+        assert_eq!(id, &execution_id);
+        assert_eq!(role, "approver", "created as the caller");
+        assert!(started(id), "and started");
+        assert_eq!(request.adapter, "gitops");
+        assert_eq!(request.project_id, "p1", "the application's project");
+        assert_eq!(request.title, "Sync web to prod/shop");
+        assert!(request.artifacts.is_empty());
+        let steps: Vec<_> = request
+            .steps
+            .iter()
+            .map(|s| (s.key.as_str(), s.action_type.as_str(), s.adapter.as_str()))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("preview", "gitops.preview", "gitops"),
+                ("sync", "gitops.sync", "gitops"),
+                ("verify_health", "gitops.verify_health", "gitops"),
+            ]
+        );
+        let (preview, sync, verify) = (&request.steps[0], &request.steps[1], &request.steps[2]);
+        assert!(preview.depends_on.is_empty());
+        assert_eq!(sync.depends_on, ["preview"]);
+        assert_eq!(verify.depends_on, ["sync"]);
+        assert!(preview.required_permissions.is_empty());
+        assert_eq!(sync.required_permissions, ["cluster:write"]);
+        assert!(verify.required_permissions.is_empty());
+        for step in [preview, sync] {
+            assert_eq!(step.params["application"], "a-sync");
+            assert_eq!(step.params["prune"], "true");
+            assert_eq!(step.params["revision"], "v1.2.0");
+        }
+        assert_eq!(
+            verify.params,
+            [("application".to_owned(), "a-sync".to_owned())].into()
+        );
+        assert!(sync.description.contains("v1.2.0"), "{}", sync.description);
+
+        // No body: no prune, the source's revision.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/a-plain/sync",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let created = gitops_executions("a-plain");
+        let sync = &created[0].2.steps[1];
+        assert_eq!(sync.params["prune"], "false");
+        assert!(!sync.params.contains_key("revision"));
+
+        // A dry run only previews.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/a-dry/sync",
+            Some(json!({"dryRun": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let created = gitops_executions("a-dry");
+        assert_eq!(created[0].2.title, "Preview a sync of web to prod/shop");
+        let keys: Vec<_> = created[0].2.steps.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, ["preview"]);
+        assert!(started(&created[0].0));
+
+        // A rollback names the history entry and syncs its revision.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/a-roll/rollback",
+            Some(json!({"historyId": "h2", "prune": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let created = gitops_executions("a-roll");
+        assert_eq!(created.len(), 1);
+        let (id, _, request) = &created[0];
+        assert_eq!(json["executionId"], id.as_str());
+        assert!(started(id));
+        assert_eq!(request.title, "Roll back web on prod/shop to 0f1e2d3");
+        assert_eq!(request.adapter, "gitops");
+        let steps: Vec<_> = request
+            .steps
+            .iter()
+            .map(|s| (s.key.as_str(), s.action_type.as_str()))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("preview", "gitops.preview"),
+                ("rollback", "gitops.rollback"),
+                ("verify_health", "gitops.verify_health"),
+            ]
+        );
+        let rollback = &request.steps[1];
+        assert_eq!(rollback.depends_on, ["preview"]);
+        assert_eq!(rollback.required_permissions, ["cluster:write"]);
+        assert_eq!(rollback.params["history_id"], "h2");
+        assert_eq!(rollback.params["revision"], fakes::gitops::PREVIOUS);
+        assert_eq!(rollback.params["prune"], "true");
+        assert_eq!(request.steps[0].params["history_id"], "h2");
+        assert_eq!(request.steps[2].depends_on, ["rollback"]);
+
+        // Refusals, before anything is created.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/missing/sync",
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        // One operation per application: a second sync or a rollback while
+        // one runs is refused with the way to it; a preview is not.
+        for (path, body) in [
+            ("/api/v1/applications/busy/sync", json!({})),
+            (
+                "/api/v1/applications/busy/rollback",
+                json!({"historyId": "h2"}),
+            ),
+        ] {
+            let (status, json, _) = send_as(app.clone(), approver, "POST", path, Some(body)).await;
+            assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{path}: {json}");
+            let message = json["message"].as_str().unwrap();
+            assert!(
+                message.contains("is running") && message.contains("x1"),
+                "{message}"
+            );
+        }
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/busy/sync",
+            Some(json!({"dryRun": true})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "a preview changes nothing: {json}"
+        );
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/missing/rollback",
+            Some(json!({"historyId": "h2"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        assert!(gitops_executions("missing").is_empty());
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/a-gone/rollback",
+            Some(json!({"historyId": "h9"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        assert_eq!(json["message"], "web has no history entry h9");
+        for body in [json!({}), json!({"historyId": "  "})] {
+            let (status, json, _) = send_as(
+                app.clone(),
+                approver,
+                "POST",
+                "/api/v1/applications/a-gone/rollback",
+                Some(body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        }
+        assert!(gitops_executions("a-gone").is_empty());
+
+        // A start the execution service refuses is answered as such.
+        let (status, json, _) = send_as(
+            app,
+            approver,
+            "POST",
+            "/api/v1/applications/a-blocked/sync",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("blocked by policy")
+        );
+        let created = gitops_executions("a-blocked");
+        assert_eq!(created[0].2.project_id, "blocked");
+        assert!(!started(&created[0].0));
+    }
+
+    /// Reads viewer, refresh member, sync and rollback approver, cluster
+    /// and application changes admin; the role travels to the service.
+    #[tokio::test]
+    async fn gitops_routes_follow_the_role_matrix() {
+        let app = app_with_fake_gitops().await.app;
+        let (viewer, member, approver, admin) = (
+            Some("t-viewer"),
+            Some("t-member"),
+            Some("t-approver"),
+            Some("t-admin"),
+        );
+        for path in [
+            "/api/v1/clusters",
+            "/api/v1/applications",
+            "/api/v1/applications/a1",
+            "/api/v1/applications/a1/manifests",
+            "/api/v1/applications/a1/diff",
+            "/api/v1/applications/a1/history",
+        ] {
+            let (status, json, _) = send_as(app.clone(), viewer, "GET", path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {json}");
+        }
+
+        let refresh = "/api/v1/applications/a1/refresh";
+        let (status, json, _) = send_as(app.clone(), viewer, "POST", refresh, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        assert!(json["message"].as_str().unwrap().contains("member"));
+        let (status, json, _) = send_as(app.clone(), member, "POST", refresh, None).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+
+        for (path, body) in [
+            ("/api/v1/applications/a-roles/sync", json!({})),
+            (
+                "/api/v1/applications/a-roles/rollback",
+                json!({"historyId": "h1"}),
+            ),
+        ] {
+            let (status, json, _) =
+                send_as(app.clone(), member, "POST", path, Some(body.clone())).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {json}");
+            assert!(json["message"].as_str().unwrap().contains("approver"));
+            let (status, json, _) = send_as(app.clone(), approver, "POST", path, Some(body)).await;
+            assert_eq!(status, StatusCode::CREATED, "{path}: {json}");
+        }
+        assert_eq!(
+            gitops_executions("a-roles").len(),
+            2,
+            "the refused ones made nothing"
+        );
+
+        let cluster = json!({"name": "staging", "kubeconfigSecret": "STAGING_KUBECONFIG"});
+        let application = json!({"projectId": "p1", "name": "api", "clusterId": "c1"});
+        for (method, path, body) in [
+            ("POST", "/api/v1/clusters", Some(cluster.clone())),
+            ("PUT", "/api/v1/clusters/c7", Some(cluster.clone())),
+            ("DELETE", "/api/v1/clusters/c7", None),
+            ("POST", "/api/v1/applications", Some(application.clone())),
+            ("PUT", "/api/v1/applications/a7", Some(application.clone())),
+            ("DELETE", "/api/v1/applications/a7", None),
+        ] {
+            let (status, json, _) =
+                send_as(app.clone(), approver, method, path, body.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {json}");
+            assert!(json["message"].as_str().unwrap().contains("admin"));
+            let (status, json, _) = send_as(app.clone(), admin, method, path, body).await;
+            assert!(status.is_success(), "{method} {path}: {status} {json}");
+        }
+    }
+
+    #[tokio::test]
+    async fn gitops_requests_are_audited_with_their_entity() {
+        let stack = app_with_fake_gitops().await;
+        let app = stack.app.clone();
+        let cluster = json!({"name": "staging", "kubeconfigSecret": "STAGING_KUBECONFIG"});
+        let application = json!({"projectId": "p1", "name": "api", "clusterId": "c1"});
+        for (method, path, body, expected) in [
+            (
+                "POST",
+                "/api/v1/clusters",
+                Some(cluster.clone()),
+                StatusCode::CREATED,
+            ),
+            ("PUT", "/api/v1/clusters/c7", Some(cluster), StatusCode::OK),
+            ("DELETE", "/api/v1/clusters/c7", None, StatusCode::OK),
+            (
+                "POST",
+                "/api/v1/applications",
+                Some(application.clone()),
+                StatusCode::CREATED,
+            ),
+            (
+                "PUT",
+                "/api/v1/applications/a7",
+                Some(application),
+                StatusCode::OK,
+            ),
+            (
+                "DELETE",
+                "/api/v1/applications/a7?cascade=true",
+                None,
+                StatusCode::OK,
+            ),
+            (
+                "POST",
+                "/api/v1/applications/a1/refresh",
+                None,
+                StatusCode::OK,
+            ),
+            (
+                "POST",
+                "/api/v1/applications/a-audit/sync",
+                None,
+                StatusCode::CREATED,
+            ),
+            (
+                "POST",
+                "/api/v1/applications/a-audit/rollback",
+                Some(json!({"historyId": "h2"})),
+                StatusCode::CREATED,
+            ),
+            // Refused requests are part of the trail too.
+            (
+                "DELETE",
+                "/api/v1/clusters/in-use",
+                None,
+                StatusCode::PRECONDITION_FAILED,
+            ),
+        ] {
+            let (status, json) = send(app.clone(), method, path, body).await;
+            assert_eq!(status, expected, "{method} {path}: {json}");
+        }
+        // Reads leave no entry.
+        for path in [
+            "/api/v1/clusters",
+            "/api/v1/applications",
+            "/api/v1/applications/a1",
+            "/api/v1/applications/a1/manifests",
+            "/api/v1/applications/a1/diff",
+            "/api/v1/applications/a1/history",
+        ] {
+            let (status, json) = send(app.clone(), "GET", path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {json}");
+        }
+
+        let entries = audited(&stack.recorder, 10).await;
+        let mut seen: Vec<(&str, &str, &str, &str)> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e.action.as_str(),
+                    e.entity.as_str(),
+                    e.entity_id.as_str(),
+                    e.detail.as_str(),
+                )
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            [
+                ("application.delete", "application", "a7", ""),
+                ("application.refresh", "application", "a1", ""),
+                ("application.rollback", "application", "a-audit", ""),
+                ("application.sync", "application", "a-audit", ""),
+                ("application.upsert", "application", "", ""),
+                ("application.upsert", "application", "a7", ""),
+                ("cluster.delete", "cluster", "c7", ""),
+                ("cluster.delete", "cluster", "in-use", "http 412"),
+                ("cluster.upsert", "cluster", "", ""),
+                ("cluster.upsert", "cluster", "c7", ""),
+            ]
+        );
+        for entry in &entries {
+            assert_eq!(entry.workspace_id, "w1");
+            assert_eq!(entry.user_id, "u1");
+            assert!(!entry.detail.contains("KUBECONFIG"), "{entry:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn system_status_sees_the_gitops_engine() {
+        let (_, json) = send(
+            app_with_fake_gitops().await.app,
+            "GET",
+            "/api/v1/system/status",
+            None,
+        )
+        .await;
+        let services = json["services"].as_array().unwrap();
+        assert_eq!(services[4]["name"], "gitops");
+        assert_eq!(services[4]["status"], "serving");
+        assert_eq!(services[2]["status"], "serving");
+        assert_eq!(services[0]["status"], "unreachable");
     }
 
     /// Workspace secrets: an admin stores, lists and deletes them; a value

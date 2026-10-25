@@ -26,7 +26,7 @@ pub struct PolicyRow {
 
 /// `(action_type, label, risk, decision, editable)`: the §5.2 table. The
 /// bootstrap workspace got the same rows from the migrations.
-pub const SEED: [(&str, &str, &str, &str, bool); 32] = [
+pub const SEED: [(&str, &str, &str, &str, bool); 36] = [
     ("repo.read", "Read repository", "SAFE", "AUTO", false),
     ("repo.analyze", "Analyze repository", "SAFE", "AUTO", false),
     ("tests.run_local", "Run tests locally", "SAFE", "AUTO", true),
@@ -230,6 +230,36 @@ pub const SEED: [(&str, &str, &str, &str, bool); 32] = [
         "MEDIUM",
         "APPROVAL",
         true,
+    ),
+    // CONTRACT.md §24.7: SDI's GitOps engine. Syncing and rolling back
+    // change a cluster; previewing and watching health only read.
+    (
+        "gitops.preview",
+        "Preview what a sync would change",
+        "SAFE",
+        "AUTO",
+        false,
+    ),
+    (
+        "gitops.sync",
+        "Sync an application to its cluster",
+        "HIGH",
+        "APPROVAL",
+        true,
+    ),
+    (
+        "gitops.rollback",
+        "Roll an application back to an earlier sync",
+        "HIGH",
+        "APPROVAL",
+        true,
+    ),
+    (
+        "gitops.verify_health",
+        "Wait for an application to be healthy",
+        "SAFE",
+        "AUTO",
+        false,
     ),
 ];
 

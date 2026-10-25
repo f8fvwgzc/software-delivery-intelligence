@@ -24,6 +24,7 @@ const ROUTES = [
   { path: '/workspace/members', title: 'Members' },
   { path: '/workspace/audit', title: 'Audit' },
   { path: '/workspace/data', title: 'Data & privacy' },
+  { path: '/workspace/clusters', title: 'Clusters' },
 ] as const
 
 const PROJECT_ROUTES = [
@@ -35,6 +36,7 @@ const PROJECT_ROUTES = [
   { path: '/proposals', title: 'Proposals' },
   { path: '/documents', title: 'Documents' },
   { path: '/executions', title: 'Executions' },
+  { path: '/applications', title: 'Applications' },
 ] as const
 
 let api: APIRequestContext

@@ -40,7 +40,10 @@ pub const ENV_JENKINS: &str = "jenkins";
 pub const ENV_AZURE_DEVOPS: &str = "azure_devops";
 pub const ENV_WEBHOOK: &str = "webhook";
 pub const ENV_DOCKER_LOCAL: &str = "docker_local";
-pub const ENVIRONMENT_KINDS: [&str; 7] = [
+/// An application of SDI's own GitOps engine (CONTRACT.md §24.7): the
+/// release image is synced into it and its health is watched there.
+pub const ENV_SDI_GITOPS: &str = "sdi_gitops";
+pub const ENVIRONMENT_KINDS: [&str; 8] = [
     ENV_GITHUB_ACTIONS,
     ENV_GITOPS_FLUX,
     ENV_GITOPS_ARGOCD,
@@ -48,6 +51,7 @@ pub const ENVIRONMENT_KINDS: [&str; 7] = [
     ENV_AZURE_DEVOPS,
     ENV_WEBHOOK,
     ENV_DOCKER_LOCAL,
+    ENV_SDI_GITOPS,
 ];
 
 /// Created in the UI, editable there.
@@ -102,6 +106,7 @@ pub fn config_keys(kind: &str) -> &'static [&'static str] {
         ENV_AZURE_DEVOPS => &["organization", "project", "pipeline_id", "pat_secret"],
         ENV_WEBHOOK => &["url", "secret", "timeout_seconds"],
         ENV_DOCKER_LOCAL => &["port", "env"],
+        ENV_SDI_GITOPS => &["application"],
         _ => &[],
     }
 }
@@ -470,6 +475,15 @@ fn check_config(kind: &str, config: &BTreeMap<String, String>) -> Result<(), Str
             valid_url(require(config, kind, "url")?).map_err(|e| format!("config.url {e}"))?;
             require(config, kind, "secret")?;
         }
+        ENV_SDI_GITOPS => {
+            let application = require(config, kind, "application")?;
+            if Uuid::parse_str(application).is_err() {
+                return Err(
+                    "config.application must be the id of an application of SDI's GitOps engine"
+                        .to_owned(),
+                );
+            }
+        }
         ENV_DOCKER_LOCAL => {
             if let Some(port) = config.get("port")
                 && !port.parse::<u16>().is_ok_and(|p| p > 0)
@@ -605,6 +619,9 @@ pub fn deploy_tool(kind: &str) -> &'static str {
         ENV_JENKINS => adapters::TOOL_JENKINS,
         ENV_AZURE_DEVOPS => adapters::TOOL_AZURE_DEVOPS,
         ENV_WEBHOOK => adapters::TOOL_WEBHOOK,
+        // The deploy step is `gitops.sync`, which every run routes to the
+        // GitOps engine whatever tool it names.
+        ENV_SDI_GITOPS => adapters::GITOPS,
         _ => adapters::TOOL_DOCKER,
     }
 }
@@ -778,7 +795,7 @@ mod tests {
 
     #[test]
     fn every_kind_accepts_its_own_keys_and_names_an_unknown_one() {
-        let valid: [(&str, Vec<(&str, &str)>); 7] = [
+        let valid: [(&str, Vec<(&str, &str)>); 8] = [
             (
                 "github_actions",
                 vec![("workflow", "deploy.yml"), ("ref", "main")],
@@ -832,7 +849,15 @@ mod tests {
                 "docker_local",
                 vec![("port", "8080"), ("env", r#"{"LOG_LEVEL":"debug"}"#)],
             ),
+            (
+                "sdi_gitops",
+                vec![
+                    ("application", "0192f6a0-0000-7000-8000-00000000a991"),
+                    ("timeout_seconds", "900"),
+                ],
+            ),
         ];
+        assert_eq!(valid.len(), ENVIRONMENT_KINDS.len());
         for (kind, config) in &valid {
             let input = normalize_environment(&environment(kind, config))
                 .unwrap_or_else(|e| panic!("{kind}: {e}"));
@@ -1020,6 +1045,28 @@ mod tests {
                 vec![("health_timeout_seconds", "0")],
                 "config.health_timeout_seconds",
             ),
+            ("sdi_gitops", vec![], "config.application is required"),
+            (
+                "sdi_gitops",
+                vec![("application", "api")],
+                "config.application must be the id of an application",
+            ),
+            (
+                "sdi_gitops",
+                vec![
+                    ("application", "0192f6a0-0000-7000-8000-00000000a991"),
+                    ("path", "apps/api"),
+                ],
+                "config.path is not a setting of sdi_gitops environments (allowed: application, timeout_seconds, health_timeout_seconds)",
+            ),
+            (
+                "sdi_gitops",
+                vec![
+                    ("application", "0192f6a0-0000-7000-8000-00000000a991"),
+                    ("timeout_seconds", "21601"),
+                ],
+                "config.timeout_seconds must be a number of seconds between 1 and 21600",
+            ),
         ];
         for (kind, config, why) in cases {
             let error = normalize_environment(&environment(kind, &config)).unwrap_err();
@@ -1085,6 +1132,7 @@ mod tests {
         }
         assert_eq!(deploy_tool("github_actions"), "github");
         assert_eq!(deploy_tool("gitops_argocd"), "gitops");
+        assert_eq!(deploy_tool("sdi_gitops"), "gitops");
         assert_eq!(deploy_tool("docker_local"), "docker");
     }
 

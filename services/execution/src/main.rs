@@ -23,7 +23,7 @@ use tonic::transport::Server;
 use crate::{
     adapters::{
         DeliveryTools, DockerAdapter, GithubAccess, GithubAdapter, Registry, SimulatedAdapter,
-        net::NetPolicy,
+        gitops_engine::GitopsEngineAdapter, net::NetPolicy,
     },
     config::{SCHEMA, Settings},
     delivery::Delivery,
@@ -72,7 +72,9 @@ async fn main() -> anyhow::Result<()> {
         settings.github_token.clone(),
         &settings.github_api_url,
         &settings.azure_devops_url,
-    ));
+    ))
+    // SDI's GitOps engine (CONTRACT.md §24.7), reached lazily like every peer.
+    .with_gitops(Arc::new(GitopsEngineAdapter::new(&settings.gitops_url)?));
     let outcomes = Arc::new(GrpcPatternOutcomes::new(&settings.knowledge_url)?);
     let audit = Arc::new(GrpcAudit::new(&settings.identity_url)?);
     let github_access = Arc::new(GrpcGithubAccess::new(&settings.identity_url)?);
@@ -109,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         resumed,
         run_dir = %settings.run_dir.display(),
         github_token = settings.github_token.is_some(),
+        gitops = %settings.gitops_url,
         private_deploy_targets = net_policy.allow_private,
         "execution service listening"
     );

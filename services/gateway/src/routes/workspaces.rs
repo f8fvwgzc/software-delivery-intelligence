@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use axum::Json;
 use sdi_proto::{
-    execution::v1 as execution, identity::v1 as identity, intelligence::v1 as intelligence,
-    knowledge::v1 as knowledge,
+    execution::v1 as execution, gitops::v1 as gitops, identity::v1 as identity,
+    intelligence::v1 as intelligence, knowledge::v1 as knowledge,
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -533,7 +533,7 @@ async fn purge_code_cache(
 }
 
 /// Deletes everything the platform stores for the workspace (owner):
-/// every knowledge, intelligence and execution row, the workspace's
+/// every knowledge, intelligence, execution and gitops row, the workspace's
 /// secrets, then the GitHub App installation record. The deletion itself
 /// is audited.
 #[utoipa::path(
@@ -549,7 +549,7 @@ async fn delete_workspace(
     ApiPath(id): ApiPath<String>,
 ) -> ApiResult<Json<WorkspaceDeleted>> {
     ensure_current(&auth, &id)?;
-    let (knowledge, intelligence, execution) = tokio::try_join!(
+    let (knowledge, intelligence, execution, gitops) = tokio::try_join!(
         async {
             scoped
                 .knowledge()
@@ -582,6 +582,16 @@ async fn delete_workspace(
                     deleted
                 })
         },
+        // Clusters, applications and their history (CONTRACT.md §24).
+        async {
+            scoped
+                .gitops()
+                .delete_workspace_data(gitops::DeleteWorkspaceDataRequest {
+                    workspace_id: id.clone(),
+                })
+                .await
+                .map(|r| r.into_inner().deleted)
+        },
     )?;
     // The secrets go with the rows that named them (CONTRACT.md §22).
     let secrets = delete_all_secrets(&scoped, &id).await?;
@@ -597,6 +607,7 @@ async fn delete_workspace(
         ("knowledge", knowledge),
         ("intelligence", intelligence),
         ("execution", execution),
+        ("gitops", gitops),
     ] {
         deleted.insert(name.to_owned(), rows.into_iter().collect());
     }

@@ -4,6 +4,8 @@
 //! loopback ports that keep what they were sent, so a test can assert on
 //! the exact requests. Nothing here is compiled outside tests.
 
+/// SDI's GitOps engine, as a gRPC server (CONTRACT.md §24).
+pub mod gitops;
 /// A repository with real git state, for the pull request autopilot.
 pub mod repo;
 

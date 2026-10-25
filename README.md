@@ -57,16 +57,16 @@ GitHub already grants them (`CONTRACT.md` §18).
              gRPC           │ gRPC            gRPC
      ┌──────────────────────┼──────────────────────────┐
      ▼                      ▼                          ▼
-┌───────────┐  context ┌──────────────┐ accepted plan ┌───────────┐
-│ knowledge │◀────────▶│ intelligence │──────────────▶│ execution │
-│  :50051   │          │   :50052     │               │  :50053   │
-└─────┬─────┘          └──────┬───────┘               └─────┬─────┘
-      │ GitHub API            │ Anthropic API (optional)    │ Docker daemon (opt-in) · GitHub API
-      ▼                       ▼                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ postgres (pgvector/pg16)  schemas: identity · knowledge ·        │
-│                                    intelligence · execution      │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────┐  context ┌──────────────┐ accepted plan ┌───────────┐ sync ┌──────────┐
+│ knowledge │◀────────▶│ intelligence │──────────────▶│ execution │─────▶│  gitops  │
+│  :50051   │          │   :50052     │               │  :50053   │      │  :50055  │
+└─────┬─────┘          └──────┬───────┘               └─────┬─────┘      └────┬─────┘
+      │ GitHub API            │ Anthropic API (optional)    │ Docker · GitHub │ Kubernetes API
+      ▼                       ▼                             ▼                 ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ postgres (pgvector/pg16)  schemas: identity · knowledge · intelligence ·         │
+│                                    execution · gitops                            │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **web** React 19 + Vite + shadcn/ui + TanStack Query, served by an
@@ -88,7 +88,11 @@ GitHub already grants them (`CONTRACT.md` §18).
   negotiation, decision memory, generated documents.
 - **execution** policy and permission checks, approvals, one-step-at-a-time
   DAG execution, checkpoints, diagnosis and replanning, through the
-  `simulated`, `docker` and `github` adapters.
+  `simulated`, `docker`, `github` and `gitops` adapters.
+- **gitops** (Go) Argo CD's gitops-engine embedded: renders plain YAML,
+  Kustomize and Helm from the repository, diffs with the cluster, syncs
+  with waves, hooks and prune, health, auto-sync and self-heal, history
+  and rollback ([`docs/gitops.md`](docs/gitops.md)).
 
 Services talk gRPC only (`proto/sdi/*/v1`), never share tables, and each owns
 one Postgres schema. The deeper design is in
@@ -96,8 +100,9 @@ one Postgres schema. The deeper design is in
 
 ## Quick start
 
-Prerequisites: Docker with Compose v2, Rust 1.88 or newer, Node 22 with
-pnpm, `protoc`, and the `gh` CLI logged in (`gh auth login`) so SDI can
+Prerequisites: Docker with Compose v2, Rust 1.88 or newer, Go 1.21 or
+newer (it fetches the GitOps engine's toolchain), Node 22 with pnpm,
+`protoc`, and the `gh` CLI logged in (`gh auth login`) so SDI can
 read and write your repositories. `make doctor` checks all of it and
 prints the fix for anything missing. The step-by-step version, including
 the model key and the automation switches, is
@@ -147,8 +152,10 @@ because the default thread count exhausts memory on a 16 GB machine.
 | `LLM_MODEL` (alias `ANTHROPIC_MODEL`) | `claude-sonnet-5-5` for `anthropic`; required for every other provider | intelligence |
 | `SDI_PR_WATCH_SECONDS` | `60` | intelligence: how often the pull request watcher looks at open pull requests of workspaces with automatic review on (§23); `0` turns it off |
 | `OSV_API_URL` | `https://api.osv.dev` | intelligence (review vulnerability check; `off` disables) |
-| `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge |
-| `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` | `0.0.0.0:<port>` | each service |
+| `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` / `GITOPS_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge, gitops |
+| `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` / `GITOPS_LISTEN` | `0.0.0.0:<port>` | each service |
+| `GITOPS_RECONCILE_SECONDS` | `180` | gitops: seconds between two comparisons of an application (§24); `0` turns the loop off |
+| `SDI_ALLOW_PRIVATE_DEPLOY_TARGETS` | `1` under `make dev`, unset otherwise | execution, gitops: allow deploy targets and cluster API servers on private addresses |
 | `SDI_SESSION_SECRET` | — (required; `scripts/dev.sh` generates one into `.run/session-secret`) | identity: signs sessions, encrypts stored tokens and keys |
 | `SDI_PUBLIC_URL` | `http://localhost:5173` (dev) · `http://localhost` (compose) | identity, gateway: OAuth callback origin, cookie host |
 | `SDI_DEV_LOGIN` | `1` under `make dev`, unset otherwise | identity: local session for the `GITHUB_TOKEN` account when no OAuth app is configured |
@@ -179,15 +186,17 @@ services/identity      GitHub OAuth + App, sessions, workspaces, roles, audit, d
 services/knowledge     GitHub, scans, facts, graph, patterns, retrieval, maturity, .sdi.yml
 services/intelligence  proposals, ranking, budget, negotiation, decisions, generators, documents
 services/execution     policies, permissions, approvals, DAG runner, diagnosis, adapters
+services/gitops        Go: Argo CD's gitops-engine behind gRPC (render, diff, sync, health, history)
 web/                   React app (features/<feature>/{api,components,pages,lib}), e2e/ (Playwright)
 contracts/openapi.json committed API contract (scripts/api-contract.sh)
-deploy/docker          rust.Dockerfile (ARG SERVICE, Docker CLI in execution only), web.Dockerfile, healthcheck.sh
+deploy/docker          rust.Dockerfile (ARG SERVICE, Docker CLI in execution only), go.Dockerfile, web.Dockerfile, healthcheck.sh
 deploy/nginx           edge config: SPA, /api proxy, rate limits, SSE (snippets/sse.conf), JSON logs
 docker-compose.yml     production-shaped stack (+ profile local-exec); docker-compose.dev.yml is Postgres only
 scripts/               dev.sh (everything on the host), api-contract.sh, loadcheck.sh
 docs/                  getting-started.md, architecture.md, configuration.md (.sdi.yml),
-                       adapters.md, continuous-delivery.md, e2e.md, github-app.md,
-                       self-hosting.md, performance.md
+                       adapters.md, continuous-delivery.md, gitops.md, e2e.md,
+                       github-app.md, self-hosting.md, performance.md
+examples/gitops/hello  a small Kustomize application to try the GitOps engine on
 TRUST.md · PRIVACY.md · SECURITY.md · LICENSE (Apache-2.0)
 .github/               CI (rust, web, edge, images, Playwright), nightly, Dependabot
 ```
@@ -277,8 +286,9 @@ negotiation and decisions: [`docs/configuration.md`](docs/configuration.md).
 |---|---|---|
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
 | `docker` | real local execution on the host's Docker daemon: checkout of the scanned commit into `SDI_RUN_DIR` with the option's generated files written on top, `docker build` of the application directory's Dockerfile, run detached with the configured port and poll `health_path` (a container that dies keeps its logs for the failure), run the test command inside the image or, for a compiled stack, in its toolchain image with the source mounted, tear everything down; a cancelled or finished run removes its container and workdir; stdout/stderr become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
+| `gitops` | Kubernetes through the GitOps service: a dry-run preview, a sync or rollback of an application (after approval, with a timed `cluster:write` grant), then waiting for it to be healthy ([`docs/gitops.md`](docs/gitops.md)) | `gitops.preview`, `gitops.sync`, `gitops.rollback`, `gitops.verify_health`, and the `deploy.*` steps of an `sdi_gitops` environment |
 | `github` | writes to the connected repository: branch `sdi/<first 8 chars of the proposal id>` from the default branch, the option's generated files committed through the Git Data API, a pull request, `outputs.pull_request_url` | `repo.checkout`, `repo.open_pull_request` |
-| `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
+| `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` (Kubernetes deploys go through `gitops`) | — |
 
 Every adapter passes the same gates. Two actions in the UI use the real ones:
 

@@ -35,6 +35,7 @@ permission for. What changes is that the step's side effect is real.
 | `simulated` (default) | timed dry run, fault injection, never touches anything | every action type |
 | `docker` | real local execution on the host's Docker daemon: `repo.checkout` downloads the GitHub tarball at the scan commit into `.run/<execution>/`, `container.build` runs `docker build`, `container.run` starts the image detached with the configured port and polls `health_path`, `tests.run_local` runs `test_command` inside the image, `env.destroy_temporary` stops and removes everything; stdout/stderr lines become `LOG` events | `repo.checkout`, `container.build`, `container.run`, `tests.run_local`, `env.create_temporary`, `env.destroy_temporary`, `deps.install` |
 | `github` | writes to the connected repository with the configured token: `repo.open_pull_request` creates branch `sdi/<proposal-id>` from the default branch, commits `CreateExecutionRequest.artifacts` via the Git Data API, opens the PR and records `outputs.pull_request_url`. Also runs the pull request operations below | `repo.checkout`, `repo.open_pull_request`, `repo.commit_fixes`, `repo.verify_mergeable`, `repo.merge_pull_request`, `repo.delete_branch`, `repo.enable_security_updates` |
+| `gitops` | calls the GitOps service (CONTRACT.md §24, [`gitops.md`](gitops.md)): `gitops.preview` is a dry-run sync listing what would be created, changed or pruned, `gitops.sync` / `gitops.rollback` sync an application to its cluster and wait for the operation, `gitops.verify_health` refreshes the application until it is healthy; the `deploy.*` steps of an `sdi_gitops` environment are syncs with the release image as the override | `gitops.preview`, `gitops.sync`, `gitops.rollback`, `gitops.verify_health`, `deploy.development`, `deploy.staging`, `deploy.production`, `deploy.rollback` |
 | `cloud`, `kubernetes` | reserved; `UNIMPLEMENTED` | — |
 
 `CreateExecutionRequest.adapter` picks the runtime for the whole run; each
@@ -50,6 +51,7 @@ open a PR) as long as the chosen runtime is not `simulated`.
 | `simulated` | `repository:read`, `container:build`, `environment:write` | always |
 | `local-docker` | the above plus `container:run` | always |
 | `github-token` | `repository:read`, `repository:write`, `pipeline:trigger` | only while the workspace has GitHub access: the installed GitHub App, the signed-in account, or the instance's `GITHUB_TOKEN` |
+| `gitops` | `cluster:read` | always; `cluster:write` (sync, rollback) is never held, only granted for a while |
 
 Anything else is a time-boxed grant (default 30 minutes):
 

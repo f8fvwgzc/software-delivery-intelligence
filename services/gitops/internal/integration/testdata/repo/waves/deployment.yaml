@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: middle
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: middle
+  template:
+    metadata:
+      labels:
+        app: middle
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: middle
+        image: registry.k8s.io/pause:3.10
+        imagePullPolicy: IfNotPresent

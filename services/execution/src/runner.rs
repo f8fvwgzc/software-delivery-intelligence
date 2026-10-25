@@ -12,7 +12,10 @@ use std::{
 use crate::identity::AuditSink;
 
 use chrono::Utc;
-use sdi_common::{grpc::db_status, principal::Principal};
+use sdi_common::{
+    grpc::db_status,
+    principal::{Principal, Role, SYSTEM_USER},
+};
 use sdi_proto::execution::v1::{
     EventType, ExecutionEvent, ExecutionStatus, PolicyDecision, StepStatus,
 };
@@ -337,8 +340,8 @@ impl Runtime {
                 convert::status_from_db(&row.status),
                 ExecutionStatus::Executing | ExecutionStatus::Verifying
             );
-            // A deployment run leaves nothing of its own on this host.
-            if mid_step && row.adapter != adapters::SIMULATED && row.adapter != adapters::DELIVERY {
+            // Deployment and GitOps runs leave nothing of their own on this host.
+            if mid_step && adapters::leaves_host_state(&row.adapter) {
                 let adapters = self.adapters.clone();
                 let id = row.id;
                 sdi_common::tasks::spawn("recovery-stop", async move {
@@ -1417,10 +1420,12 @@ impl Runner {
         steps: &[StepRow],
         step: &StepRow,
     ) -> Result<Flow, Status> {
-        let adapter = self
-            .rt
-            .adapters
-            .for_step(&exec.adapter, &step.action_type, &step.adapter)?;
+        let adapter = self.rt.adapters.route(
+            &exec.adapter,
+            &step.action_type,
+            &step.adapter,
+            step.params.0.get("operation").map_or("", |op| op.trim()),
+        )?;
 
         let mut batch = self.begin().await?;
         batch.transition(ExecutionStatus::Executing).await?;
@@ -1461,12 +1466,14 @@ impl Runner {
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_CHANNEL);
         let (progress_tx, mut progress_rx) = mpsc::channel::<(String, String)>(PROGRESS_CHANNEL);
         // Real adapters read and write GitHub as the workspace, with the
-        // token and API base identity mints for it (GHES included).
-        let github = if exec.adapter == adapters::SIMULATED {
+        // token and API base identity mints for it (GHES included). A
+        // GitOps run talks to the GitOps engine only.
+        let github = if exec.adapter == adapters::SIMULATED || exec.adapter == adapters::GITOPS {
             None
         } else {
             self.rt.github_access.access(self.workspace).await
         };
+        let actor = self.actor(exec, step).await;
         // Whatever this step authenticates with, and every secret it
         // resolves, is masked in its log lines, outputs and failure.
         let redactor = Redactor::default();
@@ -1495,6 +1502,7 @@ impl Runner {
             github,
             secrets,
             progress: OutputSink::new(progress_tx),
+            actor: Some(actor),
         };
         let fault_targets_step = ctx.fault.as_ref().is_some_and(|f| f.step_key == step.key);
         if let Some(note) = repository_note {
@@ -1649,6 +1657,34 @@ impl Runner {
                     status.message()
                 )),
             ),
+        }
+    }
+
+    /// Who the step acts for on a peer that checks roles itself (the GitOps
+    /// engine, CONTRACT.md §24.1): the person who approved this step, else
+    /// the one who created the run, as an approver of the workspace (both
+    /// needed that role to get the run this far); the workspace's system
+    /// principal for a run nobody started by hand (an automatic promotion).
+    async fn actor(&self, exec: &ExecutionRow, step: &StepRow) -> Principal {
+        let workspace = self.workspace.to_string();
+        let approver = match step.approval_id {
+            Some(id) => db::approvals::get(&self.rt.pool, self.workspace, id)
+                .await
+                .ok()
+                .filter(|approval| approval.status == "APPROVED")
+                .map(|approval| approval.decided_by.trim().to_owned())
+                .filter(|by| !by.is_empty()),
+            None => None,
+        };
+        let user = approver.unwrap_or_else(|| exec.created_by.trim().to_owned());
+        if user.is_empty() || user == SYSTEM_USER {
+            Principal::system(workspace)
+        } else {
+            Principal {
+                user_id: user,
+                workspace_id: workspace,
+                role: Role::Approver,
+            }
         }
     }
 
@@ -1868,11 +1904,18 @@ impl Runner {
         let empty = BTreeMap::new();
         let step = steps.iter().find(|s| s.key == record.step_key);
         // A deployment whose deploy or health step failed may go back to
-        // the environment's last good release, when it has one.
+        // the environment's last good release, when it has one (an
+        // `sdi_gitops` environment deploys with `gitops.sync` and watches
+        // with `gitops.verify_health`).
         let can_rollback = exec.adapter == adapters::DELIVERY
             && step.is_some_and(|s| {
                 adapters::is_deploy_action(&s.action_type)
-                    || s.action_type == adapters::VERIFY_HEALTH
+                    || matches!(
+                        s.action_type.as_str(),
+                        adapters::VERIFY_HEALTH
+                            | adapters::GITOPS_SYNC
+                            | adapters::GITOPS_VERIFY_HEALTH
+                    )
             })
             && delivery::runs::can_rollback(&self.rt, self.workspace, self.id).await;
         let detail: String = record
@@ -2016,8 +2059,9 @@ impl Runner {
     async fn cleanup_real(&self, adapter: &str) {
         // A deployment run keeps nothing on this host under its execution
         // id: a `docker_local` environment's container is named after the
-        // environment and has to outlive the run that started it.
-        if adapter != adapters::SIMULATED && adapter != adapters::DELIVERY {
+        // environment and has to outlive the run that started it. A GitOps
+        // run acts on a cluster through the engine only.
+        if adapters::leaves_host_state(adapter) {
             for adapter in self.rt.adapters.real() {
                 adapter.cleanup(self.id).await;
             }

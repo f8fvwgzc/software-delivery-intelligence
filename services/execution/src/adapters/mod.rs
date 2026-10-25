@@ -12,6 +12,13 @@
 //! repository, Jenkins, Azure Pipelines, a signed webhook, local Docker),
 //! the HTTP health verifier and the GitHub deployment record. Only
 //! `Promote` and `Rollback` create such runs.
+//!
+//! The `gitops` runtime (CONTRACT.md §24.7) runs the `gitops.*` steps
+//! against SDI's own GitOps engine over gRPC (`gitops_engine`); the same
+//! adapter runs those steps inside a deployment run of an `sdi_gitops`
+//! environment. (The `gitops` *tool* of a deployment run's deploy step is
+//! the older GitOps-repository deployer, `gitops.rs`; the two never share an
+//! action type.)
 
 use std::{
     collections::BTreeMap,
@@ -27,6 +34,7 @@ pub mod azure_devops;
 pub mod docker;
 pub mod github;
 pub mod gitops;
+pub mod gitops_engine;
 pub mod http_health;
 pub mod jenkins;
 pub mod net;
@@ -45,6 +53,8 @@ pub const DOCKER: &str = "docker";
 pub const GITHUB: &str = "github";
 /// The runtime of deployment runs (CONTRACT.md §22).
 pub const DELIVERY: &str = "delivery";
+/// The runtime that drives SDI's GitOps engine (CONTRACT.md §24.7).
+pub const GITOPS: &str = "gitops";
 pub const RESERVED: [&str; 2] = ["cloud", "kubernetes"];
 
 /// Action types of a deployment run's plan (CONTRACT.md §22).
@@ -64,6 +74,53 @@ pub const DELIVERY_ACTIONS: [&str; 7] = [
     VERIFY_HEALTH,
     DEPLOY_RECORD,
 ];
+
+/// Action types of the GitOps engine (CONTRACT.md §24.7).
+pub const GITOPS_PREVIEW: &str = "gitops.preview";
+pub const GITOPS_SYNC: &str = "gitops.sync";
+pub const GITOPS_ROLLBACK: &str = "gitops.rollback";
+pub const GITOPS_VERIFY_HEALTH: &str = "gitops.verify_health";
+pub const GITOPS_ACTIONS: [&str; 4] = [
+    GITOPS_PREVIEW,
+    GITOPS_SYNC,
+    GITOPS_ROLLBACK,
+    GITOPS_VERIFY_HEALTH,
+];
+
+/// `params.operation` of a deployment run's deploy step (`deploy.*`) that
+/// an `sdi_gitops` environment runs through the GitOps engine: the step
+/// keeps the stage's action type, so its tier policy (`deploy.production`
+/// is required and not editable) gates it, and the engine syncs the release
+/// image (CONTRACT.md §22, §24.7). The same idea as the github adapter's
+/// `workflow.dispatch`.
+pub const OP_GITOPS_SYNC: &str = GITOPS_SYNC;
+
+/// Changes what runs in a cluster: held by no seeded identity, so a step
+/// that needs it always pauses for a timed grant first (CONTRACT.md §24.7).
+pub const CLUSTER_WRITE: &str = "cluster:write";
+/// Reads an application's state from the GitOps engine.
+pub const CLUSTER_READ: &str = "cluster:read";
+
+/// The permissions a step of `action_type` (with `params.operation`)
+/// needs whatever its plan says: a plan that forgot `cluster:write` on a
+/// sync must not reach a cluster without the timed grant the contract asks
+/// for. Merged into the step's `required_permissions` when the plan is
+/// stored.
+pub fn implied_permissions(action_type: &str, operation: &str) -> &'static [&'static str] {
+    match action_type {
+        GITOPS_SYNC | GITOPS_ROLLBACK => &[CLUSTER_WRITE],
+        GITOPS_PREVIEW | GITOPS_VERIFY_HEALTH => &[CLUSTER_READ],
+        action if is_deploy_action(action) && operation == OP_GITOPS_SYNC => &[CLUSTER_WRITE],
+        _ => &[],
+    }
+}
+
+/// Whether the GitOps engine runs a step: one of its own action types, or
+/// the deploy step of an `sdi_gitops` environment.
+pub fn runs_on_gitops_engine(action_type: &str, operation: &str) -> bool {
+    GITOPS_ACTIONS.contains(&action_type)
+        || (is_deploy_action(action_type) && operation == OP_GITOPS_SYNC)
+}
 
 /// Tool families a delivery step names in `PlanStep.adapter`.
 pub const TOOL_REGISTRY: &str = "registry";
@@ -144,8 +201,9 @@ pub fn runtime_name(raw: &str) -> Result<&'static str, Status> {
         DOCKER => Ok(DOCKER),
         GITHUB => Ok(GITHUB),
         DELIVERY => Ok(DELIVERY),
+        GITOPS => Ok(GITOPS),
         reserved if RESERVED.contains(&reserved) => Err(Status::unimplemented(format!(
-            "adapter {reserved} is reserved and not implemented yet; use {SIMULATED}, {DOCKER} or {GITHUB}"
+            "adapter {reserved} is reserved and not implemented yet; use {SIMULATED}, {DOCKER}, {GITHUB} or {GITOPS}"
         ))),
         other => Err(Status::invalid_argument(format!(
             "unknown adapter: {other}"
@@ -157,25 +215,41 @@ pub fn runtime_name(raw: &str) -> Result<&'static str, Status> {
 /// runs everything; `docker` runs its own family and may open a pull
 /// request with what it built (§5.4 "a plan may mix families"); `github`
 /// only reads and writes the repository, which includes the pull request
-/// operations of §23 that no other real runtime runs.
+/// operations of §23 that no other real runtime runs. `gitops` only drives
+/// the GitOps engine; a deployment run may too (an `sdi_gitops`
+/// environment syncs and watches an application).
 pub fn runnable(runtime: &str, action_type: &str) -> bool {
     match runtime {
         SIMULATED => true,
         DOCKER => DOCKER_ACTIONS.contains(&action_type) || action_type == OPEN_PULL_REQUEST,
         GITHUB => GITHUB_ACTIONS.contains(&action_type),
-        DELIVERY => DELIVERY_ACTIONS.contains(&action_type),
+        DELIVERY => {
+            DELIVERY_ACTIONS.contains(&action_type) || GITOPS_ACTIONS.contains(&action_type)
+        }
+        GITOPS => GITOPS_ACTIONS.contains(&action_type),
         _ => false,
     }
 }
 
-/// Name of the seeded identity a runtime executes as.
+/// Name of the seeded identity a runtime executes as. Like `delivery`, the
+/// `gitops` runtime has an identity of its own name (CONTRACT.md §24.7):
+/// it holds `cluster:read`, and every sync or rollback needs a timed
+/// `cluster:write` grant.
 pub fn identity_for(runtime: &str) -> &'static str {
     match runtime {
         DOCKER => "local-docker",
         GITHUB => "github-token",
         DELIVERY => DELIVERY,
+        GITOPS => GITOPS,
         _ => SIMULATED,
     }
+}
+
+/// Whether a run on `runtime` may leave containers or a workdir on this
+/// host (named after the execution) that recovery stops and the end of the
+/// run removes. Deployment runs and GitOps runs act elsewhere.
+pub fn leaves_host_state(runtime: &str) -> bool {
+    matches!(runtime, DOCKER | GITHUB)
 }
 
 /// What the adapter needs to know about the step it runs.
@@ -438,6 +512,12 @@ pub struct RunContext {
     pub secrets: Secrets,
     /// Outputs reported while the step runs.
     pub progress: OutputSink,
+    /// Who the step acts for on a peer that checks roles itself (the GitOps
+    /// engine asks for an approver to sync): whoever approved the step, else
+    /// whoever created the run, as an approver of the run's workspace; the
+    /// workspace's system principal for runs nobody started by hand. The
+    /// gates in front of the step are what this principal stands for.
+    pub actor: Option<sdi_common::principal::Principal>,
 }
 
 impl RunContext {
@@ -576,6 +656,8 @@ pub struct Registry {
     docker: Arc<dyn Adapter>,
     github: Arc<dyn Adapter>,
     delivery: Option<DeliveryTools>,
+    /// The GitOps engine's client (CONTRACT.md §24.7).
+    gitops: Option<Arc<dyn Adapter>>,
 }
 
 impl Registry {
@@ -589,6 +671,7 @@ impl Registry {
             docker,
             github,
             delivery: None,
+            gitops: None,
         }
     }
 
@@ -597,17 +680,48 @@ impl Registry {
         self
     }
 
-    /// The adapter for a step of `action_type` in a run on `runtime`. A
-    /// delivery run routes by the `tool` its step names; the others by the
-    /// family the action type belongs to.
+    /// The adapter that runs the `gitops.*` steps, on the `gitops` runtime
+    /// and in deployment runs alike.
+    pub fn with_gitops(mut self, adapter: Arc<dyn Adapter>) -> Self {
+        self.gitops = Some(adapter);
+        self
+    }
+
+    fn gitops_engine(&self) -> Result<Arc<dyn Adapter>, Status> {
+        self.gitops.clone().ok_or_else(|| {
+            Status::failed_precondition(
+                "the gitops adapter is not configured on this execution service",
+            )
+        })
+    }
+
+    /// `route` for a step without `params.operation` (tests).
+    #[cfg(test)]
     pub fn for_step(
         &self,
         runtime: &str,
         action_type: &str,
         tool: &str,
     ) -> Result<Arc<dyn Adapter>, Status> {
+        self.route(runtime, action_type, tool, "")
+    }
+
+    /// The adapter for a step of `action_type` in a run on `runtime`. A
+    /// delivery run routes by the `tool` its step names, except the steps
+    /// the GitOps engine runs (its own action types, and a deploy step whose
+    /// `operation` is `gitops.sync`); the others by the family the action
+    /// type belongs to.
+    pub fn route(
+        &self,
+        runtime: &str,
+        action_type: &str,
+        tool: &str,
+        operation: &str,
+    ) -> Result<Arc<dyn Adapter>, Status> {
         match runtime_name(runtime)? {
             SIMULATED => Ok(self.simulated.clone()),
+            GITOPS => self.gitops_engine(),
+            DELIVERY if runs_on_gitops_engine(action_type, operation) => self.gitops_engine(),
             DELIVERY => {
                 let Some(tools) = &self.delivery else {
                     return Err(Status::failed_precondition(
@@ -656,6 +770,10 @@ pub(crate) fn test_registry() -> Registry {
         None,
         github::DEFAULT_API,
         azure_devops::DEFAULT_BASE,
+    ))
+    // Nothing listens there: a test that needs the engine serves a fake.
+    .with_gitops(Arc::new(
+        gitops_engine::GitopsEngineAdapter::new("http://127.0.0.1:1").expect("endpoint"),
     ))
 }
 
@@ -799,6 +917,61 @@ mod tests {
             tonic::Code::Unimplemented
         );
         assert!(!runnable("cloud", "repo.read"));
+
+        // gitops (CONTRACT.md §24.7): the engine's four steps and nothing
+        // else; a deployment run may sync and watch an application too,
+        // and routes those steps to the engine whatever tool they name,
+        // while its deploy steps keep their own deployers.
+        assert_eq!(runtime_name(" gitops ").unwrap(), GITOPS);
+        for action in GITOPS_ACTIONS {
+            assert!(runnable(GITOPS, action), "{action}");
+            assert!(runnable(DELIVERY, action), "{action}");
+            assert!(runnable(SIMULATED, action), "{action}");
+            assert!(!runnable(DOCKER, action), "{action}");
+            assert!(!runnable(GITHUB, action), "{action}");
+            assert_eq!(
+                registry.for_step(GITOPS, action, "gitops").unwrap().name(),
+                GITOPS,
+                "{action}"
+            );
+            assert_eq!(
+                registry
+                    .for_step(DELIVERY, action, TOOL_GITOPS)
+                    .unwrap()
+                    .name(),
+                GITOPS,
+                "{action}"
+            );
+            assert_eq!(
+                registry
+                    .for_step(SIMULATED, action, "gitops")
+                    .unwrap()
+                    .name(),
+                SIMULATED
+            );
+        }
+        for action in ["deploy.staging", "repo.checkout", "container.build"] {
+            assert!(!runnable(GITOPS, action), "{action}");
+        }
+        // The GitOps-repository deployer still runs a gitops_flux deploy.
+        assert!(
+            registry
+                .for_step(DELIVERY, DEPLOY_STAGING, TOOL_GITOPS)
+                .is_ok()
+        );
+        let unconfigured = Registry::new(
+            Arc::new(SimulatedAdapter::new(1)),
+            Arc::new(SimulatedAdapter::new(1)),
+            Arc::new(SimulatedAdapter::new(1)),
+        );
+        assert_eq!(
+            unconfigured
+                .for_step(GITOPS, GITOPS_SYNC, "gitops")
+                .err()
+                .expect("no engine")
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
     }
 
     #[test]
@@ -806,6 +979,57 @@ mod tests {
         assert_eq!(identity_for(SIMULATED), "simulated");
         assert_eq!(identity_for(DOCKER), "local-docker");
         assert_eq!(identity_for(GITHUB), "github-token");
+        assert_eq!(identity_for(DELIVERY), "delivery");
+        assert_eq!(identity_for(GITOPS), "gitops");
+        assert!(leaves_host_state(DOCKER) && leaves_host_state(GITHUB));
+        for runtime in [SIMULATED, DELIVERY, GITOPS] {
+            assert!(!leaves_host_state(runtime), "{runtime}");
+        }
+    }
+
+    /// CONTRACT.md §24.7: a sync or rollback needs `cluster:write`, a
+    /// preview or a health check `cluster:read`, whatever the plan says.
+    #[test]
+    fn gitops_steps_imply_their_cluster_permissions() {
+        assert_eq!(implied_permissions(GITOPS_SYNC, ""), [CLUSTER_WRITE]);
+        assert_eq!(implied_permissions(GITOPS_ROLLBACK, ""), [CLUSTER_WRITE]);
+        assert_eq!(implied_permissions(GITOPS_PREVIEW, ""), [CLUSTER_READ]);
+        assert_eq!(
+            implied_permissions(GITOPS_VERIFY_HEALTH, ""),
+            [CLUSTER_READ]
+        );
+        assert!(implied_permissions(DEPLOY_STAGING, "").is_empty());
+        // The deploy step of an sdi_gitops environment syncs a cluster too.
+        for action in [DEPLOY_PRODUCTION, DEPLOY_ROLLBACK] {
+            assert_eq!(implied_permissions(action, OP_GITOPS_SYNC), [CLUSTER_WRITE]);
+        }
+        assert!(implied_permissions(VERIFY_IMAGE, OP_GITOPS_SYNC).is_empty());
+    }
+
+    /// A deploy step names its stage's action type; `params.operation`
+    /// says the GitOps engine runs it, while a gitops_flux deploy step on
+    /// the same tool name stays the GitOps-repository deployer's.
+    #[test]
+    fn a_deploy_step_with_the_gitops_sync_operation_runs_on_the_engine() {
+        let registry = test_registry();
+        let engine = registry.for_step(GITOPS, GITOPS_SYNC, "gitops").unwrap();
+        for action in [
+            DEPLOY_DEVELOPMENT,
+            DEPLOY_STAGING,
+            DEPLOY_PRODUCTION,
+            DEPLOY_ROLLBACK,
+        ] {
+            let routed = registry
+                .route(DELIVERY, action, TOOL_GITOPS, OP_GITOPS_SYNC)
+                .unwrap();
+            assert!(Arc::ptr_eq(&routed, &engine), "{action}");
+            let repository = registry.route(DELIVERY, action, TOOL_GITOPS, "").unwrap();
+            assert!(!Arc::ptr_eq(&repository, &engine), "{action}");
+            assert!(runs_on_gitops_engine(action, OP_GITOPS_SYNC));
+            assert!(!runs_on_gitops_engine(action, ""));
+        }
+        // Only deploy steps take the operation.
+        assert!(!runs_on_gitops_engine(VERIFY_IMAGE, OP_GITOPS_SYNC));
     }
 
     #[test]

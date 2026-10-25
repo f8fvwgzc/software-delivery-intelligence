@@ -88,6 +88,7 @@ const LIST_PAGES = [
   { path: '/knowledge/patterns', title: 'Patterns' },
   { path: '/workspace/audit', title: 'Audit' },
   { path: '/workspace/members', title: 'Members' },
+  { path: '/workspace/clusters', title: 'Clusters' },
 ] as const
 
 for (const route of LIST_PAGES) {
@@ -107,6 +108,7 @@ const PROJECT_PAGES = [
   { path: '/pull-requests', title: 'Pull requests', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Pull requests', exact: true }) },
   { path: '/security', title: 'Security', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Security', exact: true }) },
   { path: '/diagrams', title: 'Diagrams', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Diagrams', exact: true }) },
+  { path: '/applications', title: 'Applications', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Applications', exact: true }) },
 ] as const
 
 for (const route of PROJECT_PAGES) {

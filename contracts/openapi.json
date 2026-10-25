@@ -150,6 +150,1295 @@
         }
       }
     },
+    "/api/v1/applications": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Applications, optionally of one project: summaries with their sync and\nhealth status, revision and first condition, without resources.",
+        "operationId": "list_applications",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "description": "Only this project's; omitted lists every project's.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Application"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Declares an application (admin): a path in a repository, a cluster and\na namespace. Turning `syncPolicy.automated` on lets the service sync it\nwithout an execution.",
+        "operationId": "create_application",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "One application with the resources it manages, each with its sync and\nhealth status, and its conditions.",
+        "operationId": "get_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Replaces an application's settings (admin).",
+        "operationId": "update_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Deletes an application (admin). With `cascade=true` the resources it\nmanages are deleted from the cluster too; without, they stay unmanaged.",
+        "operationId": "delete_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cascade",
+            "in": "query",
+            "description": "Also delete the resources it manages from the cluster. Default false: they stay, unmanaged.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedApplication"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/diff": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Per resource, how the cluster differs from the desired state: a unified\ndiff and both sides as normalised YAML, `Secret` values masked.",
+        "operationId": "diff_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationDiff"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/history": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "The application's syncs, newest first (dry runs are not kept).",
+        "operationId": "list_history",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Entries, newest first; omitted answers all that are kept (the last 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HistoryEntry"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/manifests": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "The desired state as rendered, one YAML document per resource, with\nevery `Secret` value masked.",
+        "operationId": "get_manifests",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "description": "Branch, tag or SHA to render; omitted renders the source's revision.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Manifests"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/refresh": {
+      "post": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Renders and compares now instead of waiting for the next reconcile\n(member). `hard` renders again even when the commit did not change. The\nbody may be left out.",
+        "operationId": "refresh_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/rollback": {
+      "post": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Asks for the application to be rolled back to a history entry\n(approver): creates and starts an execution that previews, syncs that\nentry's source again (waiting for its approval and a timed\n`cluster:write` grant) and waits for the application to be healthy. 404\nwhen the application or the entry does not exist.",
+        "operationId": "rollback_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/sync": {
+      "post": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Asks for the application to be synced (approver): creates and starts an\nexecution that previews the change, syncs (waiting for its approval and\na timed `cluster:write` grant) and waits for the application to be\nhealthy. With `dryRun` the execution only previews. The body may be left\nout. 404 when the application does not exist.",
+        "operationId": "sync_application",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Application id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/approvals": {
       "get": {
         "tags": [
@@ -741,6 +2030,441 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clusters": {
+      "get": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "The workspace's clusters with the status of their last check.",
+        "operationId": "list_clusters",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Cluster"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Adds a cluster (admin). The kubeconfig is a workspace secret named by\n`kubeconfigSecret`. The cluster is reached once: a bad kubeconfig or an\nunreachable API server is saved anyway and said in `status` / `message`.\nA loopback or private API server address is refused unless the\ndeployment allows private targets.",
+        "operationId": "create_cluster",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertClusterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cluster"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clusters/{id}": {
+      "put": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Replaces a cluster's settings (admin) and reaches it again.",
+        "operationId": "update_cluster",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Cluster id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertClusterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cluster"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed path, query or body, or a rejected argument.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or an expired or revoked one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The workspace is not accessible, or the role is too low for this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource exists already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource is not in a state that allows this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A backing service is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "A backing service did not answer in time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "gitops"
+        ],
+        "summary": "Deletes a cluster (admin). 412 while an application deploys to it.",
+        "operationId": "delete_cluster",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Cluster id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
           },
           "400": {
             "description": "Malformed path, query or body, or a rejected argument.",
@@ -2314,7 +4038,7 @@
         "tags": [
           "system"
         ],
-        "summary": "Every change in the caller's workspace as it happens, merged from the\nthree services (CONTRACT.md §8, \"Live events\"). Each `data:` line is a\n`PlatformEvent`. The stream never ends: a service that goes away is\nreconnected with backoff while the others keep flowing, so the web app\nopens it once per tab and invalidates its caches by `entity`. Events\nof other workspaces (or without one) are dropped here (§18).",
+        "summary": "Every change in the caller's workspace as it happens, merged from the\nknowledge, intelligence, execution and gitops services (CONTRACT.md §8,\n\"Live events\", and §24.8). Each `data:` line is a `PlatformEvent`. The\nstream never ends: a service that goes away is\nreconnected with backoff while the others keep flowing, so the web app\nopens it once per tab and invalidates its caches by `entity`. Events\nof other workspaces (or without one) are dropped here (§18).",
         "operationId": "watch_platform_events",
         "responses": {
           "200": {
@@ -12929,7 +14653,7 @@
         "tags": [
           "workspaces"
         ],
-        "summary": "Deletes everything the platform stores for the workspace (owner):\nevery knowledge, intelligence and execution row, the workspace's\nsecrets, then the GitHub App installation record. The deletion itself\nis audited.",
+        "summary": "Deletes everything the platform stores for the workspace (owner):\nevery knowledge, intelligence, execution and gitops row, the workspace's\nsecrets, then the GitHub App installation record. The deletion itself\nis audited.",
         "operationId": "delete_workspace",
         "parameters": [
           {
@@ -14546,6 +16270,393 @@
           }
         }
       },
+      "Application": {
+        "type": "object",
+        "description": "A path in a repository deployed to a namespace of a cluster.",
+        "required": [
+          "id",
+          "projectId",
+          "name",
+          "clusterId",
+          "clusterName",
+          "source",
+          "syncPolicy",
+          "syncStatus",
+          "healthStatus",
+          "resources",
+          "conditions",
+          "resourceCount",
+          "outOfSyncCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "clusterId": {
+            "type": "string",
+            "description": "Cluster it deploys to."
+          },
+          "clusterName": {
+            "type": "string",
+            "description": "That cluster's name."
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Why the last comparison could not complete, as sentences (render failed, cluster unreachable, …); empty when it did. Lists carry the first only."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "healthMessage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it has that health; null when nothing was said."
+          },
+          "healthStatus": {
+            "$ref": "#/components/schemas/HealthStatus",
+            "description": "The worst health of its resources."
+          },
+          "id": {
+            "type": "string",
+            "description": "Application id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, unique within the project."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Destination namespace; null uses the cluster's default namespace."
+          },
+          "operation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationOperation",
+                "description": "The operation in flight or the last one that ran; null before the first."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outOfSyncCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Of those, the ones that are not synced.",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to (its executions run there)."
+          },
+          "reconciledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was last compared with the cluster; null before the first comparison."
+          },
+          "resourceCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Resources it manages.",
+            "minimum": 0
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceStatus"
+            },
+            "description": "What it manages, live or desired. Only `GET /applications/{id}` and the refresh answer carry them; lists leave this empty."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the last comparison rendered; null before the first."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ApplicationSource",
+            "description": "Where the desired state comes from."
+          },
+          "syncPolicy": {
+            "$ref": "#/components/schemas/SyncPolicy",
+            "description": "When it syncs without an execution."
+          },
+          "syncStatus": {
+            "$ref": "#/components/schemas/SyncStatus",
+            "description": "`synced`, `out_of_sync` or `unknown`."
+          },
+          "syncedRevision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the last successful sync applied; null before the first."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "ApplicationDiff": {
+        "type": "object",
+        "description": "Per-resource differences between desired and live.",
+        "required": [
+          "resources"
+        ],
+        "properties": {
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceDiff"
+            },
+            "description": "Every managed resource, matching or not."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the desired state was rendered from; null when the service did not say."
+          }
+        }
+      },
+      "ApplicationOperation": {
+        "type": "object",
+        "description": "The operation in flight, or the last one that ran.",
+        "required": [
+          "kind",
+          "phase",
+          "initiatedBy",
+          "startedAt"
+        ],
+        "properties": {
+          "executionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The execution that runs it; null for an automated sync."
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it ended; null while it runs."
+          },
+          "initiatedBy": {
+            "type": "string",
+            "description": "The user id that asked, `system` for an automated sync."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OperationKind",
+            "description": "`sync` or `rollback`."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What happened, as a sentence; null when there is nothing to say."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/OperationPhase",
+            "description": "Where it is, or how it ended."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit it applies; null before it was resolved."
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it started."
+          }
+        }
+      },
+      "ApplicationSource": {
+        "type": "object",
+        "description": "Where the desired state comes from (Argo CD's `spec.source`).",
+        "required": [
+          "recurse",
+          "helmValueFiles",
+          "helmParameters",
+          "kustomizeImages"
+        ],
+        "properties": {
+          "helmParameters": {
+            "type": "object",
+            "description": "Helm: `--set` parameters, applied after the values files.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "helmReleaseName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Helm: release name; null uses the application name."
+          },
+          "helmValueFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Helm: values files relative to `path`, applied in order."
+          },
+          "kustomizeImages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Kustomize: image overrides (`name=newName:tag`, `name:tag` or `name@sha256:…`)."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Directory inside the repository; null is its root."
+          },
+          "recurse": {
+            "type": "boolean",
+            "description": "Directory sources: include subdirectories."
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/name` on the workspace's GitHub; null is the project's repository."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch, tag or commit SHA; null is the repository's default branch."
+          },
+          "type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceType",
+                "description": "How it is rendered; null detects it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ApplicationSourceInput": {
+        "type": "object",
+        "description": "The source in an application's create or update body; every field may\nbe left out.",
+        "properties": {
+          "helmParameters": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Helm: `--set` parameters, applied after the values files.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "helmReleaseName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Helm: release name; null uses the application name."
+          },
+          "helmValueFiles": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Helm: values files relative to `path`, applied in order."
+          },
+          "kustomizeImages": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Kustomize: image overrides (`name=newName:tag`, `name:tag` or `name@sha256:…`)."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Directory inside the repository; null is its root."
+          },
+          "recurse": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Directory sources: include subdirectories. Default false."
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/name` on the workspace's GitHub; null is the project's repository."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch, tag or commit SHA; null is the repository's default branch."
+          },
+          "type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceType",
+                "description": "`directory`, `kustomize` or `helm`; null detects it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "Approval": {
         "type": "object",
         "description": "A human decision requested before a step runs.",
@@ -14829,6 +16940,113 @@
             "description": "The patch was larger than the limit (300 KB across the pull request) and was not read."
           }
         }
+      },
+      "Cluster": {
+        "type": "object",
+        "description": "A Kubernetes cluster applications deploy to. Its kubeconfig lives in a\nworkspace secret and is never part of this shape.",
+        "required": [
+          "id",
+          "name",
+          "kubeconfigSecret",
+          "namespaces",
+          "status",
+          "applicationCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "applicationCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Applications that deploy to it.",
+            "minimum": 0
+          },
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was last reached; null before the first check."
+          },
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Context inside the kubeconfig; null uses its current context."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "defaultNamespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Namespace for resources that name none; null when not set."
+          },
+          "id": {
+            "type": "string",
+            "description": "Cluster id."
+          },
+          "kubeconfigSecret": {
+            "type": "string",
+            "description": "Name of the workspace secret that holds the kubeconfig (never its value)."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it is unreachable, as a sentence; null when it is not."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name shown in the workspace."
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "When not empty, SDI only watches and writes these namespaces; empty watches the whole cluster."
+          },
+          "server": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "API server URL read from the kubeconfig, for display; null until it was read."
+          },
+          "serverVersion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kubernetes version the API server reported; null until it answered."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ClusterStatus",
+            "description": "Whether the cluster answered the last check."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "ClusterStatus": {
+        "type": "string",
+        "description": "Whether the cluster answered the last time SDI reached it.",
+        "enum": [
+          "connected",
+          "unreachable",
+          "unknown"
+        ]
       },
       "ConfigureDependabotRequest": {
         "type": "object",
@@ -15418,6 +17636,21 @@
           "active",
           "superseded"
         ]
+      },
+      "DeletedApplication": {
+        "type": "object",
+        "description": "Response of `DELETE /applications/{id}`.",
+        "required": [
+          "deletedResources"
+        ],
+        "properties": {
+          "deletedResources": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Resources deleted from the cluster; 0 unless `cascade` was asked.",
+            "minimum": 0
+          }
+        }
       },
       "DeliveryArtifacts": {
         "type": "object",
@@ -17413,6 +19646,87 @@
           }
         }
       },
+      "HealthStatus": {
+        "type": "string",
+        "description": "Health from Argo CD's checks; an application's is the worst of its resources'.",
+        "enum": [
+          "healthy",
+          "progressing",
+          "degraded",
+          "suspended",
+          "missing",
+          "unknown"
+        ]
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One sync that was not a dry run.",
+        "required": [
+          "id",
+          "applicationId",
+          "revision",
+          "source",
+          "phase",
+          "initiatedBy",
+          "automated",
+          "startedAt",
+          "finishedAt"
+        ],
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "description": "Application it belongs to."
+          },
+          "automated": {
+            "type": "boolean",
+            "description": "True when the sync policy did it, not a person."
+          },
+          "executionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The execution that ran it; null for an automated sync."
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it ended."
+          },
+          "id": {
+            "type": "string",
+            "description": "History entry id (what a rollback names)."
+          },
+          "initiatedBy": {
+            "type": "string",
+            "description": "The user id that asked, `system` for an automated sync."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What happened, as a sentence; null when there is nothing to say."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/OperationPhase",
+            "description": "`succeeded`, `failed` or `error`."
+          },
+          "revision": {
+            "type": "string",
+            "description": "The commit that was synced."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ApplicationSource",
+            "description": "The source as it was synced; a rollback syncs it again."
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it started."
+          }
+        }
+      },
       "Identity": {
         "type": "object",
         "description": "The scoped identity actions run as. Never an administrator.",
@@ -18028,6 +20342,29 @@
           }
         }
       },
+      "Manifests": {
+        "type": "object",
+        "description": "The desired state as rendered, `Secret` values masked.",
+        "required": [
+          "manifests"
+        ],
+        "properties": {
+          "manifests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One YAML document per resource, sorted by sync wave then kind order."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit that was rendered; null when the service did not say."
+          }
+        }
+      },
       "MaturityAxis": {
         "type": "object",
         "description": "One of the eight delivery maturity axes (CONTRACT.md §13).",
@@ -18627,6 +20964,40 @@
               "null"
             ],
             "description": "Option whose artifacts to commit. Empty uses the recommended option."
+          }
+        }
+      },
+      "OperationKind": {
+        "type": "string",
+        "description": "What an operation does.",
+        "enum": [
+          "sync",
+          "rollback",
+          "unknown"
+        ]
+      },
+      "OperationPhase": {
+        "type": "string",
+        "description": "Where an operation is, or how it ended. History entries are\n`succeeded`, `failed` or `error`.",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "error",
+          "terminating",
+          "unknown"
+        ]
+      },
+      "OperationStarted": {
+        "type": "object",
+        "description": "Response of `POST /applications/{id}/sync` and `/rollback`.",
+        "required": [
+          "executionId"
+        ],
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "description": "The started execution that previews, applies and verifies the change; its approval (the `gitops.sync` or `gitops.rollback` policy and a timed `cluster:write` grant) and its outcome are there."
           }
         }
       },
@@ -19292,7 +21663,7 @@
           },
           "entity": {
             "type": "string",
-            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,\nfor continuous delivery `release`, `deployment` or `environment`, and for code review\nand the pull request autopilot `review` (also when a fix or merge execution is\nattached to it) or `finding` (also when a fix was drafted for it)."
+            "description": "`project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,\nfor continuous delivery `release`, `deployment` or `environment`, and for code review\nand the pull request autopilot `review` (also when a fix or merge execution is\nattached to it) or `finding` (also when a fix was drafted for it), and for the GitOps\nengine `application` (its sync or health status changed)."
           },
           "entityId": {
             "type": "string",
@@ -20201,6 +22572,19 @@
           }
         }
       },
+      "RefreshApplicationRequest": {
+        "type": "object",
+        "description": "Body of `POST /applications/{id}/refresh` (member). It may be left out.",
+        "properties": {
+          "hard": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Render again instead of using the cached manifests of the same commit (Argo CD's hard refresh). Default false."
+          }
+        }
+      },
       "Registry": {
         "type": "object",
         "description": "Where images live. One per workspace is the default; GHCR needs no secret.",
@@ -20563,6 +22947,131 @@
           }
         }
       },
+      "ResourceDiff": {
+        "type": "object",
+        "description": "How one resource differs between the cluster and the desired state.",
+        "required": [
+          "group",
+          "kind",
+          "name",
+          "syncStatus"
+        ],
+        "properties": {
+          "diff": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unified diff from live to desired; null when they match."
+          },
+          "group": {
+            "type": "string",
+            "description": "API group; `\"\"` is the core group."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Kind."
+          },
+          "live": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The live object, normalised YAML with `Secret` values masked; null when it is not in the cluster."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Namespace; null for cluster-scoped resources."
+          },
+          "syncStatus": {
+            "$ref": "#/components/schemas/SyncStatus",
+            "description": "`synced`, `out_of_sync`, `missing` or `extraneous`."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The desired object, normalised YAML with `Secret` values masked; null when it is no longer desired."
+          }
+        }
+      },
+      "ResourceStatus": {
+        "type": "object",
+        "description": "One resource the application manages, live or desired.",
+        "required": [
+          "group",
+          "version",
+          "kind",
+          "name",
+          "syncStatus",
+          "hook",
+          "syncWave"
+        ],
+        "properties": {
+          "group": {
+            "type": "string",
+            "description": "API group; `\"\"` is the core group, as Kubernetes writes it."
+          },
+          "healthMessage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it has that health, as the check said it; null when it said nothing."
+          },
+          "healthStatus": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HealthStatus",
+                "description": "Health; null for kinds without a health check."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook": {
+            "type": "boolean",
+            "description": "A sync hook (`argocd.argoproj.io/hook`), not part of the steady state."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Kind, e.g. `Deployment`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Namespace; null for cluster-scoped resources."
+          },
+          "syncStatus": {
+            "$ref": "#/components/schemas/SyncStatus",
+            "description": "`synced`, `out_of_sync`, `missing` or `extraneous`."
+          },
+          "syncWave": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`argocd.argoproj.io/sync-wave`."
+          },
+          "version": {
+            "type": "string",
+            "description": "API version."
+          }
+        }
+      },
       "Review": {
         "type": "object",
         "description": "A review of one pull request at one head commit.",
@@ -20839,6 +23348,26 @@
           "admin",
           "owner"
         ]
+      },
+      "RollbackApplicationRequest": {
+        "type": "object",
+        "description": "Body of `POST /applications/{id}/rollback` (approver).",
+        "required": [
+          "historyId"
+        ],
+        "properties": {
+          "historyId": {
+            "type": "string",
+            "description": "The history entry whose source is synced again (`GET /applications/{id}/history`)."
+          },
+          "prune": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Also delete resources the earlier state did not have. Default false."
+          }
+        }
       },
       "RollbackRequest": {
         "type": "object",
@@ -21488,6 +24017,15 @@
           }
         }
       },
+      "SourceType": {
+        "type": "string",
+        "description": "How the source is rendered. Null (not said) detects it:\n`kustomization.yaml` means kustomize, `Chart.yaml` helm, else a directory.\nA request body naming any other type is a 400 here.",
+        "enum": [
+          "directory",
+          "kustomize",
+          "helm"
+        ]
+      },
       "StageStatus": {
         "type": "string",
         "description": "Lifecycle of one scan stage.",
@@ -21678,6 +24216,122 @@
             "description": "Decision that replaces it, if any."
           }
         }
+      },
+      "SyncApplicationRequest": {
+        "type": "object",
+        "description": "Body of `POST /applications/{id}/sync` (approver). It may be left out.",
+        "properties": {
+          "dryRun": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Only preview what would change: the execution has the preview step alone and applies nothing. Default false."
+          },
+          "prune": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Also delete resources that left the desired state. Default false."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch, tag or SHA to sync; omitted syncs the source's revision."
+          }
+        }
+      },
+      "SyncPolicy": {
+        "type": "object",
+        "description": "When the application syncs without an execution (Argo CD's `syncPolicy`).",
+        "required": [
+          "automated",
+          "prune",
+          "selfHeal",
+          "createNamespace",
+          "retryLimit"
+        ],
+        "properties": {
+          "automated": {
+            "type": "boolean",
+            "description": "Sync on its own when out of sync, as the system user: the only way anything reaches the cluster without an approval."
+          },
+          "createNamespace": {
+            "type": "boolean",
+            "description": "Create the destination namespace when it is missing."
+          },
+          "prune": {
+            "type": "boolean",
+            "description": "Automated syncs also delete resources that left the desired state."
+          },
+          "retryLimit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Attempts of a failed automated sync before it waits for a new revision; 0 means 3.",
+            "minimum": 0
+          },
+          "selfHeal": {
+            "type": "boolean",
+            "description": "Automated syncs also undo changes made to the cluster by hand, not only new commits."
+          }
+        }
+      },
+      "SyncPolicyInput": {
+        "type": "object",
+        "description": "The sync policy in an application's create or update body; every field\nmay be left out (false, and 3 retries).",
+        "properties": {
+          "automated": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Sync on its own when out of sync (an admin's explicit choice)."
+          },
+          "createNamespace": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Create the destination namespace when it is missing."
+          },
+          "prune": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Automated syncs also delete resources that left the desired state."
+          },
+          "retryLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Attempts of a failed automated sync before it waits for a new revision; 0 or null means 3.",
+            "minimum": 0
+          },
+          "selfHeal": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Automated syncs also undo changes made to the cluster by hand."
+          }
+        }
+      },
+      "SyncStatus": {
+        "type": "string",
+        "description": "How the live state compares with the desired state. An application is\n`synced`, `out_of_sync` or `unknown`; a resource is also `missing`\n(desired, not in the cluster) or `extraneous` (in the cluster, no\nlonger desired: a sync with prune deletes it).",
+        "enum": [
+          "synced",
+          "out_of_sync",
+          "missing",
+          "extraneous",
+          "unknown"
+        ]
       },
       "SystemStatus": {
         "type": "object",
@@ -21956,6 +24610,100 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "UpsertApplicationRequest": {
+        "type": "object",
+        "description": "Body of `POST /applications` and `PUT /applications/{id}` (admin). An\nupdate replaces every field.",
+        "required": [
+          "projectId",
+          "name",
+          "clusterId"
+        ],
+        "properties": {
+          "clusterId": {
+            "type": "string",
+            "description": "Cluster it deploys to."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, unique within the project."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Destination namespace; null uses the cluster's default namespace."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project it belongs to."
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationSourceInput",
+                "description": "Where the desired state comes from; null is the root of the project's repository at its default branch, detected."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "syncPolicy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SyncPolicyInput",
+                "description": "When it syncs without an execution; null is never."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "UpsertClusterRequest": {
+        "type": "object",
+        "description": "Body of `POST /clusters` and `PUT /clusters/{id}` (admin). Store the\nkubeconfig as a workspace secret first and name it here; the cluster is\nreached once on save and the answer says whether it connected.",
+        "required": [
+          "name",
+          "kubeconfigSecret"
+        ],
+        "properties": {
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Context inside the kubeconfig; null uses its current context."
+          },
+          "defaultNamespace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Namespace for resources that name none."
+          },
+          "kubeconfigSecret": {
+            "type": "string",
+            "description": "Name of the workspace secret that holds the kubeconfig (YAML)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name shown in the workspace."
+          },
+          "namespaces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Only watch and write these namespaces; null or empty watches the whole cluster."
           }
         }
       },
@@ -22462,6 +25210,10 @@
     {
       "name": "autopilot",
       "description": "Pull request autopilot: drafted fixes, fix commits, merge readiness and merges, vulnerabilities and Dependabot; everything that changes the repository is an execution (§23)"
+    },
+    {
+      "name": "gitops",
+      "description": "GitOps engine: clusters, applications, rendered manifests, diff and sync history; syncs and rollbacks are executions (§24)"
     },
     {
       "name": "executions",

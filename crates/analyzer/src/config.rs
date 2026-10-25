@@ -545,8 +545,20 @@ fn deployer_config_keys(kind: &str) -> &'static [&'static str] {
         "azure_devops" => &["organization", "project", "pipeline_id", "pat_secret"],
         "webhook" => &["url", "secret"],
         "docker_local" => &["port", "env"],
+        "sdi_gitops" => &["application"],
         _ => &[],
     }
+}
+
+/// `8-4-4-4-12` hexadecimal, the shape of every id SDI hands out. Mirrors
+/// the execution service's check of `sdi_gitops`'s `application`.
+fn is_uuid(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(part, len)| part.len() == len && part.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Settings every deployer kind accepts on top of its own.
@@ -559,6 +571,7 @@ fn deployer_required_keys(kind: &str) -> &'static [&'static str] {
         "jenkins" => &["url", "job", "user_secret", "token_secret"],
         "azure_devops" => &["organization", "project", "pipeline_id", "pat_secret"],
         "webhook" => &["url", "secret"],
+        "sdi_gitops" => &["application"],
         _ => &[],
     }
 }
@@ -887,6 +900,9 @@ fn parse_deployer_config(
             }
             "image_automation" if !matches!(text.as_str(), "true" | "false") => {
                 Some("true or false".to_string())
+            }
+            "application" if !is_uuid(&text) => {
+                Some("the id of an application of SDI's GitOps engine (a UUID)".to_string())
             }
             "repo" if !is_repo_name(&text) => Some("`owner/name`".to_string()),
             "branch" if !is_git_ref(&text) => Some("a branch name".to_string()),
@@ -1924,6 +1940,32 @@ delivery:
         assert_eq!(
             environments_label(&["qa".into(), "prod".into()], &env_options),
             "qa, prod"
+        );
+    }
+
+    /// SDI's GitOps engine as a deploy target (CONTRACT.md §24.7): it needs
+    /// the application, and the application is an id.
+    #[test]
+    fn an_sdi_gitops_environment_needs_an_application_id() {
+        let ok = parse_config(
+            "version: 1\ndelivery:\n  environments:\n    - name: staging\n      kind: sdi_gitops\n      config: { application: 01a133e1-8343-7181-91e4-d3a4c1b4ed3f }\n",
+        );
+        assert!(ok.errors.is_empty(), "{:?}", ok.errors);
+        let missing = parse_config(
+            "version: 1\ndelivery:\n  environments:\n    - name: staging\n      kind: sdi_gitops\n",
+        );
+        assert!(
+            missing.errors.iter().any(|e| e.contains("application")),
+            "{:?}",
+            missing.errors
+        );
+        let bad = parse_config(
+            "version: 1\ndelivery:\n  environments:\n    - name: staging\n      kind: sdi_gitops\n      config: { application: web }\n",
+        );
+        assert!(
+            bad.errors.iter().any(|e| e.contains("UUID")),
+            "{:?}",
+            bad.errors
         );
     }
 }

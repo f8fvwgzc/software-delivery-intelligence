@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package sdi.identity.v1;
 
+option go_package = "github.com/f8fvwgzc/software-delivery-intelligence/services/gitops/gen/sdi/identity/v1;identityv1";
+
 import "google/protobuf/timestamp.proto";
 
 // Who is calling, which workspace they are in, and what they may do.

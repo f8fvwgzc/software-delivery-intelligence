@@ -26,6 +26,7 @@ resources:
   - knowledge.yaml
   - intelligence.yaml
   - execution.yaml
+  - gitops.yaml
   - gateway.yaml
   - web.yaml
   - ingress.yaml
@@ -35,7 +36,7 @@ configMapGenerator:
     literals:
       - LOG_FORMAT=json
       - RUST_LOG=info,sqlx=warn
-      # Five services × DB_MAX_CONNECTIONS must fit Postgres max_connections.
+      # Six services × DB_MAX_CONNECTIONS must fit Postgres max_connections.
       - DB_MAX_CONNECTIONS=20
       - DB_STATEMENT_TIMEOUT_MS=30000
       - SHUTDOWN_GRACE_SECS=20
@@ -48,6 +49,11 @@ configMapGenerator:
       - INTELLIGENCE_GRPC_URL=http://intelligence:50052
       - EXECUTION_GRPC_URL=http://execution:50053
       - IDENTITY_GRPC_URL=http://identity:50054
+      - GITOPS_GRPC_URL=http://gitops:50055
+      # GitOps (CONTRACT.md §24): seconds between two reconciles of an
+      # application. A cluster whose API server is on a private address
+      # (in-cluster, VPN) also needs SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1.
+      - GITOPS_RECONCILE_SECONDS=180
       - GATEWAY_AUTH_CACHE_MAX=10000
       - SSE_MAX_PER_WORKSPACE=50
       - WEBHOOK_QUEUE_MAX=256
@@ -77,6 +83,8 @@ images:
   - name: sdi/intelligence
     newTag: local
   - name: sdi/execution
+    newTag: local
+  - name: sdi/gitops
     newTag: local
   - name: sdi/gateway
     newTag: local

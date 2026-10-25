@@ -1,0 +1,401 @@
+syntax = "proto3";
+
+package sdi.gitops.v1;
+
+option go_package = "github.com/f8fvwgzc/software-delivery-intelligence/services/gitops/gen/sdi/gitops/v1;gitopsv1";
+
+import "google/protobuf/timestamp.proto";
+import "sdi/common/v1/common.proto";
+
+// The GitOps engine (CONTRACT.md §24): Argo CD's core inside SDI. It embeds
+// Argo CD's own gitops-engine library (cluster cache, diff, sync waves and
+// hooks, prune, health) and adds what Argo CD's repo-server and application
+// controller do around it: render the desired state from the project's
+// repository, compare it with the cluster, sync, heal, keep history.
+//
+// The workspace comes from the caller's principal (gRPC metadata), as in
+// every service. Reads are VIEWER; refresh is MEMBER; clusters and
+// applications are ADMIN to change; Sync and Rollback are called by the
+// execution service's `gitops` adapter (an execution behind approvals), or
+// by this service itself for an application whose sync policy is automated.
+service GitopsService {
+  // --- Clusters ---------------------------------------------------------------
+  rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  // Creates or updates (by id) a cluster. Reaches it once and answers with
+  // its status, so a bad kubeconfig is reported when it is saved.
+  rpc UpsertCluster(UpsertClusterRequest) returns (Cluster);
+  // Refused while an application targets the cluster.
+  rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
+
+  // --- Applications -----------------------------------------------------------
+  // Summaries: no resources, no conditions beyond the first.
+  rpc ListApplications(ListApplicationsRequest) returns (ListApplicationsResponse);
+  // The application with its resources (the tree of what it manages).
+  rpc GetApplication(GetApplicationRequest) returns (Application);
+  rpc UpsertApplication(UpsertApplicationRequest) returns (Application);
+  // `cascade` deletes the managed resources from the cluster too.
+  rpc DeleteApplication(DeleteApplicationRequest) returns (DeleteApplicationResponse);
+  // Renders and compares now instead of waiting for the next reconcile.
+  // `hard` drops the rendered-manifest cache first (Argo CD's hard refresh).
+  rpc RefreshApplication(RefreshApplicationRequest) returns (Application);
+  // The desired state as rendered (Secrets masked).
+  rpc GetManifests(GetManifestsRequest) returns (Manifests);
+  // Per-resource differences between desired and live (Secrets masked).
+  rpc DiffApplication(DiffApplicationRequest) returns (ApplicationDiff);
+
+  // --- Operations ----------------------------------------------------------------
+  // Applies the desired state. Blocks until the operation ends (or its
+  // timeout), so the caller (an execution step) knows the outcome.
+  rpc SyncApplication(SyncApplicationRequest) returns (SyncResult);
+  // Syncs the source as it was at a history entry.
+  rpc RollbackApplication(RollbackApplicationRequest) returns (SyncResult);
+  rpc ListHistory(ListHistoryRequest) returns (ListHistoryResponse);
+
+  // --- Live events and workspace data (CONTRACT.md §18, §19) ------------------
+  // Application changes (entity "application"). Never ends.
+  rpc WatchEvents(sdi.common.v1.WatchEventsRequest) returns (stream sdi.common.v1.PlatformEvent);
+  rpc DeleteWorkspaceData(DeleteWorkspaceDataRequest) returns (DeleteWorkspaceDataResponse);
+  rpc ExportWorkspaceData(ExportWorkspaceDataRequest) returns (stream WorkspaceDataRecord);
+}
+
+// ---------------------------------------------------------------------------
+// Clusters
+// ---------------------------------------------------------------------------
+
+message Cluster {
+  string id = 1;
+  string name = 2;
+  // Name of the workspace secret that holds the kubeconfig (YAML). The
+  // kubeconfig itself is never stored here and never returned.
+  string kubeconfig_secret = 3;
+  // Context inside the kubeconfig; empty uses its current context.
+  string context = 4;
+  // API server URL read from the kubeconfig; shown, never used to connect.
+  string server = 5;
+  // Namespace for resources that name none.
+  string default_namespace = 6;
+  // When not empty, the engine only watches and writes these namespaces
+  // (Argo CD's namespaced mode). Empty watches the whole cluster.
+  repeated string namespaces = 7;
+  // "connected" | "unreachable" | "unknown"
+  string status = 8;
+  // Why it is unreachable, as a sentence.
+  string message = 9;
+  string server_version = 10;
+  uint32 application_count = 11;
+  google.protobuf.Timestamp checked_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message ListClustersRequest {}
+
+message ListClustersResponse {
+  repeated Cluster clusters = 1;
+}
+
+message UpsertClusterRequest {
+  // Only id, name, kubeconfig_secret, context, default_namespace and
+  // namespaces are read; the rest is derived.
+  Cluster cluster = 1;
+}
+
+message DeleteClusterRequest {
+  string id = 1;
+}
+
+message DeleteClusterResponse {}
+
+// ---------------------------------------------------------------------------
+// Applications
+// ---------------------------------------------------------------------------
+
+// Where the desired state comes from (Argo CD's spec.source).
+message ApplicationSource {
+  // `owner/name` on the workspace's GitHub; empty means the project's repository.
+  string repo = 1;
+  // Branch, tag or commit SHA; empty means the repository's default branch.
+  string revision = 2;
+  // Directory inside the repository; empty means its root.
+  string path = 3;
+  // "directory" | "kustomize" | "helm" | "" (detect: kustomization.yaml →
+  // kustomize, Chart.yaml → helm, else directory).
+  string type = 4;
+  // directory: include subdirectories.
+  bool recurse = 5;
+  // helm: values files relative to `path`, applied in order.
+  repeated string helm_value_files = 6;
+  // helm: `--set` parameters, applied after the values files.
+  map<string, string> helm_parameters = 7;
+  // helm: release name; empty uses the application name.
+  string helm_release_name = 8;
+  // kustomize: image overrides, `name=newName:tag`, `name:tag` or
+  // `name@sha256:…` (Argo CD's spec.source.kustomize.images).
+  repeated string kustomize_images = 9;
+}
+
+// Argo CD's spec.syncPolicy, reduced to what holds up.
+message SyncPolicy {
+  // Sync on its own when the application is out of sync.
+  bool automated = 1;
+  // automated: also delete resources that left the desired state.
+  bool prune = 2;
+  // automated: also undo changes made to the cluster by hand (not only new
+  // commits). Without it, an automated application syncs only when the
+  // rendered desired state changes.
+  bool self_heal = 3;
+  // Create the destination namespace when it is missing.
+  bool create_namespace = 4;
+  // Attempts of a failed automated sync before it waits for a new
+  // revision; 0 means 3.
+  uint32 retry_limit = 5;
+}
+
+// One resource the application manages, live or desired.
+message ResourceStatus {
+  string group = 1;
+  string version = 2;
+  string kind = 3;
+  string namespace = 4;
+  string name = 5;
+  // "synced" | "out_of_sync" | "missing" (desired, not in the cluster) |
+  // "extraneous" (in the cluster, no longer desired: pruned by a sync with prune)
+  string sync_status = 6;
+  // "healthy" | "progressing" | "degraded" | "suspended" | "missing" | "unknown" | ""
+  string health_status = 7;
+  string health_message = 8;
+  // A sync hook (argocd.argoproj.io/hook), not part of the steady state.
+  bool hook = 9;
+  // argocd.argoproj.io/sync-wave
+  int32 sync_wave = 10;
+}
+
+// The operation in flight or the last one that ran.
+message Operation {
+  // "sync" | "rollback"
+  string kind = 1;
+  // "running" | "succeeded" | "failed" | "error" | "terminating"
+  string phase = 2;
+  string message = 3;
+  string revision = 4;
+  // The user id that asked, "system" for an automated sync.
+  string initiated_by = 5;
+  // The execution that runs it, when one does.
+  string execution_id = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp finished_at = 8;
+}
+
+message Application {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string cluster_id = 4;
+  string cluster_name = 5;
+  // Destination namespace.
+  string namespace = 6;
+  ApplicationSource source = 7;
+  SyncPolicy sync_policy = 8;
+  // "synced" | "out_of_sync" | "unknown"
+  string sync_status = 9;
+  // "healthy" | "progressing" | "degraded" | "suspended" | "missing" | "unknown"
+  string health_status = 10;
+  string health_message = 11;
+  // The commit the last comparison rendered.
+  string revision = 12;
+  // The commit the last successful sync applied.
+  string synced_revision = 13;
+  Operation operation = 14;
+  // Present in GetApplication only.
+  repeated ResourceStatus resources = 15;
+  // Why the comparison could not complete, as sentences (render failed,
+  // cluster unreachable, …). Empty when it did.
+  repeated string conditions = 16;
+  uint32 resource_count = 17;
+  uint32 out_of_sync_count = 18;
+  google.protobuf.Timestamp reconciled_at = 19;
+  google.protobuf.Timestamp created_at = 20;
+  google.protobuf.Timestamp updated_at = 21;
+}
+
+message ListApplicationsRequest {
+  // Empty lists every project's.
+  string project_id = 1;
+}
+
+message ListApplicationsResponse {
+  repeated Application applications = 1;
+}
+
+message GetApplicationRequest {
+  string id = 1;
+}
+
+message UpsertApplicationRequest {
+  // Read: id (update), project_id, name, cluster_id, namespace, source,
+  // sync_policy. The rest is derived.
+  Application application = 1;
+}
+
+message DeleteApplicationRequest {
+  string id = 1;
+  bool cascade = 2;
+}
+
+message DeleteApplicationResponse {
+  // Resources deleted from the cluster (cascade only).
+  uint32 deleted_resources = 1;
+}
+
+message RefreshApplicationRequest {
+  string id = 1;
+  bool hard = 2;
+}
+
+message GetManifestsRequest {
+  string id = 1;
+  // Empty renders the source's revision.
+  string revision = 2;
+}
+
+message Manifests {
+  // The commit that was rendered.
+  string revision = 1;
+  // One YAML document per resource, sorted by sync wave then kind order.
+  repeated string manifests = 2;
+}
+
+message DiffApplicationRequest {
+  string id = 1;
+}
+
+message ResourceDiff {
+  string group = 1;
+  string kind = 2;
+  string namespace = 3;
+  string name = 4;
+  string sync_status = 5;
+  // Unified diff from live to desired; empty when they match.
+  string diff = 6;
+  // Normalised YAML (Secret values masked); empty when absent.
+  string live = 7;
+  string target = 8;
+}
+
+message ApplicationDiff {
+  string revision = 1;
+  repeated ResourceDiff resources = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Operations
+// ---------------------------------------------------------------------------
+
+message ResourceRef {
+  string group = 1;
+  string kind = 2;
+  string namespace = 3;
+  string name = 4;
+}
+
+message SyncApplicationRequest {
+  string id = 1;
+  // Empty syncs the source's revision.
+  string revision = 2;
+  // Delete resources that left the desired state.
+  bool prune = 3;
+  // Plan only: what would change, nothing applied.
+  bool dry_run = 4;
+  // Partial sync: only these resources (and their hooks are skipped).
+  repeated ResourceRef resources = 5;
+  // Stored into the source before syncing, so the desired state stays
+  // declared (continuous delivery sets the release image this way):
+  // kustomize image overrides and helm parameters, merged by key.
+  repeated string kustomize_images = 6;
+  map<string, string> helm_parameters = 7;
+  // The execution that asked, recorded in history.
+  string execution_id = 8;
+  // Seconds before the operation is terminated; 0 means 600.
+  uint32 timeout_seconds = 9;
+}
+
+message ResourceResult {
+  string group = 1;
+  string kind = 2;
+  string namespace = 3;
+  string name = 4;
+  // "synced" | "pruned" | "prune_skipped" | "failed" | "unchanged"
+  string status = 5;
+  string message = 6;
+  // "pre_sync" | "sync" | "post_sync" | "sync_fail" | "" (not a hook)
+  string hook_phase = 7;
+  int32 sync_wave = 8;
+}
+
+message SyncResult {
+  string application_id = 1;
+  // "succeeded" | "failed" | "error" (could not start: render, cluster)
+  string phase = 2;
+  string message = 3;
+  string revision = 4;
+  repeated ResourceResult resources = 5;
+  // The history entry it created; empty for a dry run.
+  string history_id = 6;
+  // Application health right after the operation.
+  string health_status = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp finished_at = 9;
+}
+
+message RollbackApplicationRequest {
+  string id = 1;
+  string history_id = 2;
+  bool prune = 3;
+  string execution_id = 4;
+}
+
+message HistoryEntry {
+  string id = 1;
+  string application_id = 2;
+  string revision = 3;
+  // The source as it was synced, so a rollback can sync it again.
+  ApplicationSource source = 4;
+  // "succeeded" | "failed" | "error"
+  string phase = 5;
+  string message = 6;
+  string initiated_by = 7;
+  string execution_id = 8;
+  bool automated = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp finished_at = 11;
+}
+
+message ListHistoryRequest {
+  string id = 1;
+  uint32 limit = 2;
+}
+
+message ListHistoryResponse {
+  repeated HistoryEntry entries = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace data (CONTRACT.md §19)
+// ---------------------------------------------------------------------------
+
+message DeleteWorkspaceDataRequest {
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceDataResponse {
+  map<string, uint64> deleted = 1;
+}
+
+message ExportWorkspaceDataRequest {
+  string workspace_id = 1;
+}
+
+message WorkspaceDataRecord {
+  string entity = 1;
+  string json = 2;
+}

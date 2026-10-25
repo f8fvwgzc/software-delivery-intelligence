@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package sdi.intelligence.v1;
 
+option go_package = "github.com/f8fvwgzc/software-delivery-intelligence/services/gitops/gen/sdi/intelligence/v1;intelligencev1";
+
 import "google/protobuf/timestamp.proto";
 import "sdi/common/v1/common.proto";
 

@@ -33,7 +33,7 @@ spec:
         - name: postgres
           image: pgvector/pgvector:pg16
           args:
-            # Headroom for five services × DB_MAX_CONNECTIONS plus tooling.
+            # Headroom for six services × DB_MAX_CONNECTIONS plus tooling.
             - -c
             - max_connections=200
           env:

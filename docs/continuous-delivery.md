@@ -44,6 +44,7 @@ there:
 |---|---|---|
 | GitHub Actions | Dispatches `deploy.yml` with `environment`, `image`, `digest`, `version` and follows the run | A deploy workflow (SDI generates one) |
 | Flux, Argo CD | Updates the image tag in the GitOps repository by pull request and waits for the merge | The repository, file path and edit strategy |
+| SDI GitOps | Syncs an SDI application with the release image as its image override and waits for it to be healthy; no Argo CD needed | An application on a cluster ([`gitops.md`](gitops.md)); config `application` |
 | Jenkins | Triggers the job with `IMAGE`, `DIGEST`, `VERSION`, `ENVIRONMENT` and polls the build | Job URL and name, a user and API token as secrets |
 | Azure DevOps | Runs the pipeline with the same four parameters and polls it | Organization, project, pipeline id, a PAT as a secret |
 | Webhook | Sends a signed `POST` with the release | A URL and a signing secret |

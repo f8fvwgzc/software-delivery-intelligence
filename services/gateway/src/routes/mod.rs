@@ -18,6 +18,7 @@ pub mod executions;
 pub mod export;
 pub mod github;
 pub mod github_app;
+pub mod gitops;
 pub mod knowledge;
 pub mod policies;
 pub mod projects;
@@ -50,8 +51,18 @@ pub fn rest() -> OpenApiRouter<AppState> {
         .merge(autopilot::router())
         .merge(executions::router())
         .merge(delivery::router())
+        .merge(gitops::router())
         .merge(approvals::router())
         .merge(policies::router())
+}
+
+/// An empty path id would turn an update (`PUT /<things>/{id}`) into a create.
+pub(crate) fn require_id(id: String) -> crate::error::ApiResult<String> {
+    if id.trim().is_empty() {
+        Err(crate::error::ApiError::bad_request("id is required"))
+    } else {
+        Ok(id)
+    }
 }
 
 /// `Vec<proto>` to `Vec<dto>`, the shape every list route returns.

@@ -65,8 +65,8 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
-    # Five services × DB_MAX_CONNECTIONS (20) plus tooling must fit; the
-    # image's default of 100 is exactly the pools' sum.
+    # Six services × DB_MAX_CONNECTIONS (20) plus tooling must fit; the
+    # image's default of 100 is below the pools' sum.
     command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-200}"]
     environment:
       POSTGRES_USER: sdi
@@ -215,6 +215,7 @@ services:
       EXECUTION_LISTEN: 0.0.0.0:50053
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
       IDENTITY_GRPC_URL: http://identity:50054
+      GITOPS_GRPC_URL: http://gitops:50055
       # The `github` adapter writes with the same token knowledge reads
       # with; opening pull requests needs `repo` write (docs/adapters.md).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -245,6 +246,56 @@ services:
       - backend
     depends_on:
       postgres:
+        condition: service_healthy
+      knowledge:
+        condition: service_healthy
+    deploy: *small
+
+  # The GitOps engine (CONTRACT.md §24): Go, Argo CD's gitops-engine
+  # embedded. Reaches the Kubernetes clusters registered in the app with the
+  # kubeconfigs stored as workspace secrets; nothing to configure here.
+  gitops:
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      # The engine's kubectl path writes a short-lived kubeconfig and the
+      # manifest it applies; keep both in memory, never on a disk.
+      - /tmp
+      - /dev/shm
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *logging
+    image: sdi/gitops:${SDI_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/docker/go.Dockerfile
+    # Distroless image: the binary probes its own gRPC health service.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sdi-gitops", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    environment:
+      DATABASE_URL: postgres://sdi:sdi@postgres:5432/sdi
+      LOG_FORMAT: json
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-20}
+      SHUTDOWN_GRACE_SECS: ${GITOPS_SHUTDOWN_GRACE_SECS:-25}
+      GITOPS_LISTEN: 0.0.0.0:50055
+      IDENTITY_GRPC_URL: http://identity:50054
+      KNOWLEDGE_GRPC_URL: http://knowledge:50051
+      GITOPS_RECONCILE_SECONDS: ${GITOPS_RECONCILE_SECONDS:-180}
+      SDI_ALLOW_PRIVATE_DEPLOY_TARGETS: ${SDI_ALLOW_PRIVATE_DEPLOY_TARGETS:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
         condition: service_healthy
       knowledge:
         condition: service_healthy
@@ -314,6 +365,7 @@ services:
       KNOWLEDGE_GRPC_URL: http://knowledge:50051
       INTELLIGENCE_GRPC_URL: http://intelligence:50052
       EXECUTION_GRPC_URL: http://execution:50053
+      GITOPS_GRPC_URL: http://gitops:50055
       # Every /api/v1 request is resolved through Identity.Authorize before
       # it reaches a service (CONTRACT.md §18).
       IDENTITY_GRPC_URL: http://identity:50054

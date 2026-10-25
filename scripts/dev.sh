@@ -86,7 +86,7 @@ port_in_use() {
     return 1
   fi
 }
-for port in 8080 5173 50051 50052 50053 50054; do
+for port in 8080 5173 50051 50052 50053 50054 50055; do
   if port_in_use "$port"; then
     echo "port $port is already in use (an earlier stack is still running)." >&2
     echo "stop it with: pkill -f scripts/dev.sh; pkill -f target/debug/sdi-; pkill -f vite" >&2
@@ -99,10 +99,17 @@ if [[ $with_web -eq 1 && ! -d web/node_modules ]]; then
   (cd web && pnpm install --frozen-lockfile)
 fi
 
+# The GitOps engine (CONTRACT.md §24) is Go; GOTOOLCHAIN=auto fetches the
+# toolchain its go.mod asks for. A local cluster's API server is on a
+# private address, which deploy targets may only use when this is set.
+export SDI_ALLOW_PRIVATE_DEPLOY_TARGETS="${SDI_ALLOW_PRIVATE_DEPLOY_TARGETS:-1}"
+export GITOPS_GRPC_URL="${GITOPS_GRPC_URL:-http://127.0.0.1:50055}"
+
 if [[ $with_build -eq 1 ]]; then
   cargo build --workspace
+  (cd services/gitops && GOTOOLCHAIN=auto go build -o ../../target/debug/sdi-gitops ./cmd/sdi-gitops)
 else
-  for svc in identity knowledge intelligence execution gateway; do
+  for svc in identity knowledge intelligence execution gitops gateway; do
     if [[ ! -x target/debug/sdi-$svc ]]; then
       echo "target/debug/sdi-$svc is missing: run without --no-build once." >&2
       exit 1
@@ -114,7 +121,7 @@ pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-for svc in identity knowledge intelligence execution gateway; do
+for svc in identity knowledge intelligence execution gitops gateway; do
   ./target/debug/sdi-$svc &
   pids+=($!)
   sleep 0.3

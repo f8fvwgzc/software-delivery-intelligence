@@ -33,6 +33,8 @@ pub struct Settings {
     /// Azure DevOps base (`AZURE_DEVOPS_URL`, default `https://dev.azure.com`;
     /// an Azure DevOps Server collection URL otherwise).
     pub azure_devops_url: String,
+    /// SDI's GitOps engine (`GITOPS_GRPC_URL`, CONTRACT.md §24.1).
+    pub gitops_url: String,
 }
 
 impl Settings {
@@ -53,6 +55,10 @@ impl Settings {
             azure_devops_url: config::env_or(
                 "AZURE_DEVOPS_URL",
                 crate::adapters::azure_devops::DEFAULT_BASE,
+            ),
+            gitops_url: config::env_or(
+                "GITOPS_GRPC_URL",
+                crate::adapters::gitops_engine::DEFAULT_URL,
             ),
         })
     }

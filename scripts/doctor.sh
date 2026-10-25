@@ -76,6 +76,17 @@ else
   fail "protoc is not installed (the gRPC contracts are compiled at build time)" "$hint"
 fi
 
+if command -v go >/dev/null 2>&1; then
+  go_version="$(go env GOVERSION 2>/dev/null | sed 's/^go//')"
+  if at_least "${go_version:-0}" "1.21.0"; then
+    ok "go $go_version (the GitOps engine's newer toolchain is fetched on first build)"
+  else
+    fail "go ${go_version:-?} is too old (1.21 or newer can fetch the toolchain the GitOps engine needs)" "Install Go: https://go.dev/dl/   (or: brew install go)"
+  fi
+else
+  fail "go is not installed (the GitOps engine is a Go service)" "Install Go: https://go.dev/dl/   (or: brew install go)"
+fi
+
 if command -v node >/dev/null 2>&1; then
   node_version="$(node --version | sed 's/^v//')"
   if at_least "$node_version" "22.12.0" || { at_least "$node_version" "20.19.0" && ! at_least "$node_version" "21.0.0"; }; then
@@ -178,7 +189,7 @@ else
 fi
 
 busy=()
-for port in 5440 8080 5173 50051 50052 50053 50054; do
+for port in 5440 8080 5173 50051 50052 50053 50054 50055; do
   in_use=1
   if command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && in_use=0
@@ -188,7 +199,7 @@ for port in 5440 8080 5173 50051 50052 50053 50054; do
   [[ $in_use -eq 0 ]] && busy+=("$port")
 done
 if [[ ${#busy[@]} -eq 0 ]]; then
-  ok "ports 5440, 8080, 5173 and 50051-50054 are free"
+  ok "ports 5440, 8080, 5173 and 50051-50055 are free"
 else
   # 5440 alone is the dev Postgres already up, which is what `make dev` wants.
   if [[ "${busy[*]}" == "5440" ]]; then ok "the dev database is already running on 5440"; else

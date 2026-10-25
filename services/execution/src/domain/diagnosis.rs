@@ -34,9 +34,17 @@ pub const CHECKS_FAILING: &str = "CHECKS_FAILING";
 /// GitHub will not merge the pull request for a reason other than the
 /// three above (a branch protection rule, a draft, a closed pull request).
 pub const MERGE_BLOCKED: &str = "MERGE_BLOCKED";
+/// The GitOps engine could not render an application's desired state
+/// (CONTRACT.md §24.7): nothing was applied.
+pub const RENDER_FAILED: &str = "RENDER_FAILED";
+/// The GitOps engine, or the cluster it syncs to, could not be reached.
+pub const CLUSTER_UNREACHABLE: &str = "CLUSTER_UNREACHABLE";
+/// A sync or rollback ran and failed (or could not run because another
+/// operation holds the application).
+pub const SYNC_FAILED: &str = "SYNC_FAILED";
 pub const UNKNOWN: &str = "UNKNOWN";
 
-pub const CODES: [&str; 18] = [
+pub const CODES: [&str; 21] = [
     PERMISSION_DENIED,
     POLICY_BLOCKED,
     SKU_UNAVAILABLE,
@@ -54,6 +62,9 @@ pub const CODES: [&str; 18] = [
     MERGE_CONFLICT,
     CHECKS_FAILING,
     MERGE_BLOCKED,
+    RENDER_FAILED,
+    CLUSTER_UNREACHABLE,
+    SYNC_FAILED,
     UNKNOWN,
 ];
 
@@ -121,6 +132,12 @@ pub struct FailedStep<'a> {
 /// Whether a step is part of a deployment run's plan (CONTRACT.md §22).
 fn is_delivery_action(action_type: &str) -> bool {
     action_type.starts_with("deploy.") || action_type.starts_with("registry.")
+}
+
+/// Whether a step drives SDI's GitOps engine (CONTRACT.md §24.7). Its
+/// adapter words every failure as a sentence too.
+fn is_gitops_action(action_type: &str) -> bool {
+    action_type.starts_with("gitops.")
 }
 
 /// Whether a step is one of the pull request operations of CONTRACT.md
@@ -272,7 +289,34 @@ pub fn diagnose(
             recommended,
         )
     };
+    // The GitOps engine's own steps, and the deploy step of an sdi_gitops
+    // environment it runs (`params.operation = gitops.sync`).
+    let gitops = is_gitops_action(step.action_type)
+        || step.params.get("operation").map(|op| op.trim()) == Some("gitops.sync");
+    let detail_clause = |prefix: &str| {
+        if step.detail.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}{}", clause(step.detail))
+        }
+    };
     let (diagnosis, mut options) = match code {
+        // The engine checks roles itself (CONTRACT.md §24.1): the grants
+        // in front of the step were in order, so granting more is no fix.
+        PERMISSION_DENIED if refused_by_tool && gitops => (
+            format!(
+                "The GitOps engine refused '{}'{}. The execution's own grants were in order; the engine checks the role of the person the run acts for, who must be an approver of this workspace.",
+                step.title,
+                detail_clause(": ")
+            ),
+            vec![option(
+                "retry",
+                "Retry once the role is fixed",
+                "Make sure whoever approved or started the run is an approver of the workspace, then ask the GitOps engine again.",
+                "The step returns to PENDING and asks the GitOps engine again.",
+                true,
+            )],
+        ),
         PERMISSION_DENIED => (
             if refused_by_tool && delivery {
                 format!(
@@ -410,6 +454,65 @@ pub fn diagnose(
                     false,
                 ),
             ],
+        ),
+        HEALTH_CHECK_FAILED if gitops => (
+            format!(
+                "The application behind '{}' did not become healthy{}.",
+                step.title,
+                detail_clause(": ")
+            ),
+            if step.can_rollback {
+                vec![rollback(true), retry(false)]
+            } else {
+                vec![retry(true)]
+            },
+        ),
+        // CONTRACT.md §24.7. Nothing reached the cluster in the first two.
+        RENDER_FAILED => (
+            format!(
+                "The GitOps engine could not render the desired state for '{}'{}. Nothing was applied to the cluster.",
+                step.title,
+                detail_clause(": ")
+            ),
+            {
+                let mut options = vec![option(
+                    "retry",
+                    "Retry after fixing the source",
+                    "Fix the manifests, the kustomization or the chart in the repository (or the image the step sets), then render and sync again.",
+                    "The step returns to PENDING and the engine renders the source again.",
+                    true,
+                )];
+                if step.can_rollback {
+                    options.push(rollback(false));
+                }
+                options
+            },
+        ),
+        CLUSTER_UNREACHABLE => (
+            format!(
+                "'{}' could not reach the GitOps engine or the cluster it deploys to{}. Retrying helps once both answer again; Workspace, Clusters shows the cluster's status.",
+                step.title,
+                detail_clause(": ")
+            ),
+            vec![option(
+                "retry",
+                "Retry when the cluster answers",
+                "Run the step again once the GitOps engine and the cluster's API server are reachable.",
+                "The step returns to PENDING and asks the GitOps engine again.",
+                true,
+            )],
+        ),
+        SYNC_FAILED => (
+            format!(
+                "The sync behind '{}' ran and failed{}. Resources that were applied before the failure stay applied.",
+                step.title,
+                detail_clause(": ")
+            ),
+            if step.can_rollback {
+                vec![retry(true), rollback(false)]
+            } else {
+                vec![retry(true)]
+            },
         ),
         HEALTH_CHECK_FAILED if delivery => (
             format!(
@@ -630,7 +733,9 @@ pub fn diagnose(
             ],
         ),
         _ => (
-            if (delivery || is_pull_request_action(step.action_type)) && !step.detail.is_empty() {
+            if (delivery || gitops || is_pull_request_action(step.action_type))
+                && !step.detail.is_empty()
+            {
                 format!("'{}' failed: {}.", step.title, clause(step.detail))
             } else if step.message.is_empty() {
                 format!(
@@ -651,14 +756,15 @@ pub fn diagnose(
     // Skipping a step ends the run as SUCCEEDED without it. That is never
     // offered for the pull request codes, nor, whatever the code, for the
     // step that is the whole point of its run: a run that did not commit
-    // the fixes or did not merge must not read as one that did.
+    // the fixes, did not merge, or did not sync or roll back its
+    // application must not read as one that did.
     let pull_request_code = matches!(
         code,
         HEAD_MOVED | MERGE_CONFLICT | CHECKS_FAILING | MERGE_BLOCKED
     );
     let is_the_run = matches!(
         step.action_type,
-        "repo.commit_fixes" | "repo.merge_pull_request"
+        "repo.commit_fixes" | "repo.merge_pull_request" | "gitops.sync" | "gitops.rollback"
     );
     if can_skip && !pull_request_code && !is_the_run {
         options.push(skip);
@@ -1125,6 +1231,161 @@ mod tests {
             "{options:?}"
         );
         assert!(!options[0].description.contains("`repo` scope"));
+    }
+
+    /// CONTRACT.md §24.7: the GitOps engine's codes offer retry, give up
+    /// and cancel (and going back to the previous release inside a
+    /// deployment run), quote what the engine said, and never offer to
+    /// skip the sync or the rollback, which would end the run as a success
+    /// that changed nothing.
+    #[test]
+    fn gitops_failures_offer_retry_give_up_and_cancel_and_never_skip_the_sync() {
+        let params = BTreeMap::new();
+        let gitops =
+            |action_type: &'static str, detail: &'static str, can_rollback: bool| FailedStep {
+                title: "Sync api",
+                action_type,
+                detail,
+                can_rollback,
+                ..step(&params)
+            };
+        let cases = [
+            (
+                RENDER_FAILED,
+                "the sync of application api could not start: its source did not render: kustomize build apps/api: missing file",
+                "Nothing was applied to the cluster",
+            ),
+            (
+                CLUSTER_UNREACHABLE,
+                "the sync of application api could not reach the GitOps engine at http://127.0.0.1:50055 or its cluster: tcp connect error",
+                "Workspace, Clusters",
+            ),
+            (
+                SYNC_FAILED,
+                "the sync of application api failed; 1 resource failed: Deployment shop/api (ImagePullBackOff)",
+                "stay applied",
+            ),
+        ];
+        for (code, detail, says) in cases {
+            for action_type in ["gitops.sync", "gitops.rollback"] {
+                // Nothing depends on the step: skipping would still be wrong.
+                let (diagnosis, options) =
+                    diagnose(code, &gitops(action_type, detail, false), &[], &[]);
+                let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+                assert_eq!(ids, ["retry", "give_up", "cancel"], "{code} {action_type}");
+                assert!(options[0].recommended);
+                assert_eq!(options.iter().filter(|o| o.recommended).count(), 1);
+                assert!(diagnosis.contains(clause(detail)), "{code}: {diagnosis}");
+                assert!(diagnosis.contains(says), "{code}: {diagnosis}");
+                assert!(!diagnosis.contains(".."), "{code}: {diagnosis}");
+                let failure = record(code, options, &[]);
+                assert_eq!(
+                    resolve("skip_step", "", &failure, &params),
+                    Err(ResolveError::UnknownOption("skip_step".into()))
+                );
+                assert!(matches!(
+                    resolve("retry", "", &failure, &params),
+                    Ok(Resolution::Retry { .. })
+                ));
+                assert_eq!(
+                    resolve("give_up", "", &failure, &params),
+                    Ok(Resolution::GiveUp)
+                );
+                assert_eq!(
+                    resolve("cancel", "", &failure, &params),
+                    Ok(Resolution::Cancel)
+                );
+            }
+            assert_eq!(normalize_code(&code.to_ascii_lowercase()), code);
+        }
+        // Inside a deployment run with a release to go back to, a failed
+        // sync may also roll the environment back; an unreachable cluster
+        // would not take a rollback either.
+        let (_, options) = diagnose(
+            SYNC_FAILED,
+            &gitops("gitops.sync", "boom", true),
+            &["verify_health".into()],
+            &[],
+        );
+        let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["retry", ROLLBACK_TO_PREVIOUS, "give_up", "cancel"]);
+        let (_, options) = diagnose(
+            CLUSTER_UNREACHABLE,
+            &gitops("gitops.sync", "boom", true),
+            &[],
+            &[],
+        );
+        assert!(!options.iter().any(|o| o.id == ROLLBACK_TO_PREVIOUS));
+        // Whatever the code, the sync and the rollback are never skipped.
+        for code in [UNKNOWN, TIMEOUT, PERMISSION_DENIED, HEALTH_CHECK_FAILED] {
+            for action_type in ["gitops.sync", "gitops.rollback"] {
+                let (_, options) = diagnose(
+                    code,
+                    &gitops(action_type, "", false),
+                    &[],
+                    &["cluster:write".into()],
+                );
+                assert!(!options.iter().any(|o| o.id == "skip_step"), "{code}");
+            }
+        }
+        // A health check that never turned green, in a deployment run.
+        let health = FailedStep {
+            title: "Verify health",
+            ..gitops(
+                "gitops.verify_health",
+                "application api (0192) is degraded; not healthy: Deployment shop/api: degraded",
+                true,
+            )
+        };
+        let (diagnosis, options) = diagnose(HEALTH_CHECK_FAILED, &health, &["record".into()], &[]);
+        assert!(
+            diagnosis.starts_with(
+                "The application behind 'Verify health' did not become healthy: application api"
+            ),
+            "{diagnosis}"
+        );
+        assert_eq!(options[0].id, ROLLBACK_TO_PREVIOUS);
+        assert!(options[0].recommended);
+        assert!(!options.iter().any(|o| o.id == "rollback_to_checkpoint"));
+        // The engine refusing the caller is a role, not a missing grant.
+        let refused = FailedStep {
+            refused_by_tool: true,
+            ..gitops(
+                "gitops.sync",
+                "the GitOps engine refused the sync of application api: requires the approver role",
+                false,
+            )
+        };
+        let (diagnosis, options) = diagnose(PERMISSION_DENIED, &refused, &[], &[]);
+        assert!(
+            diagnosis.contains("requires the approver role"),
+            "{diagnosis}"
+        );
+        assert!(diagnosis.contains("must be an approver"), "{diagnosis}");
+        let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["retry", "give_up", "cancel"]);
+        // The same for the deploy step of an sdi_gitops environment, which
+        // keeps its stage's action type and names the engine's operation.
+        let operation = BTreeMap::from([("operation".to_owned(), "gitops.sync".to_owned())]);
+        let deploy = FailedStep {
+            title: "Deploy a1b2c3d to production",
+            action_type: "deploy.production",
+            params: &operation,
+            refused_by_tool: true,
+            detail: "the GitOps engine refused the sync of application api: requires the approver role",
+            ..step(&params)
+        };
+        let (diagnosis, _) = diagnose(PERMISSION_DENIED, &deploy, &["verify_health".into()], &[]);
+        assert!(diagnosis.contains("must be an approver"), "{diagnosis}");
+        // The pre-flight check stays what it is: request a timed grant.
+        let (diagnosis, options) = diagnose(
+            PERMISSION_DENIED,
+            &gitops("gitops.sync", "", false),
+            &["verify_health".into()],
+            &["cluster:write".into()],
+        );
+        assert!(diagnosis.contains("lacks cluster:write"), "{diagnosis}");
+        assert_eq!(options[0].id, "request_access");
     }
 
     #[test]

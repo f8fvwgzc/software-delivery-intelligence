@@ -8,6 +8,15 @@
 //! | verify health | `deploy.verify_health` | `http` |
 //! | record | `deploy.record` | `github` |
 //!
+//! An `sdi_gitops` environment (CONTRACT.md §24.7) deploys through SDI's
+//! GitOps engine. Its deploy step keeps the stage's action type, so the
+//! tier policy gates it as for every other kind (`deploy.production` is
+//! required and not editable; a rollback is `deploy.rollback`), and names
+//! `params.operation = gitops.sync`: the engine syncs the environment's
+//! application with the release image as the override its source takes (a
+//! rollback, the earlier release's image the same way). Its health step is
+//! `gitops.verify_health` of that application.
+//!
 //! Each step carries everything its adapter needs as params, and only
 //! that: names of workspace secrets, never their values. A plan is a
 //! snapshot: editing the environment later does not change a run that is
@@ -21,13 +30,14 @@ use super::{
     db::{environments::EnvironmentRow, registries::RegistryRow, releases::ReleaseRow},
     model::{
         self, ENV_DOCKER_LOCAL, ENV_GITHUB_ACTIONS, ENV_GITOPS_ARGOCD, ENV_GITOPS_FLUX,
-        ENV_WEBHOOK, RUN_ROLLBACK, STEP_DEPLOY, STEP_RECORD, STEP_VERIFY_HEALTH, STEP_VERIFY_IMAGE,
+        ENV_SDI_GITOPS, ENV_WEBHOOK, RUN_ROLLBACK, STEP_DEPLOY, STEP_RECORD, STEP_VERIFY_HEALTH,
+        STEP_VERIFY_IMAGE,
     },
 };
 use crate::adapters::{
     self, azure_devops, docker,
     github::{self, OP_DEPLOYMENT_RECORD, OP_WORKFLOW_DISPATCH},
-    gitops, http_health, jenkins, webhook,
+    gitops, gitops_engine, http_health, jenkins, webhook,
 };
 
 pub struct PlanInput<'a> {
@@ -53,6 +63,7 @@ pub fn default_timeout_seconds(kind: &str) -> u64 {
         model::ENV_JENKINS => jenkins::DEFAULT_TIMEOUT_SECONDS,
         model::ENV_AZURE_DEVOPS => azure_devops::DEFAULT_TIMEOUT_SECONDS,
         ENV_WEBHOOK => webhook::DEFAULT_TIMEOUT_SECONDS,
+        ENV_SDI_GITOPS => gitops_engine::DEFAULT_SYNC_TIMEOUT_SECONDS,
         _ => docker::LOCAL_DEPLOY_TIMEOUT_SECONDS,
     }
 }
@@ -91,6 +102,7 @@ fn deployer_permissions(kind: &str) -> &'static [&'static str] {
         ENV_GITHUB_ACTIONS | model::ENV_JENKINS | model::ENV_AZURE_DEVOPS => &["pipeline:trigger"],
         ENV_GITOPS_FLUX | ENV_GITOPS_ARGOCD => &["repository:write"],
         ENV_DOCKER_LOCAL => &["container:run"],
+        ENV_SDI_GITOPS => &[adapters::CLUSTER_WRITE],
         _ => &[],
     }
 }
@@ -216,8 +228,16 @@ pub fn build(input: &PlanInput<'_>) -> Vec<PlanStep> {
         ENV_WEBHOOK => {
             "Send the release to the environment's webhook, signed; 2xx is success.".to_owned()
         }
+        ENV_SDI_GITOPS => {
+            deploy_params.insert("operation".to_owned(), adapters::OP_GITOPS_SYNC.to_owned());
+            format!(
+                "Sync GitOps application {} with {reference} as its image (a kustomize image override, or helm's image.repository and image.tag, whichever its source takes) and wait for the engine's result.",
+                setting("application")
+            )
+        }
         _ => format!("Pull {reference} and run it on the local Docker daemon."),
     };
+    let sdi_gitops = kind == ENV_SDI_GITOPS;
     let mut permissions =
         vec![model::deploy_permission(environment.position, environment.protected).to_owned()];
     permissions.extend(deployer_permissions(kind).iter().map(|p| (*p).to_owned()));
@@ -235,35 +255,61 @@ pub fn build(input: &PlanInput<'_>) -> Vec<PlanStep> {
         depends_on: vec![STEP_VERIFY_IMAGE.to_owned()],
         required_permissions: permissions,
         params: deploy_params,
-        verification: "the deployer reports success".to_owned(),
+        verification: if sdi_gitops {
+            "the GitOps engine reports the sync succeeded".to_owned()
+        } else {
+            "the deployer reports success".to_owned()
+        },
     };
 
     let health_timeout = match setting("health_timeout_seconds") {
+        "" if sdi_gitops => gitops_engine::DEFAULT_HEALTH_TIMEOUT_SECONDS.to_string(),
         "" => http_health::DEFAULT_TIMEOUT_SECONDS.to_string(),
         seconds => seconds.to_owned(),
     };
-    let health_target = if environment.url.is_empty() {
-        "the address the deployer reports".to_owned()
+    let verify_health = if sdi_gitops {
+        PlanStep {
+            key: STEP_VERIFY_HEALTH.to_owned(),
+            title: "Verify health".to_owned(),
+            description: format!(
+                "Ask the GitOps engine until application {} is healthy, for up to {health_timeout}s; degraded or missing fails it.",
+                setting("application")
+            ),
+            action_type: adapters::GITOPS_VERIFY_HEALTH.to_owned(),
+            adapter: adapters::GITOPS.to_owned(),
+            depends_on: vec![STEP_DEPLOY.to_owned()],
+            required_permissions: vec![adapters::CLUSTER_READ.to_owned()],
+            params: params([
+                ("application", setting("application")),
+                ("environment", environment.name.as_str()),
+                ("timeout_seconds", health_timeout.as_str()),
+            ]),
+            verification: "the GitOps engine reports the application healthy".to_owned(),
+        }
     } else {
-        http_health::health_url(&environment.url, &environment.health_path)
-    };
-    let verify_health = PlanStep {
-        key: STEP_VERIFY_HEALTH.to_owned(),
-        title: "Verify health".to_owned(),
-        description: format!(
-            "Poll {health_target} for a 2xx answer for up to {health_timeout}s; skipped when the environment has no URL."
-        ),
-        action_type: adapters::VERIFY_HEALTH.to_owned(),
-        adapter: adapters::TOOL_HTTP.to_owned(),
-        depends_on: vec![STEP_DEPLOY.to_owned()],
-        required_permissions: Vec::new(),
-        params: params([
-            ("environment", environment.name.as_str()),
-            ("url", environment.url.as_str()),
-            ("health_path", environment.health_path.as_str()),
-            ("health_timeout_seconds", health_timeout.as_str()),
-        ]),
-        verification: "the health URL answers 2xx".to_owned(),
+        let health_target = if environment.url.is_empty() {
+            "the address the deployer reports".to_owned()
+        } else {
+            http_health::health_url(&environment.url, &environment.health_path)
+        };
+        PlanStep {
+            key: STEP_VERIFY_HEALTH.to_owned(),
+            title: "Verify health".to_owned(),
+            description: format!(
+                "Poll {health_target} for a 2xx answer for up to {health_timeout}s; skipped when the environment has no URL."
+            ),
+            action_type: adapters::VERIFY_HEALTH.to_owned(),
+            adapter: adapters::TOOL_HTTP.to_owned(),
+            depends_on: vec![STEP_DEPLOY.to_owned()],
+            required_permissions: Vec::new(),
+            params: params([
+                ("environment", environment.name.as_str()),
+                ("url", environment.url.as_str()),
+                ("health_path", environment.health_path.as_str()),
+                ("health_timeout_seconds", health_timeout.as_str()),
+            ]),
+            verification: "the health URL answers 2xx".to_owned(),
+        }
     };
 
     let record = PlanStep {
@@ -492,7 +538,7 @@ mod tests {
     fn every_deployer_gets_its_tool_its_settings_and_its_permissions() {
         type Settings = Vec<(&'static str, &'static str)>;
         type Case = (&'static str, Settings, &'static str, Vec<&'static str>);
-        let cases: [Case; 7] = [
+        let cases: [Case; 8] = [
             (
                 "github_actions",
                 vec![("workflow", "release.yml"), ("ref", "release")],
@@ -555,6 +601,12 @@ mod tests {
                 "docker",
                 vec!["container:run"],
             ),
+            (
+                "sdi_gitops",
+                vec![("application", APPLICATION)],
+                "gitops",
+                vec!["cluster:write"],
+            ),
         ];
         assert_eq!(cases.len(), ENVIRONMENT_KINDS.len());
         for (kind, config, tool, extra) in cases {
@@ -597,6 +649,109 @@ mod tests {
         );
         assert_eq!(tuned[1].params["timeout_seconds"], "90");
         assert_eq!(tuned[2].params["health_timeout_seconds"], "600");
+    }
+
+    const APPLICATION: &str = "0192f6a0-0000-7000-8000-00000000a991";
+
+    /// CONTRACT.md §24.7: verify image → sync the application with the
+    /// release image → wait for it to be healthy → record; a rollback is
+    /// the same sync with the earlier release's image.
+    #[test]
+    fn an_sdi_gitops_environment_syncs_its_application_and_watches_its_health() {
+        let stage = environment("sdi_gitops", 1, false, &[("application", APPLICATION)]);
+        let steps = plan(&stage, RUN_PROMOTE);
+        let shape: Vec<(&str, &str, &str, Vec<&str>)> = steps
+            .iter()
+            .map(|s| {
+                (
+                    s.key.as_str(),
+                    s.action_type.as_str(),
+                    s.adapter.as_str(),
+                    s.depends_on.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("verify_image", "registry.verify_image", "registry", vec![]),
+                ("deploy", "deploy.staging", "gitops", vec!["verify_image"]),
+                (
+                    "verify_health",
+                    "gitops.verify_health",
+                    "gitops",
+                    vec!["deploy"]
+                ),
+                ("record", "deploy.record", "github", vec!["verify_health"]),
+            ]
+        );
+        for step in &steps {
+            assert!(
+                runnable(DELIVERY, &step.action_type),
+                "{}",
+                step.action_type
+            );
+        }
+        // The stage's deploy permission and a cluster write, both timed grants.
+        assert_eq!(
+            steps[1].required_permissions,
+            ["deploy:staging", "cluster:write"]
+        );
+        assert_eq!(steps[2].required_permissions, ["cluster:read"]);
+        let sync = &steps[1].params;
+        assert_eq!(sync["operation"], "gitops.sync", "run through the engine");
+        assert_eq!(sync["application"], APPLICATION);
+        assert_eq!(sync["image"], "ghcr.io/acme/api");
+        assert_eq!(sync["tag"], "a1b2c3d");
+        assert_eq!(sync["timeout_seconds"], "600");
+        assert!(!sync.contains_key("prune"), "a promotion never prunes");
+        assert!(steps[1].description.contains(APPLICATION));
+        let health = &steps[2].params;
+        assert_eq!(health["application"], APPLICATION);
+        assert_eq!(health["timeout_seconds"], "300", "§24.7's default");
+
+        // The environment's limits apply to both steps.
+        let tuned = plan(
+            &environment(
+                "sdi_gitops",
+                1,
+                false,
+                &[
+                    ("application", APPLICATION),
+                    ("timeout_seconds", "120"),
+                    ("health_timeout_seconds", "900"),
+                ],
+            ),
+            RUN_PROMOTE,
+        );
+        assert_eq!(tuned[1].params["timeout_seconds"], "120");
+        assert_eq!(tuned[2].params["timeout_seconds"], "900");
+
+        // The tier gates stay: a protected stage is deploy.production, the
+        // first one deploy.development, a rollback deploy.rollback.
+        let protected = environment("sdi_gitops", 2, true, &[("application", APPLICATION)]);
+        let promote = plan(&protected, RUN_PROMOTE);
+        assert_eq!(promote[1].action_type, "deploy.production");
+        assert_eq!(promote[1].params["operation"], "gitops.sync");
+        assert_eq!(
+            plan(
+                &environment("sdi_gitops", 0, false, &[("application", APPLICATION)]),
+                RUN_PROMOTE
+            )[1]
+            .action_type,
+            "deploy.development"
+        );
+        // A rollback syncs the earlier release the same way.
+        let rollback = plan(&protected, RUN_ROLLBACK);
+        assert_eq!(rollback[1].action_type, "deploy.rollback");
+        assert_eq!(rollback[1].params["operation"], "gitops.sync");
+        assert_eq!(rollback[1].params["run_kind"], "rollback");
+        assert_eq!(rollback[1].params["image"], "ghcr.io/acme/api");
+        assert!(rollback[1].title.starts_with("Roll back staging to"));
+        assert_eq!(
+            rollback[1].required_permissions,
+            ["deploy:production", "cluster:write"]
+        );
     }
 
     #[test]

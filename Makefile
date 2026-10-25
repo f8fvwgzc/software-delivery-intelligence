@@ -49,10 +49,12 @@ build:
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	cd services/gitops && GOTOOLCHAIN=auto go vet ./...
 	cd web && pnpm typecheck && pnpm lint
 
 test:
 	cargo test --workspace
+	cd services/gitops && GOTOOLCHAIN=auto go test ./... -count=1
 
 fmt:
 	cargo fmt --all
@@ -84,3 +86,19 @@ deploy-check:
 clean:
 	cargo clean
 	rm -rf web/dist web/node_modules
+
+# Go stubs of the gitops service (CONTRACT.md §24.1), committed under
+# services/gitops/gen: common, identity, knowledge and gitops. Needs protoc
+# with its include directory plus the two Go plugins:
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+#   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+GO_PROTOS := proto/sdi/common/v1/common.proto proto/sdi/identity/v1/identity.proto \
+	proto/sdi/knowledge/v1/knowledge.proto proto/sdi/gitops/v1/gitops.proto
+GO_MODULE := github.com/f8fvwgzc/software-delivery-intelligence/services/gitops
+.PHONY: gen-go
+gen-go:
+	rm -rf services/gitops/gen
+	PATH="$$(go env GOPATH)/bin:$$PATH" protoc -I proto \
+		--go_out=services/gitops --go_opt=module=$(GO_MODULE) \
+		--go-grpc_out=services/gitops --go-grpc_opt=module=$(GO_MODULE) \
+		$(GO_PROTOS)

@@ -16,7 +16,8 @@ macOS, Linux, or Windows through WSL2, with:
 | Tool | Why |
 |---|---|
 | Docker with Compose | Postgres runs in a container |
-| Rust 1.88 or newer | the five services |
+| Rust 1.88 or newer | five of the six services |
+| Go 1.21 or newer | the GitOps engine; the exact toolchain it needs is fetched on the first build |
 | `protoc` | the gRPC contracts are compiled at build time |
 | Node 22 and pnpm | the web app |
 | GitHub CLI (`gh`) | SDI uses your `gh` login to read and write your repositories |
@@ -104,6 +105,7 @@ Everything below is off until you turn it on. Each switch is independent.
 | Fixes are drafted during the review | **Settings, Automation**: Draft fixes with the model | Up to ten per review. Needs the two model switches above. |
 | Dependabot pull requests are queued for merging when clean | **Settings, Automation**: Merge on its own, "Dependabot pull requests" | The merge still waits for your approval unless you change the policy below. |
 | Merges run without your approval | **Policies**: `repo.merge_pull_request` set to automatic | The only switch that removes you from a merge. Leave it on approval until you trust the rest. |
+| Deploys to Kubernetes, the Argo CD way | **Workspace, Clusters**, then the project's **Applications** tab | A kubeconfig as a workspace secret, an application per folder of manifests. Every sync is approved; see [`gitops.md`](gitops.md). |
 
 ## 7. The loop
 

@@ -1,0 +1,96 @@
+# gitops (gRPC on 50055): Argo CD's gitops-engine behind SDI (CONTRACT.md
+# §24). One replica: the reconcile loop and each cluster's watch cache live
+# in the process, and two replicas would both reconcile every application.
+# The probes use the gRPC health service it registers, like the Rust ones.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops
+spec:
+  selector:
+    app.kubernetes.io/name: gitops
+  ports:
+    - name: grpc
+      port: 50055
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitops
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitops
+    spec:
+      terminationGracePeriodSeconds: 30
+      # It reaches clusters with the kubeconfigs stored as workspace
+      # secrets, never with its own service account.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gitops
+          image: sdi/gitops
+          ports:
+            - name: grpc
+              containerPort: 50055
+          envFrom:
+            - configMapRef:
+                name: sdi-config
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: DATABASE_URL } }
+            - name: GITOPS_LISTEN
+              value: 0.0.0.0:50055
+            - name: SHUTDOWN_GRACE_SECS
+              value: "25"
+            - name: GITHUB_TOKEN
+              valueFrom: { secretKeyRef: { name: sdi-secrets, key: GITHUB_TOKEN, optional: true } }
+          readinessProbe:
+            grpc:
+              port: 50055
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            grpc:
+              port: 50055
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              # Each registered cluster keeps a watch cache of its resources.
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir:
+            # Repository checkouts (≤ 1 GiB unpacked each) while rendering.
+            sizeLimit: 2Gi
+        - name: shm
+          emptyDir:
+            # The engine's short-lived kubeconfig and manifest files.
+            medium: Memory
+            sizeLimit: 64Mi

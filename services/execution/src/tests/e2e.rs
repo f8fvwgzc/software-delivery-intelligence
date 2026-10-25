@@ -724,7 +724,7 @@ async fn policies_and_grants_follow_the_contract() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies.len(), 32, "§5.2 with the §22 and §23 rows");
+    assert_eq!(policies.len(), 36, "§5.2 with the §22, §23 and §24.7 rows");
     let production = policies
         .iter()
         .find(|p| p.action_type == "deploy.production")
@@ -781,11 +781,12 @@ async fn policies_and_grants_follow_the_contract() {
         .identities;
     assert_eq!(
         identities.len(),
-        3,
-        "simulated + local-docker + delivery; github-token only with a token"
+        4,
+        "simulated + local-docker + delivery + gitops; github-token only with a token"
     );
-    // The delivery identity (§22) may look images up and trigger
-    // pipelines; every deploy permission needs a timed grant.
+    // The delivery identity (§22) may look images up, trigger pipelines
+    // and read GitOps applications (§24.7); every deploy permission and
+    // every cluster write needs a timed grant.
     let delivery = identities.iter().find(|i| i.name == "delivery").unwrap();
     let scopes: Vec<&str> = delivery
         .grants
@@ -794,9 +795,23 @@ async fn policies_and_grants_follow_the_contract() {
         .collect();
     assert_eq!(
         scopes,
-        vec!["pipeline:trigger", "registry:read", "repository:read"]
+        vec![
+            "cluster:read",
+            "pipeline:trigger",
+            "registry:read",
+            "repository:read"
+        ]
     );
     assert!(delivery.grants.iter().all(|g| g.expires_at.is_none()));
+    let gitops = identities.iter().find(|i| i.name == "gitops").unwrap();
+    assert_eq!(
+        gitops
+            .grants
+            .iter()
+            .map(|g| g.permission.as_str())
+            .collect::<Vec<_>>(),
+        ["cluster:read"]
+    );
     let simulated = identities.iter().find(|i| i.name == "simulated").unwrap();
     let docker = identities
         .iter()
@@ -1629,7 +1644,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_b.len(), 32);
+    assert_eq!(policies_b.len(), 36);
     let err = h
         .svc
         .update_policy(as_role(
@@ -1674,7 +1689,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
     assert_eq!(decision_in(&policies_a), PolicyDecision::Auto as i32);
     assert_eq!(decision_in(&policies_b), PolicyDecision::Approval as i32);
 
-    // Identities: each workspace has its own three, with their own ids.
+    // Identities: each workspace has its own four, with their own ids.
     let identities_a = h
         .svc
         .list_identities(req(ListIdentitiesRequest {}))
@@ -1689,7 +1704,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .identities;
-    assert_eq!((identities_a.len(), identities_b.len()), (3, 3));
+    assert_eq!((identities_a.len(), identities_b.len()), (4, 4));
     assert!(
         identities_a
             .iter()
@@ -1906,8 +1921,8 @@ async fn workspaces_are_isolated_and_roles_enforced() {
     assert_eq!(count("execution"), 2);
     assert_eq!(count("step"), 3);
     assert_eq!(count("approval"), 1);
-    assert_eq!(count("policy"), 32);
-    assert_eq!(count("identity"), 3);
+    assert_eq!(count("policy"), 36);
+    assert_eq!(count("identity"), 4);
     assert!(count("grant") >= 8);
     assert!(count("event") > 5);
     for record in &records {
@@ -1976,8 +1991,8 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         "the docker run in PLANNING and the waiting one"
     );
     assert_eq!(deleted.deleted["execution"], 3);
-    assert_eq!(deleted.deleted["policy"], 32);
-    assert_eq!(deleted.deleted["identity"], 3);
+    assert_eq!(deleted.deleted["policy"], 36);
+    assert_eq!(deleted.deleted["identity"], 4);
     assert!(deleted.deleted["approval"] >= 2);
     let listed = h
         .svc
@@ -2001,7 +2016,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_a.len(), 32);
+    assert_eq!(policies_a.len(), 36);
     assert_eq!(decision_in(&policies_a), PolicyDecision::Approval as i32);
     // The seed note is per process and bounded; both workspaces are in it.
     assert_eq!(h.rt.seeded_workspaces(), 2);

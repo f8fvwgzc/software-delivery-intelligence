@@ -1,6 +1,6 @@
-//! Per-workspace identities and grants (CONTRACT.md §5.3). The three seeded
+//! Per-workspace identities and grants (CONTRACT.md §5.3). The seeded
 //! identities are created for a workspace on its first use (`seed`); the
-//! `github-token` one only exists while `GITHUB_TOKEN` is configured.
+//! `github-token` one only exists while the workspace has GitHub access.
 
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgExecutor};
@@ -154,13 +154,30 @@ const LOCAL_DOCKER: (&str, &str, &str, [&str; 4]) = (
 );
 
 /// The identity deployment runs execute as (CONTRACT.md §22). It may look
-/// an image up and trigger a pipeline; every `deploy:*` permission, and
-/// `repository:write` for a GitOps commit, needs a timed grant (§5.3).
-const DELIVERY: (&str, &str, &str, [&str; 3]) = (
+/// an image up, trigger a pipeline and read a GitOps application
+/// (`cluster:read`, §24.7); every `deploy:*` permission, `repository:write`
+/// for a GitOps commit and `cluster:write` for a sync need a timed grant
+/// (§5.3).
+const DELIVERY: (&str, &str, &str, [&str; 4]) = (
     "delivery",
     "delivery",
     "Promotes releases through environments. Holds registry read and pipeline trigger scopes; every deploy permission needs a timed grant.",
-    ["repository:read", "registry:read", "pipeline:trigger"],
+    [
+        "repository:read",
+        "registry:read",
+        "pipeline:trigger",
+        "cluster:read",
+    ],
+);
+
+/// The identity GitOps runs execute as (CONTRACT.md §24.7): it previews
+/// and watches applications; `cluster:write`, which a sync and a rollback
+/// need, is held by nobody and always a timed grant.
+const GITOPS: (&str, &str, &str, [&str; 1]) = (
+    "gitops",
+    "gitops",
+    "Drives SDI's GitOps engine. Holds cluster read to preview syncs and watch health; every sync and rollback needs a timed cluster:write grant.",
+    ["cluster:read"],
 );
 
 /// Name of the identity that stands for the connected token.
@@ -209,15 +226,17 @@ async fn upsert(
 }
 
 /// Creates the workspace's seeded identities when they are missing:
-/// `simulated`, `local-docker` and `delivery` always, `github-token` only
-/// while the workspace has GitHub access (its own, or the instance's
-/// token). Idempotent.
+/// `simulated`, `local-docker`, `delivery` and `gitops` always,
+/// `github-token` only while the workspace has GitHub access (its own, or
+/// the instance's token). Idempotent.
 pub async fn seed(tx: &mut Tx, workspace_id: Uuid, github_configured: bool) -> sqlx::Result<()> {
     let (name, kind, description, scopes) = SIMULATED;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
     let (name, kind, description, scopes) = LOCAL_DOCKER;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
     let (name, kind, description, scopes) = DELIVERY;
+    upsert(tx, workspace_id, name, kind, description, &scopes).await?;
+    let (name, kind, description, scopes) = GITOPS;
     upsert(tx, workspace_id, name, kind, description, &scopes).await?;
     if github_configured {
         upsert(
@@ -304,13 +323,16 @@ mod tests {
     use super::*;
 
     /// CONTRACT.md §5.3: `repository:admin` is held by nobody; the
-    /// connected token keeps exactly the repository scopes it had.
+    /// connected token keeps exactly the repository scopes it had. §24.7:
+    /// nobody holds `cluster:write` either, and the two identities that
+    /// read GitOps applications hold `cluster:read`.
     #[test]
-    fn no_seeded_identity_holds_repository_admin() {
-        let seeded: [&[&str]; 4] = [
+    fn no_seeded_identity_holds_repository_admin_or_cluster_write() {
+        let seeded: [&[&str]; 5] = [
             &SIMULATED.3,
             &LOCAL_DOCKER.3,
             &DELIVERY.3,
+            &GITOPS.3,
             &GITHUB_TOKEN_SCOPES,
         ];
         for scopes in seeded {
@@ -319,7 +341,17 @@ mod tests {
                 "{scopes:?}"
             );
             assert!(scopes.iter().all(|scope| !scope.ends_with(":admin")));
+            assert!(
+                !scopes.contains(&crate::adapters::CLUSTER_WRITE),
+                "{scopes:?}"
+            );
         }
+        assert!(DELIVERY.3.contains(&crate::adapters::CLUSTER_READ));
+        assert_eq!(GITOPS.3, [crate::adapters::CLUSTER_READ]);
+        assert_eq!(
+            GITOPS.0,
+            crate::adapters::identity_for(crate::adapters::GITOPS)
+        );
         assert!(GITHUB_TOKEN_SCOPES.contains(&"repository:read"));
         assert!(GITHUB_TOKEN_SCOPES.contains(&"repository:write"));
     }

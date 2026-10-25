@@ -3,8 +3,8 @@
 //! them and holds the shared helpers.
 //!
 //! Roles: reads need VIEWER; create / start / resolve / cancel of a
-//! `simulated` run need MEMBER, of a `docker`, `github` or `delivery` run
-//! APPROVER; DecideApproval and GrantPermission need APPROVER; UpdatePolicy
+//! `simulated` run need MEMBER, of a `docker`, `github`, `delivery` or
+//! `gitops` run APPROVER; DecideApproval and GrantPermission need APPROVER; UpdatePolicy
 //! needs ADMIN; the workspace export needs ADMIN and the delete needs OWNER.
 //!
 //! Continuous delivery (CONTRACT.md §22, handlers in `crate::delivery::grpc`):

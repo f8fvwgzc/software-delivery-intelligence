@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package sdi.common.v1;
 
+option go_package = "github.com/f8fvwgzc/software-delivery-intelligence/services/gitops/gen/sdi/common/v1;commonv1";
+
 import "google/protobuf/timestamp.proto";
 
 // How much damage an action can do. Drives the approval policy.
@@ -23,10 +25,10 @@ enum KnowledgeScope {
   KNOWLEDGE_SCOPE_PUBLIC_TEMPLATE = 5;
 }
 
-// A change notification any service can emit. The gateway merges the three
+// A change notification any service can emit. The gateway merges the
 // services' streams into one SSE feed so the web app never has to poll.
 message PlatformEvent {
-  // "project" | "scan" | "proposal" | "decision" | "document" | "execution" | "approval" | "pattern"
+  // "project" | "scan" | "proposal" | "decision" | "document" | "execution" | "approval" | "pattern" | "application"
   string entity = 1;
   string entity_id = 2;
   // Empty for entities that are not tied to one project.

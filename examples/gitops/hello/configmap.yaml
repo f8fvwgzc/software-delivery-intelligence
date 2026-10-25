@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hello
+  annotations:
+    # Applied before the Deployment that mounts it.
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  index.html: |
+    <!doctype html>
+    <title>hello</title>
+    <p>Deployed by SDI's GitOps engine.</p>

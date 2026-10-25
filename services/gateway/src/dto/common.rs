@@ -68,7 +68,8 @@ pub struct PlatformEvent {
     /// `project`, `scan`, `proposal`, `decision`, `document`, `execution`, `approval`, `pattern`,
     /// for continuous delivery `release`, `deployment` or `environment`, and for code review
     /// and the pull request autopilot `review` (also when a fix or merge execution is
-    /// attached to it) or `finding` (also when a fix was drafted for it).
+    /// attached to it) or `finding` (also when a fix was drafted for it), and for the GitOps
+    /// engine `application` (its sync or health status changed).
     pub entity: String,
     /// Id of the entity that changed.
     pub entity_id: String,

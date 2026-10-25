@@ -79,6 +79,57 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --locked
 
+  go:
+    # The GitOps engine (CONTRACT.md §24) is a Go module embedding Argo CD's
+    # gitops-engine. The integration tests sync real manifests into a
+    # throwaway kind cluster; its API server is on 127.0.0.1, which deploy
+    # targets may only use with SDI_ALLOW_PRIVATE_DEPLOY_TARGETS=1.
+    name: Go (vet, test against kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: services/gitops
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: sdi
+          POSTGRES_PASSWORD: sdi
+          POSTGRES_DB: sdi
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U sdi -d sdi"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://sdi:sdi@127.0.0.1:5440/sdi
+      SDI_ALLOW_PRIVATE_DEPLOY_TARGETS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/gitops/go.mod
+          cache-dependency-path: services/gitops/go.sum
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: sdi-gitops-ci
+
+      - name: go test
+        run: |
+          kind get kubeconfig --name sdi-gitops-ci > "$RUNNER_TEMP/kind.kubeconfig"
+          SDI_GITOPS_TEST_KUBECONFIG="$RUNNER_TEMP/kind.kubeconfig" go test ./... -count=1 -race
+
   web:
     name: Web (typecheck, lint, build)
     runs-on: ubuntu-latest
@@ -141,13 +192,13 @@ jobs:
 
   docker:
     name: Image ${{ matrix.image }}
-    needs: [rust, web, nginx]
+    needs: [rust, go, web, nginx]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        image: [gateway, identity, knowledge, intelligence, execution, web]
+        image: [gateway, identity, knowledge, intelligence, execution, gitops, web]
     steps:
       - uses: actions/checkout@v4
 
@@ -161,6 +212,12 @@ jobs:
               echo "dockerfile=deploy/docker/web.Dockerfile"
               echo "args="
               echo "scope=web"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.image }}" = gitops ]; then
+            {
+              echo "dockerfile=deploy/docker/go.Dockerfile"
+              echo "args="
+              echo "scope=gitops"
             } >> "$GITHUB_OUTPUT"
           else
             # One cache scope for all Rust images: the cargo-chef dependency
@@ -256,6 +313,7 @@ jobs:
             knowledge.cache-from=type=gha,scope=rust
             intelligence.cache-from=type=gha,scope=rust
             execution.cache-from=type=gha,scope=rust
+            gitops.cache-from=type=gha,scope=gitops
             gateway-1.cache-from=type=gha,scope=rust
             web.cache-from=type=gha,scope=web
 

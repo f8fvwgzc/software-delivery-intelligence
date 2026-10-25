@@ -30,3 +30,9 @@ pub mod identity {
         tonic::include_proto!("sdi.identity.v1");
     }
 }
+
+pub mod gitops {
+    pub mod v1 {
+        tonic::include_proto!("sdi.gitops.v1");
+    }
+}

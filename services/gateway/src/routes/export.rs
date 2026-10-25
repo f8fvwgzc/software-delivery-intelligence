@@ -12,8 +12,8 @@ use axum::{
 use chrono::Utc;
 use futures::StreamExt;
 use sdi_proto::{
-    execution::v1 as execution, identity::v1 as identity, intelligence::v1 as intelligence,
-    knowledge::v1 as knowledge,
+    execution::v1 as execution, gitops::v1 as gitops, identity::v1 as identity,
+    intelligence::v1 as intelligence, knowledge::v1 as knowledge,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -232,6 +232,19 @@ pub fn stream(scoped: Scoped, auth: Auth) -> Response {
         );
         if let Some(error) = section(&out, "execution", execution).await {
             errors.insert("execution".into(), error);
+        }
+        // Clusters (never their kubeconfig), applications, history (CONTRACT.md §24).
+        let gitops = record_stream(
+            scoped
+                .gitops()
+                .export_workspace_data(gitops::ExportWorkspaceDataRequest {
+                    workspace_id: workspace_id.clone(),
+                })
+                .await,
+            |r: gitops::WorkspaceDataRecord| (r.entity, r.json),
+        );
+        if let Some(error) = section(&out, "gitops", gitops).await {
+            errors.insert("gitops".into(), error);
         }
 
         out.key("audit").await;

@@ -90,6 +90,34 @@ pub fn success_output(step: &StepInput, elapsed: Duration) -> String {
                 p("security_updates", "false")
             );
         }
+        // CONTRACT.md §24.7: the GitOps engine is not asked anything.
+        super::GITOPS_PREVIEW => {
+            return format!(
+                "Would preview a sync of application {}\nNothing was rendered or compared (dry run, {secs:.1}s)",
+                p("application", "?")
+            );
+        }
+        super::GITOPS_SYNC => {
+            return format!(
+                "Would sync application {} to {}\nNothing was synced (dry run, {secs:.1}s)",
+                p("application", "?"),
+                p("revision", "its source's revision")
+            );
+        }
+        super::GITOPS_ROLLBACK => {
+            return format!(
+                "Would roll application {} back to history entry {}\nNothing was rolled back (dry run, {secs:.1}s)",
+                p("application", "?"),
+                p("history_id", "?")
+            );
+        }
+        super::GITOPS_VERIFY_HEALTH => {
+            return format!(
+                "Would wait up to {}s for application {} to be healthy\nNothing was read (dry run, {secs:.1}s)",
+                p("timeout_seconds", "300"),
+                p("application", "?")
+            );
+        }
         _ => {}
     }
     // The action type says what the step does; the adapter only decides the
@@ -207,6 +235,18 @@ pub fn failure_output(step: &StepInput, code: &str) -> String {
         diagnosis::MERGE_BLOCKED => format!(
             "GitHub refused to merge pull request #{}: at least 1 approving review is required. Nothing was merged (injected fault).",
             p("pull_request", "?")
+        ),
+        diagnosis::RENDER_FAILED => format!(
+            "the sync of application {} could not start: its source did not render: kustomize build: accumulating resources: missing file (injected fault)",
+            p("application", "?")
+        ),
+        diagnosis::CLUSTER_UNREACHABLE => format!(
+            "the sync of application {} could not start: the cluster is out of reach: dial tcp 10.0.0.5:6443: i/o timeout (injected fault)",
+            p("application", "?")
+        ),
+        diagnosis::SYNC_FAILED => format!(
+            "the sync of application {} failed; 1 resource failed: Deployment api (ImagePullBackOff) (injected fault)",
+            p("application", "?")
         ),
         other => format!("{} failed: {other} (injected fault)", step.key),
     }
@@ -365,6 +405,62 @@ mod tests {
                 } => {
                     assert_eq!(failed, code);
                     assert!(raw_output.contains("#12"), "{raw_output}");
+                    assert!(raw_output.contains("injected fault"), "{raw_output}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+    }
+
+    /// The GitOps steps of CONTRACT.md §24.7 are dry-run too, and their
+    /// failure codes can be rehearsed.
+    #[tokio::test]
+    async fn gitops_steps_are_dry_run_and_their_faults_can_be_injected() {
+        let adapter = SimulatedAdapter::new(1);
+        let with_params = |action_type: &str| StepInput {
+            params: [("application", "app-1"), ("history_id", "h-1")]
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            ..step("sync", "gitops", action_type)
+        };
+        for action_type in crate::adapters::GITOPS_ACTIONS {
+            match adapter
+                .run(&with_params(action_type), &RunContext::default())
+                .await
+            {
+                StepOutcome::Succeeded { output, outputs } => {
+                    assert!(output.starts_with("Would "), "{action_type}: {output}");
+                    assert!(output.contains("app-1"), "{action_type}: {output}");
+                    assert!(output.contains("(dry run"), "{action_type}: {output}");
+                    assert!(outputs.is_empty(), "{action_type}: {outputs:?}");
+                }
+                other => panic!("{action_type}: {other:?}"),
+            }
+        }
+        for code in [
+            diagnosis::RENDER_FAILED,
+            diagnosis::CLUSTER_UNREACHABLE,
+            diagnosis::SYNC_FAILED,
+        ] {
+            let ctx = RunContext {
+                fault: Some(Fault {
+                    step_key: "sync".into(),
+                    code: code.to_ascii_lowercase(),
+                }),
+                ..Default::default()
+            };
+            match adapter
+                .run(&with_params(crate::adapters::GITOPS_SYNC), &ctx)
+                .await
+            {
+                StepOutcome::Failed {
+                    code: failed,
+                    raw_output,
+                    ..
+                } => {
+                    assert_eq!(failed, code);
+                    assert!(raw_output.contains("app-1"), "{raw_output}");
                     assert!(raw_output.contains("injected fault"), "{raw_output}");
                 }
                 other => panic!("{code}: {other:?}"),

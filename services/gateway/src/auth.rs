@@ -94,7 +94,7 @@ pub fn segments(path: &str) -> Vec<&str> {
 /// adapter named in the body of the routes that take one.
 pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role {
     let segments = segments(path);
-    let real_adapter = matches!(adapter, Some("docker") | Some("github"));
+    let real_adapter = matches!(adapter, Some("docker") | Some("github") | Some("gitops"));
     match (method, segments.as_slice()) {
         (&Method::DELETE, ["workspaces", _]) => Role::Owner,
         (&Method::GET, ["workspaces", _, "audit"]) => Role::Admin,
@@ -107,6 +107,10 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (&Method::POST | &Method::PUT | &Method::DELETE, ["registries", ..]) => Role::Admin,
         (&Method::POST, ["projects", _, "environments"]) => Role::Admin,
         (&Method::PUT | &Method::DELETE, ["environments", _]) => Role::Admin,
+        // GitOps engine (§24.8): clusters and applications are an admin's to
+        // change (an application's sync policy can deploy on its own).
+        (&Method::POST, ["clusters" | "applications"]) => Role::Admin,
+        (&Method::PUT | &Method::DELETE, ["clusters" | "applications", _]) => Role::Admin,
         // Pull request autopilot (§23): turning Dependabot on changes the
         // repository's settings.
         (&Method::POST, ["projects", _, "security", "dependabot"]) => Role::Admin,
@@ -126,6 +130,10 @@ pub fn required_role(method: &Method, path: &str, adapter: Option<&str>) -> Role
         (&Method::POST, ["projects", _, "pull-requests", _, "merge"]) => Role::Approver,
         // Promoting and rolling back start a real deployment.
         (&Method::POST, ["environments", _, "promote" | "rollback"]) => Role::Approver,
+        // Syncing and rolling back an application change a cluster; a
+        // refresh only compares, which is member work.
+        (&Method::POST, ["applications", _, "sync" | "rollback"]) => Role::Approver,
+        (&Method::POST, ["applications", _, "refresh"]) => Role::Member,
         (&Method::POST, ["executions"]) if real_adapter => Role::Approver,
         (&Method::POST, ["proposals", _, "accept"]) if real_adapter => Role::Approver,
         _ => Role::Member,
@@ -306,6 +314,16 @@ pub fn audit_action(method: &Method, path: &str) -> (String, String, String) {
         }
         (&Method::POST, ["environments", id, "rollback"]) => {
             (owned("deployment.rollback"), "environment", id)
+        }
+        // GitOps engine (§24.8).
+        (&Method::POST, ["clusters"]) => (owned("cluster.upsert"), "cluster", ""),
+        (&Method::PUT, ["clusters", id]) => (owned("cluster.upsert"), "cluster", id),
+        (&Method::DELETE, ["clusters", id]) => (owned("cluster.delete"), "cluster", id),
+        (&Method::POST, ["applications"]) => (owned("application.upsert"), "application", ""),
+        (&Method::PUT, ["applications", id]) => (owned("application.upsert"), "application", id),
+        (&Method::DELETE, ["applications", id]) => (owned("application.delete"), "application", id),
+        (&Method::POST, ["applications", id, verb @ ("refresh" | "sync" | "rollback")]) => {
+            (format!("application.{verb}"), "application", id)
         }
         (&Method::PUT, ["workspaces", _, "secrets", name]) => (owned("secret.set"), "secret", name),
         (&Method::DELETE, ["workspaces", _, "secrets", name]) => {
@@ -683,6 +701,47 @@ mod tests {
                 "{method} {path}"
             );
         }
+        // GitOps engine (§24.8): reads viewer, refresh member, sync and
+        // rollback approver, clusters and applications admin to change.
+        for path in [
+            "/api/v1/clusters",
+            "/api/v1/applications",
+            "/api/v1/applications/a1",
+            "/api/v1/applications/a1/manifests",
+            "/api/v1/applications/a1/diff",
+            "/api/v1/applications/a1/history",
+        ] {
+            assert_eq!(r(Method::GET, path, None), Role::Viewer, "{path}");
+        }
+        assert_eq!(
+            r(Method::POST, "/api/v1/applications/a1/refresh", None),
+            Role::Member
+        );
+        for path in [
+            "/api/v1/applications/a1/sync",
+            "/api/v1/applications/a1/rollback",
+        ] {
+            assert_eq!(r(Method::POST, path, None), Role::Approver, "{path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/api/v1/clusters"),
+            (Method::PUT, "/api/v1/clusters/c1"),
+            (Method::DELETE, "/api/v1/clusters/c1"),
+            (Method::POST, "/api/v1/applications"),
+            (Method::PUT, "/api/v1/applications/a1"),
+            (Method::DELETE, "/api/v1/applications/a1"),
+        ] {
+            assert_eq!(
+                r(method.clone(), path, None),
+                Role::Admin,
+                "{method} {path}"
+            );
+        }
+        // An execution that names the gitops adapter is an approver's too.
+        assert_eq!(
+            r(Method::POST, "/api/v1/executions", Some("gitops")),
+            Role::Approver
+        );
     }
 
     #[test]
@@ -839,6 +898,78 @@ mod tests {
                 "secret.delete",
                 "secret",
                 "JENKINS_TOKEN",
+            ),
+        ] {
+            assert_eq!(
+                a(method, path),
+                (action.to_owned(), entity.to_owned(), id.to_owned()),
+                "{path}"
+            );
+        }
+        // GitOps engine (§24.8).
+        for (method, path, action, entity, id) in [
+            (
+                Method::POST,
+                "/api/v1/clusters",
+                "cluster.upsert",
+                "cluster",
+                "",
+            ),
+            (
+                Method::PUT,
+                "/api/v1/clusters/c1",
+                "cluster.upsert",
+                "cluster",
+                "c1",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/clusters/c1",
+                "cluster.delete",
+                "cluster",
+                "c1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/applications",
+                "application.upsert",
+                "application",
+                "",
+            ),
+            (
+                Method::PUT,
+                "/api/v1/applications/a1",
+                "application.upsert",
+                "application",
+                "a1",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/applications/a1",
+                "application.delete",
+                "application",
+                "a1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/applications/a1/refresh",
+                "application.refresh",
+                "application",
+                "a1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/applications/a1/sync",
+                "application.sync",
+                "application",
+                "a1",
+            ),
+            (
+                Method::POST,
+                "/api/v1/applications/a1/rollback",
+                "application.rollback",
+                "application",
+                "a1",
             ),
         ] {
             assert_eq!(

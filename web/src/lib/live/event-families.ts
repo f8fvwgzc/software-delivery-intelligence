@@ -36,6 +36,8 @@ export const FAMILIES_BY_ENTITY: Record<string, readonly Family[]> = {
   deployment: [['delivery-cd', 'pipeline'], ['delivery-cd', 'runs'], ['delivery-cd', 'releases']],
   release: [['delivery-cd', 'pipeline'], ['delivery-cd', 'releases']],
   environment: [['delivery-cd', 'pipeline']],
+  // The GitOps engine (CONTRACT.md §24.6, §24.8): the list, the application with its resources, its history.
+  application: [['gitops']],
 }
 
 /** Every family the stream can touch; refetched when the stream comes up or drops. */
@@ -53,14 +55,22 @@ export const ALL_FAMILIES: readonly Family[] = [
   ['pull-requests'],
   ['activity'],
   ['delivery-cd'],
+  ['gitops'],
 ]
 
-/** Roots of the gated lane; `features/reviews/api/keys.ts` and `features/security/api/keys.ts` build on them. */
+/**
+ * Roots of the gated lane; `features/reviews/api/keys.ts`,
+ * `features/security/api/keys.ts` and `features/gitops/api/keys.ts` build on
+ * them.
+ */
 export const MERGE_READINESS_ROOT = 'merge-readiness'
 export const SECURITY_ROOT = 'security'
+/** An application's diff and rendered manifests: the gitops service renders the source and reads the cluster to answer. */
+export const GITOPS_DIFF_ROOT = 'gitops-diff'
+export const GITOPS_MANIFESTS_ROOT = 'gitops-manifests'
 
-/** Both gated roots, for the one refetch after the stream reconnects. */
-export const ALL_GATED_FAMILIES: readonly Family[] = [[MERGE_READINESS_ROOT], [SECURITY_ROOT]]
+/** Every gated root, for the one refetch after the stream reconnects. */
+export const ALL_GATED_FAMILIES: readonly Family[] = [[MERGE_READINESS_ROOT], [SECURITY_ROOT], [GITOPS_DIFF_ROOT], [GITOPS_MANIFESTS_ROOT]]
 
 /** A review that is still reading or analyzing: the merge gate says "running" until it ends. */
 const REVIEW_IN_FLIGHT: ReadonlySet<string> = new Set(['context', 'analyzing'])
@@ -79,8 +89,15 @@ const EXECUTION_SETTLED: ReadonlySet<string> = new Set(['succeeded', 'failed', '
  *   moves the head, a merge closes the pull request, turning Dependabot on
  *   changes the repository's settings; the steps in between change nothing
  *   these answers carry. The reviews follow, since they name the execution.
+ * - `application`: a change of its sync or health status, its settings, or
+ *   its end can move the diff and the rendered manifests of that one
+ *   application. An operation's `progress` cannot (the diff is read again
+ *   when the operation ends), so a sync of five hundred resources does not
+ *   make the service diff the application five hundred times.
  */
-export function gatedFamilies(event: Pick<PlatformEvent, 'entity' | 'action' | 'status' | 'projectId'>): Family[] {
+export function gatedFamilies(
+  event: Pick<PlatformEvent, 'entity' | 'action' | 'status' | 'projectId'> & Partial<Pick<PlatformEvent, 'entityId'>>,
+): Family[] {
   const scope = event.projectId ? [event.projectId] : []
   const readiness: Family = [MERGE_READINESS_ROOT, ...scope]
 
@@ -93,6 +110,14 @@ export function gatedFamilies(event: Pick<PlatformEvent, 'entity' | 'action' | '
       return event.action === 'created' || EXECUTION_SETTLED.has(event.status)
         ? [readiness, [SECURITY_ROOT, ...scope], ['reviews']]
         : []
+    case 'application': {
+      if (event.action === 'progress') return []
+      const application = event.entityId ? [event.entityId] : []
+      return [
+        [GITOPS_DIFF_ROOT, ...application],
+        [GITOPS_MANIFESTS_ROOT, ...application],
+      ]
+    }
     default:
       return []
   }

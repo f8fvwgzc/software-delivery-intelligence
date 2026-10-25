@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod diagrams;
 pub mod execution;
 pub mod github;
+pub mod gitops;
 pub mod identity;
 pub mod intelligence;
 pub mod knowledge;

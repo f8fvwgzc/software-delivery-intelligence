@@ -25,6 +25,7 @@ const DependenciesPage = lazy(() => import('@/features/dependencies/pages/depend
 const SecurityPage = lazy(() => import('@/features/security/pages/security-page'))
 const DeliveryPage = lazy(() => import('@/features/delivery/pages/delivery-page'))
 const PipelinePage = lazy(() => import('@/features/delivery-cd/pages/pipeline-page'))
+const ApplicationsPage = lazy(() => import('@/features/gitops/pages/applications-page'))
 const ProjectProposalsPage = lazy(() => import('@/features/proposals/pages/project-proposals-page'))
 const DocumentsPage = lazy(() => import('@/features/documents/pages/documents-page'))
 const DiagramsPage = lazy(() => import('@/features/diagrams/pages/diagrams-page'))
@@ -38,6 +39,7 @@ const ExecutionsPage = lazy(() => import('@/features/executions/pages/executions
 const ExecutionPage = lazy(() => import('@/features/executions/pages/execution-page'))
 const ApprovalsPage = lazy(() => import('@/features/approvals/pages/approvals-page'))
 const DiagramPage = lazy(() => import('@/features/diagrams/pages/diagram-page'))
+const ApplicationPage = lazy(() => import('@/features/gitops/pages/application-page'))
 const ReviewsPage = lazy(() => import('@/features/reviews/pages/reviews-page'))
 const ReviewPage = lazy(() => import('@/features/reviews/pages/review-page'))
 const ActivityPage = lazy(() => import('@/features/reviews/pages/activity-page'))
@@ -53,6 +55,7 @@ const MembersPage = lazy(() => import('@/features/workspaces/pages/members-page'
 const AuditPage = lazy(() => import('@/features/workspaces/pages/audit-page'))
 const DataPrivacyPage = lazy(() => import('@/features/workspaces/pages/data-privacy-page'))
 const RegistriesPage = lazy(() => import('@/features/workspaces/pages/registries-page'))
+const ClustersPage = lazy(() => import('@/features/gitops/pages/clusters-page'))
 const SecretsPage = lazy(() => import('@/features/workspaces/pages/secrets-page'))
 const TrustDocPage = lazy(() => import('@/features/auth/pages/trust-doc-page'))
 
@@ -63,6 +66,7 @@ const ProposalCrumb = lazy(() => import('@/features/proposals/components/proposa
 const ExecutionCrumb = lazy(() => import('@/features/executions/components/execution-crumb'))
 const DiagramCrumb = lazy(() => import('@/features/diagrams/components/diagram-crumb'))
 const ReviewCrumb = lazy(() => import('@/features/reviews/components/review-crumb'))
+const ApplicationCrumb = lazy(() => import('@/features/gitops/components/application-crumb'))
 
 /** Route metadata read by the header breadcrumbs. */
 export interface RouteHandle {
@@ -94,6 +98,7 @@ const shellRoutes: RouteObject[] = [
           { path: 'security', Component: SecurityPage, handle: crumb('Security') },
           { path: 'delivery', Component: DeliveryPage, handle: crumb('Delivery') },
           { path: 'pipeline', Component: PipelinePage, handle: crumb('Pipeline') },
+          { path: 'applications', Component: ApplicationsPage, handle: crumb('Applications') },
           { path: 'proposals', Component: ProjectProposalsPage, handle: crumb('Proposals') },
           { path: 'documents', Component: DocumentsPage, handle: crumb('Documents') },
           { path: 'diagrams', Component: DiagramsPage, handle: crumb('Diagrams') },
@@ -132,6 +137,7 @@ const shellRoutes: RouteObject[] = [
   },
   { path: 'activity', Component: ActivityPage, handle: crumb('Activity') },
   { path: 'diagrams/:diagramId', Component: DiagramPage, handle: crumb(DiagramCrumb) },
+  { path: 'applications/:applicationId', Component: ApplicationPage, handle: crumb(ApplicationCrumb) },
 
   {
     path: 'knowledge',
@@ -151,6 +157,7 @@ const shellRoutes: RouteObject[] = [
       { path: 'audit', Component: AuditPage, handle: crumb('Audit') },
       { path: 'data', Component: DataPrivacyPage, handle: crumb('Data & privacy') },
       { path: 'registries', Component: RegistriesPage, handle: crumb('Registries') },
+      { path: 'clusters', Component: ClustersPage, handle: crumb('Clusters') },
       { path: 'secrets', Component: SecretsPage, handle: crumb('Secrets') },
     ],
   },

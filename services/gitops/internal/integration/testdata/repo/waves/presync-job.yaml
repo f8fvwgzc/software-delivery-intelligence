@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: migrate
+        # Present on the test node; exits 0 at once.
+        image: registry.k8s.io/etcd:3.5.15-0
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/etcd", "--version"]
