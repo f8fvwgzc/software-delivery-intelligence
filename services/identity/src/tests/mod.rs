@@ -903,6 +903,47 @@ async fn audit_and_data_controls_round_trip() {
     .unwrap();
     assert_eq!(older.entries.len(), 1);
     assert_eq!(older.entries[0].action, "scan.start");
+
+    // A service records with the user id only: the login is filled in; the
+    // system principal is not a user and keeps an empty login.
+    for (user, action) in [
+        (user_id.as_str(), "application.sync"),
+        ("system", "application.auto_sync"),
+    ] {
+        audit::record(
+            &h.state,
+            RecordAuditRequest {
+                entry: Some(AuditEntry {
+                    workspace_id: ws.id.clone(),
+                    user_id: user.to_owned(),
+                    action: action.to_owned(),
+                    entity: "application".into(),
+                    ..Default::default()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let applications = audit::list(
+        &h.state,
+        ListAuditRequest {
+            workspace_id: ws.id.clone(),
+            action_prefix: "application.".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let login_of = |action: &str| {
+        applications
+            .entries
+            .iter()
+            .find(|e| e.action == action)
+            .map(|e| e.user_login.clone())
+    };
+    assert_eq!(login_of("application.sync").as_deref(), Some("octo"));
+    assert_eq!(login_of("application.auto_sync").as_deref(), Some(""));
     let missing = audit::record(
         &h.state,
         RecordAuditRequest {

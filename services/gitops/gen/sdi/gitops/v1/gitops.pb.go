@@ -2137,13 +2137,15 @@ type HistoryEntry struct {
 	// The source as it was synced, so a rollback can sync it again.
 	Source *ApplicationSource `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
 	// "succeeded" | "failed" | "error"
-	Phase         string                 `protobuf:"bytes,5,opt,name=phase,proto3" json:"phase,omitempty"`
-	Message       string                 `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
-	InitiatedBy   string                 `protobuf:"bytes,7,opt,name=initiated_by,json=initiatedBy,proto3" json:"initiated_by,omitempty"`
-	ExecutionId   string                 `protobuf:"bytes,8,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	Automated     bool                   `protobuf:"varint,9,opt,name=automated,proto3" json:"automated,omitempty"`
-	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FinishedAt    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	Phase       string                 `protobuf:"bytes,5,opt,name=phase,proto3" json:"phase,omitempty"`
+	Message     string                 `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
+	InitiatedBy string                 `protobuf:"bytes,7,opt,name=initiated_by,json=initiatedBy,proto3" json:"initiated_by,omitempty"`
+	ExecutionId string                 `protobuf:"bytes,8,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	Automated   bool                   `protobuf:"varint,9,opt,name=automated,proto3" json:"automated,omitempty"`
+	StartedAt   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt  *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	// "sync" | "rollback"
+	Kind          string `protobuf:"bytes,12,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2253,6 +2255,13 @@ func (x *HistoryEntry) GetFinishedAt() *timestamppb.Timestamp {
 		return x.FinishedAt
 	}
 	return nil
+}
+
+func (x *HistoryEntry) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 type ListHistoryRequest struct {
@@ -2730,7 +2739,7 @@ const file_sdi_gitops_v1_gitops_proto_rawDesc = "" +
 	"\n" +
 	"history_id\x18\x02 \x01(\tR\thistoryId\x12\x14\n" +
 	"\x05prune\x18\x03 \x01(\bR\x05prune\x12!\n" +
-	"\fexecution_id\x18\x04 \x01(\tR\vexecutionId\"\xa7\x03\n" +
+	"\fexecution_id\x18\x04 \x01(\tR\vexecutionId\"\xbb\x03\n" +
 	"\fHistoryEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12%\n" +
 	"\x0eapplication_id\x18\x02 \x01(\tR\rapplicationId\x12\x1a\n" +
@@ -2745,7 +2754,8 @@ const file_sdi_gitops_v1_gitops_proto_rawDesc = "" +
 	"started_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12;\n" +
 	"\vfinished_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"finishedAt\":\n" +
+	"finishedAt\x12\x12\n" +
+	"\x04kind\x18\f \x01(\tR\x04kind\":\n" +
 	"\x12ListHistoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\"L\n" +

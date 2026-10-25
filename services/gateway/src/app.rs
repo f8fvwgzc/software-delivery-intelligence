@@ -4410,7 +4410,9 @@ mod tests {
         assert_eq!(entries[0]["applicationId"], "a1");
         assert_eq!(entries[0]["phase"], "succeeded");
         assert_eq!(entries[0]["executionId"], "x1");
+        assert_eq!(entries[0]["kind"], "rollback");
         assert_eq!(entries[0]["source"]["path"], "deploy/overlays/prod");
+        assert_eq!(entries[1]["kind"], "sync", "no kind reads as a sync");
         assert_eq!(entries[1]["automated"], true);
         assert_eq!(entries[1]["initiatedBy"], "system");
         assert_eq!(entries[1]["executionId"], Value::Null);
@@ -4608,6 +4610,24 @@ mod tests {
                 "{message}"
             );
         }
+        // A rollback under automated sync would be undone by the next
+        // reconcile: refused before an execution exists.
+        let (status, json, _) = send_as(
+            app.clone(),
+            approver,
+            "POST",
+            "/api/v1/applications/automated/rollback",
+            Some(json!({"historyId": "h2"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("turn off automated sync"),
+            "{json}"
+        );
         let (status, json, _) = send_as(
             app.clone(),
             approver,

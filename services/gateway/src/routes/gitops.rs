@@ -409,6 +409,19 @@ async fn rollback_application(
     }
     let application = read_application(&state, id).await?;
     refuse_while_running(&application)?;
+    // The service refuses it too (§24.5), but only at the rollback step,
+    // after an approval and a grant: refuse before the execution exists.
+    if application
+        .sync_policy
+        .as_ref()
+        .is_some_and(|policy| policy.automated)
+    {
+        return Err(ApiError::precondition(format!(
+            "{} syncs automatically: turn off automated sync before rolling back, \
+             or the next reconcile syncs the current source again",
+            application.name
+        )));
+    }
     let entry = state
         .gitops()
         .list_history(proto::ListHistoryRequest {

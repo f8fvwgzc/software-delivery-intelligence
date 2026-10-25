@@ -1736,12 +1736,15 @@ the engine's sync: phases PreSync → Sync → PostSync with `SyncFail` hooks
 says so, a partial sync when `resources` is set. It waits for the
 operation to end (`timeout_seconds`, default 600, then terminate) and
 answers each resource's result and the application's health right after.
-Every sync that is not a dry run appends a history entry (revision, the
-source as synced, phase, who, the execution); the last 50 are kept.
+Every sync that is not a dry run appends a history entry (kind `sync` or
+`rollback`, revision, the source as synced with its overrides, phase, who,
+the execution); the last 50 are kept. The service audits what the gateway
+cannot see (the outcome of a sync or rollback, automated syncs); a refresh
+is not audited by the service, since health checks poll it.
 `RollbackApplication` syncs a history entry's source at its revision;
-as in Argo CD it is refused (`FAILED_PRECONDITION`) while
-`sync_policy.automated` is on, since the next reconcile would sync the
-current source again. One operation per application at a time
+as in Argo CD it is refused (`FAILED_PRECONDITION`; the gateway answers
+412 before creating an execution) while `sync_policy.automated` is on,
+since the next reconcile would sync the current source again. One operation per application at a time
 (`FAILED_PRECONDITION` while one runs; the gateway answers 412 before
 creating an execution). `DeleteApplication` with `cascade` deletes the
 managed live resources first, as an operation of kind `delete`.

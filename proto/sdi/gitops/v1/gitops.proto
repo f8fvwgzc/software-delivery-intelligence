@@ -368,6 +368,8 @@ message HistoryEntry {
   bool automated = 9;
   google.protobuf.Timestamp started_at = 10;
   google.protobuf.Timestamp finished_at = 11;
+  // "sync" | "rollback"
+  string kind = 12;
 }
 
 message ListHistoryRequest {

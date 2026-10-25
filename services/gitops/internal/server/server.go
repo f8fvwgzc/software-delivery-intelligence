@@ -370,7 +370,8 @@ func (s *Server) RefreshApplication(ctx context.Context, req *gitopsv1.RefreshAp
 	if err != nil {
 		return nil, s.storeErr(err, "application")
 	}
-	s.svc.Audit.RecordAudit(p, "application.refresh", "application", a.ID.String(), fmt.Sprintf("hard: %t", req.GetHard()))
+	// Not audited here: the gateway records a person's refresh, and the
+	// execution's health polls refresh every few seconds.
 	return applicationToProto(refreshed, true), nil
 }
 

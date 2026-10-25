@@ -19664,6 +19664,7 @@
         "required": [
           "id",
           "applicationId",
+          "kind",
           "revision",
           "source",
           "phase",
@@ -19700,6 +19701,10 @@
           "initiatedBy": {
             "type": "string",
             "description": "The user id that asked, `system` for an automated sync."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`sync`, or `rollback` when it synced an earlier entry again."
           },
           "message": {
             "type": [

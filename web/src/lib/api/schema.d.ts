@@ -3719,6 +3719,8 @@ export interface components {
             id: string;
             /** @description The user id that asked, `system` for an automated sync. */
             initiatedBy: string;
+            /** @description `sync`, or `rollback` when it synced an earlier entry again. */
+            kind: string;
             /** @description What happened, as a sentence; null when there is nothing to say. */
             message?: string | null;
             /** @description `succeeded`, `failed` or `error`. */

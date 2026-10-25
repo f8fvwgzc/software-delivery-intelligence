@@ -760,6 +760,8 @@ pub struct HistoryEntry {
     pub id: String,
     /// Application it belongs to.
     pub application_id: String,
+    /// `sync`, or `rollback` when it synced an earlier entry again.
+    pub kind: String,
     /// The commit that was synced.
     pub revision: String,
     /// The source as it was synced; a rollback syncs it again.
@@ -785,6 +787,11 @@ impl From<proto::HistoryEntry> for HistoryEntry {
         Self {
             id: entry.id,
             application_id: entry.application_id,
+            kind: if entry.kind.is_empty() {
+                "sync".to_owned()
+            } else {
+                entry.kind
+            },
             revision: entry.revision,
             source: entry.source.unwrap_or_default().into(),
             phase: OperationPhase::parse(&entry.phase),

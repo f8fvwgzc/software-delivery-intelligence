@@ -1961,6 +1961,7 @@ pub mod gitops {
                 automated: false,
                 started_at: at(1_700_000_000),
                 finished_at: at(1_700_000_060),
+                kind: "rollback".into(),
             },
             proto::HistoryEntry {
                 id: "h1".into(),
@@ -1974,6 +1975,8 @@ pub mod gitops {
                 automated: true,
                 started_at: at(1_699_990_000),
                 finished_at: at(1_699_990_030),
+                // An older service sends no kind.
+                kind: String::new(),
             },
         ]
     }
@@ -2125,6 +2128,12 @@ pub mod gitops {
                 {
                     operation.phase = "running".into();
                     operation.finished_at = None;
+                }
+                // `automated` names an application its sync policy keeps in sync.
+                if id == "automated"
+                    && let Some(policy) = found.sync_policy.as_mut()
+                {
+                    policy.automated = true;
                 }
                 Ok(Response::new(found))
             }

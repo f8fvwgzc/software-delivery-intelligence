@@ -172,6 +172,7 @@ func historyToProto(h store.HistoryEntry) *gitopsv1.HistoryEntry {
 		Automated:     h.Automated,
 		StartedAt:     tsv(h.StartedAt),
 		FinishedAt:    tsv(h.FinishedAt),
+		Kind:          h.Kind,
 	}
 }
 

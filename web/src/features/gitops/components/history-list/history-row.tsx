@@ -20,23 +20,31 @@ interface HistoryRowProps {
   onRollback: (entry: HistoryEntry) => void
 }
 
+/** The overrides synced with the commit: two entries of one commit differ only by these. */
+function overrides(entry: HistoryEntry): string[] {
+  const { kustomizeImages, helmParameters } = entry.source
+  return [...kustomizeImages, ...Object.entries(helmParameters).map(([key, value]) => `${key}=${value}`)]
+}
+
 function seconds(startedAt: string, finishedAt: string): number | null {
   const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime()
   return Number.isFinite(ms) && ms >= 0 ? ms / 1000 : null
 }
 
-/** One sync: the commit, how it ended, who asked (or the sync policy), how long it took, and the way back to it. */
+/** One sync: the commit and its overrides, how it ended, who asked (or the sync policy), how long it took, and the way back to it. */
 export function HistoryRow({ entry, repoUrl, rollbackReason, onRollback }: HistoryRowProps) {
   const phase = operationPhase(entry.phase)
   const took = seconds(entry.startedAt, entry.finishedAt)
+  const synced = overrides(entry)
 
   return (
     <Row
       leading={<TagDot tone={phase.tone} />}
       title={
-        <span className="inline-flex min-w-0 items-center gap-2 align-bottom">
+        <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 align-bottom">
           <RevisionLink revision={entry.revision} repoUrl={repoUrl} className="text-xs" />
           <Tag tone={phase.tone}>{phase.label}</Tag>
+          {entry.kind === 'rollback' ? <Tag variant="outline">Rollback</Tag> : null}
           {entry.automated ? <Tag variant="outline">Automated</Tag> : null}
         </span>
       }
@@ -46,6 +54,11 @@ export function HistoryRow({ entry, repoUrl, rollbackReason, onRollback }: Histo
           {took !== null ? <span className="font-mono tabular-nums">{formatDuration(took)}</span> : null}
           <RelativeTime value={entry.finishedAt} className="tabular-nums" />
           {entry.executionId ? <ExecutionLink executionId={entry.executionId}>Execution</ExecutionLink> : null}
+          {synced.length > 0 ? (
+            <span className="basis-full truncate font-mono text-xs" title={synced.join('\n')}>
+              {synced.join(' · ')}
+            </span>
+          ) : null}
           {entry.message ? (
             <span className={`basis-full ${entry.phase === 'succeeded' ? '' : 'text-destructive'}`}>{entry.message}</span>
           ) : null}

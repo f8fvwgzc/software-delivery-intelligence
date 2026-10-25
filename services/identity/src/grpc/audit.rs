@@ -24,11 +24,21 @@ pub async fn record(
     if entry.action.trim().is_empty() {
         return Err(Status::invalid_argument("action is required"));
     }
+    // Services record what they did with the caller's user id only (the
+    // gateway alone knows the session's login); name the user here so the
+    // trail reads the same whoever wrote the entry. `system` stays as is.
+    let mut user_login = entry.user_login;
+    if user_login.trim().is_empty()
+        && let Ok(id) = Uuid::parse_str(entry.user_id.trim())
+        && let Ok(user) = crate::db::users::get(&state.pool, id).await
+    {
+        user_login = user.login;
+    }
     let row = AuditRow {
         id: Uuid::parse_str(entry.id.trim()).unwrap_or_else(|_| Uuid::now_v7()),
         workspace_id: parse_id(&entry.workspace_id, "workspace_id")?,
         user_id: entry.user_id,
-        user_login: entry.user_login,
+        user_login,
         action: entry.action.trim().to_owned(),
         entity: entry.entity,
         entity_id: entry.entity_id,

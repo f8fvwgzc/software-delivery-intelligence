@@ -188,6 +188,7 @@ const DIFF: ApplicationDiff = {
 function entry(overrides: Partial<HistoryEntry> & Pick<HistoryEntry, 'id' | 'revision'>): HistoryEntry {
   return {
     applicationId: APP_ID,
+    kind: 'sync',
     automated: false,
     executionId: null,
     initiatedBy: USER_ID,
@@ -201,7 +202,14 @@ function entry(overrides: Partial<HistoryEntry> & Pick<HistoryEntry, 'id' | 'rev
 }
 
 const HISTORY: HistoryEntry[] = [
-  entry({ id: 'h-current', revision: SYNCED_SHA, executionId: 'e2e-exec-current', startedAt: ago(32), finishedAt: ago(30) }),
+  entry({
+    id: 'h-current',
+    kind: 'rollback',
+    revision: SYNCED_SHA,
+    executionId: 'e2e-exec-current',
+    startedAt: ago(32),
+    finishedAt: ago(30),
+  }),
   entry({
     id: 'h-failed',
     revision: FAILED_SHA,
@@ -783,6 +791,11 @@ test.describe('application page', () => {
     await expect(rows.nth(0).getByText('octocat')).toBeVisible()
     await expect(rows.nth(0).getByRole('link', { name: 'Execution' })).toHaveAttribute('href', '/executions/e2e-exec-current')
     await expect(rows.nth(0).getByText('2m', { exact: true })).toBeVisible()
+    // A rollback says so, and every entry shows the overrides it synced: two
+    // syncs of one commit differ only by them.
+    await expect(rows.nth(0).getByText('Rollback', { exact: true })).toBeVisible()
+    await expect(rows.nth(0).getByText('ghcr.io/acme/web=ghcr.io/acme/web:1.4.2')).toBeVisible()
+    await expect(rows.nth(2).getByText('Rollback', { exact: true })).toHaveCount(0)
     await expect(rows.nth(1).getByText('Failed', { exact: true })).toBeVisible()
     await expect(rows.nth(1).getByText('Automated', { exact: true })).toBeVisible()
     await expect(rows.nth(1).getByText('Sync policy', { exact: true })).toBeVisible()
@@ -1042,8 +1055,11 @@ test.describe('against the running gateway', () => {
       // An application, when there is one: its regions settle the same way.
       const first = panel.getByRole('table', { name: 'Applications' }).getByRole('link').first()
       if (await first.isVisible()) {
+        const name = (await first.textContent())?.trim() ?? ''
         await first.click()
-        await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 20_000 })
+        // The project page has two level-one headings; wait for the application's.
+        await expect(page).toHaveURL(/\/applications\/[^/?#]+$/, { timeout: 20_000 })
+        await expect(page.getByRole('heading', { level: 1, name, exact: true }).first()).toBeVisible({ timeout: 20_000 })
         const resources = region(page, 'Resources')
         await expectRegionSettled(resources, resources.getByRole('heading', { level: 3 }).first().or(resources.getByText(/Nothing to manage|Not compared yet/)))
         const history = region(page, 'History')
