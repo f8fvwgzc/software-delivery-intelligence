@@ -15,13 +15,16 @@ ENV PNPM_HOME=/pnpm \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     CI=true
 RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
-WORKDIR /app
+# The repository's layout: the trust page imports TRUST.md and PRIVACY.md
+# from the root (web/src/features/auth/pages/trust-doc-page.tsx).
+WORKDIR /src/web
 
 # Lockfile first so the install layer survives source edits.
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
+COPY TRUST.md PRIVACY.md /src/
 COPY web/ ./
 RUN pnpm build
 
@@ -30,7 +33,7 @@ FROM nginxinc/nginx-unprivileged:${NGINX_VERSION}-alpine AS runtime
 # The image runs as uid 101 and listens on 8080; nginx.conf keeps its pid and
 # temp files under /tmp so the root filesystem can be mounted read-only.
 COPY deploy/nginx/ /etc/nginx/
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /src/web/dist /usr/share/nginx/html
 
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
