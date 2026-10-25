@@ -79,9 +79,10 @@ pub async fn complete(state: &IdentityState, req: CompleteLoginRequest) -> Resul
             ));
         }
         let Some(token) = state.settings.github_token.clone() else {
-            return Err(Status::failed_precondition(
-                "dev login needs GITHUB_TOKEN (the account the session is created for)",
-            ));
+            // No GitHub account to sign in as: a local developer whose
+            // workspace has no GitHub access, so the app can still be tried
+            // (and its e2e suite run) without one.
+            return open_session(state, LOCAL_DEVELOPER, "", "", "/").await;
         };
         return establish(state, &token, "", "/").await;
     }
@@ -130,6 +131,44 @@ async fn establish(
         Some(email) => Some(email),
         None => state.github.primary_email(api, oauth_token).await,
     };
+    let account = Account {
+        github_id: profile.id,
+        login: &profile.login,
+        name: profile.name.as_deref().unwrap_or_default(),
+        avatar_url: profile.avatar_url.as_deref().unwrap_or_default(),
+        email: email.as_deref(),
+    };
+    open_session(state, account, oauth_token, scopes, return_to).await
+}
+
+/// Who a session is opened for.
+struct Account<'a> {
+    github_id: i64,
+    login: &'a str,
+    name: &'a str,
+    avatar_url: &'a str,
+    email: Option<&'a str>,
+}
+
+/// Dev login without `GITHUB_TOKEN`. GitHub ids start at 1, so 0 is never
+/// a real account; its workspace's GitHub token is refused with a sentence.
+const LOCAL_DEVELOPER: Account<'static> = Account {
+    github_id: 0,
+    login: "local-dev",
+    name: "Local developer",
+    avatar_url: "",
+    email: None,
+};
+
+/// Creates or refreshes the user and their personal workspace, and opens a
+/// session holding `oauth_token` (sealed; empty for the local developer).
+async fn open_session(
+    state: &IdentityState,
+    account: Account<'_>,
+    oauth_token: &str,
+    scopes: &str,
+    return_to: &str,
+) -> Result<Session, Status> {
     let host = state.settings.github_host.clone();
 
     let mut tx = state.pool.begin().await.map_err(db_status)?;
@@ -137,11 +176,11 @@ async fn establish(
         &mut *tx,
         db::users::Profile {
             github_host: &host,
-            github_id: profile.id,
-            login: &profile.login,
-            name: profile.name.as_deref().unwrap_or_default(),
-            avatar_url: profile.avatar_url.as_deref().unwrap_or_default(),
-            email: email.as_deref(),
+            github_id: account.github_id,
+            login: account.login,
+            name: account.name,
+            avatar_url: account.avatar_url,
+            email: account.email,
         },
     )
     .await

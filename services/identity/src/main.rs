@@ -67,7 +67,9 @@ async fn main() -> anyhow::Result<()> {
         "identity service listening"
     );
     if settings.dev_login && settings.github_token.is_none() {
-        tracing::warn!("SDI_DEV_LOGIN=1 but GITHUB_TOKEN is unset: dev login will fail");
+        tracing::warn!(
+            "SDI_DEV_LOGIN=1 but GITHUB_TOKEN is unset: dev login signs in a local developer without GitHub access"
+        );
     }
     Server::builder()
         .add_service(health)

@@ -225,6 +225,12 @@ pub(crate) async fn token_for(
                 tracing::error!(%error, "stored OAuth token does not open");
                 Status::internal("stored token is unreadable")
             })?;
+            if token.is_empty() {
+                return Err(Status::failed_precondition(
+                    "this workspace has no GitHub access: it belongs to the local developer \
+                     (dev login without GITHUB_TOKEN); set GITHUB_TOKEN to sign in as a GitHub account",
+                ));
+            }
             Ok(InstallationToken {
                 token,
                 expires_at: Some(time::to_proto(session.expires_at)),

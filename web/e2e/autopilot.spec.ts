@@ -218,6 +218,10 @@ interface ReviewMock {
 /** Feeds the review page: the review, and its pull request's merge readiness. */
 async function mockReviewPage(page: Page, initial: { review: Review; readiness?: MergeReadiness }): Promise<ReviewMock> {
   const mock: ReviewMock = { review: initial.review, readiness: initial.readiness ?? readiness(), readinessRequests: [] }
+  // The stream stays pending: these cases count the page's own requests, and
+  // an execution another spec left running in the workspace would otherwise
+  // refetch readiness through the gated lane in the middle of a count.
+  await page.route((url) => url.pathname === '/api/v1/events/stream', () => {})
   await page.route(`**/api/v1/reviews/${REVIEW_ID}`, (route) => route.fulfill(json(mock.review)))
   await page.route(`**/api/v1/projects/*/pull-requests/${PR_NUMBER}/merge-readiness`, (route) => {
     mock.readinessRequests.push(route.request())

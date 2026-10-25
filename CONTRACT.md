@@ -971,7 +971,11 @@ directory and no way to grant someone more than GitHub already grants them.
   `IDENTITY_GRPC_URL` (`http://127.0.0.1:50054`). **Dev mode**: when the
   OAuth variables are absent and `SDI_DEV_LOGIN=1`, `GET /auth/login`
   creates a local session for the `GITHUB_TOKEN` account with a personal
-  workspace, so `make dev` keeps working without registering an app.
+  workspace, so `make dev` keeps working without registering an app. With
+  no `GITHUB_TOKEN` it signs in a local developer (`local-dev`, GitHub id
+  0) whose workspace has no GitHub access: its token is refused
+  (`FAILED_PRECONDITION`, with the sentence), everything else works, which
+  is how CI runs the e2e suite without a GitHub account.
 
 ## 19. Trust: what SDI stores and never does
 

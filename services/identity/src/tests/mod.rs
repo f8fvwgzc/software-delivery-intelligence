@@ -293,6 +293,60 @@ impl Harness {
     }
 }
 
+/// Dev login with no `GITHUB_TOKEN` (CI, or trying SDI without an account):
+/// a local developer and a personal workspace whose GitHub token is refused
+/// with a sentence, the same user on every sign-in.
+#[tokio::test]
+async fn dev_login_without_a_token_signs_in_a_local_developer_without_github_access() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let mut settings = h.state.settings.clone();
+    settings.github_token = None;
+    let state = Arc::new(IdentityState::new(h.state.pool.clone(), settings));
+    let sign_in = || async {
+        sessions::complete(
+            &state,
+            CompleteLoginRequest {
+                code: "dev".into(),
+                state: "dev".into(),
+            },
+        )
+        .await
+        .expect("local dev login")
+        .user
+        .unwrap()
+    };
+    let user = sign_in().await;
+    assert_eq!(user.login, "local-dev");
+    assert_eq!(user.github_id, 0);
+    assert_eq!(sign_in().await.id, user.id, "the same user every time");
+
+    let personal = workspaces::list(
+        &state,
+        ListWorkspacesRequest {
+            user_id: user.id.clone(),
+        },
+    )
+    .await
+    .unwrap()
+    .workspaces
+    .remove(0);
+    assert_eq!(personal.slug, "local-dev");
+    let refused = workspaces::installation_token(
+        &state,
+        GetInstallationTokenRequest {
+            workspace_id: personal.id,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+    assert!(refused.message().contains("no GitHub access"), "{refused}");
+
+    h.drop_schema().await;
+}
+
 #[tokio::test]
 async fn dev_login_creates_the_user_their_workspace_and_a_session() {
     let Some(h) = Harness::new().await else {
