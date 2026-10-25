@@ -249,11 +249,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # compose interpolates GITHUB_TOKEN into the knowledge and execution
-      # containers. With no SDI_GITHUB_TOKEN secret the token is empty and
-      # SDI_E2E_GITHUB=0 tells the specs to skip everything that needs the
-      # real account; the dry-run critical path does not.
-      GITHUB_TOKEN: ${{ secrets.SDI_GITHUB_TOKEN }}
+      # With no SDI_GITHUB_TOKEN secret, SDI_E2E_GITHUB=0 tells the specs to
+      # skip everything that needs the real account; the dry-run critical
+      # path does not. The token itself is set on `make up` only: as a job
+      # variable an empty GITHUB_TOKEN also replaces the one actions such as
+      # bake use, and they fail without it.
       SDI_E2E_GITHUB: ${{ secrets.SDI_GITHUB_TOKEN != '' && '1' || '0' }}
       # No GitHub OAuth app on the runner: the specs sign in through the dev
       # login (CONTRACT.md §18), which needs a session secret like any other
@@ -320,6 +320,10 @@ jobs:
       - name: make up
         # No --build: the images were just loaded. --wait returns once every
         # healthcheck passes, including the gateway's own /api/v1/health.
+        # compose interpolates GITHUB_TOKEN into the knowledge and execution
+        # containers.
+        env:
+          GITHUB_TOKEN: ${{ secrets.SDI_GITHUB_TOKEN }}
         run: make up UP_FLAGS=
 
       - name: Wait for the API through nginx
