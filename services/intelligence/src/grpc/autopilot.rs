@@ -4,7 +4,7 @@
 //! and hands it to the execution service, where permission → policy →
 //! approval → act → verify applies as for every other execution.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use sdi_common::grpc::db_status;
@@ -173,28 +173,42 @@ pub(super) struct Exclusive {
     _held: sqlx::Transaction<'static, sqlx::Postgres>,
 }
 
-/// Takes the lock for `what`, or refuses at once when someone holds it:
-/// the request already being handled will create the execution.
+/// Takes the lock for `what`, or refuses when someone holds it: the
+/// request already being handled will create the execution. A request
+/// that just ended may still hold it for a moment (a dropped transaction
+/// is rolled back in the background, when its connection goes back to the
+/// pool), so a few short retries come before the refusal; a request still
+/// being handled holds it far longer than they last.
 pub(super) async fn exclusive(
     svc: &IntelligenceGrpc,
     workspace: Uuid,
     what: &str,
 ) -> Result<Exclusive, Status> {
+    const RETRIES: [Duration; 3] = [
+        Duration::from_millis(25),
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+    ];
+    let key = format!("sdi.autopilot:{workspace}:{what}");
     let mut tx = svc.pool.begin().await.map_err(db_status)?;
-    let taken: bool = sqlx::query_scalar(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
-    )
-    .bind(format!("sdi.autopilot:{workspace}:{what}"))
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_status)?;
-    if taken {
-        Ok(Exclusive { _held: tx })
-    } else {
-        Err(Status::failed_precondition(
-            "the same request is being handled right now; open the execution it creates instead of asking again",
-        ))
+    for pause in std::iter::once(None).chain(RETRIES.into_iter().map(Some)) {
+        if let Some(pause) = pause {
+            tokio::time::sleep(pause).await;
+        }
+        let taken: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
+        )
+        .bind(&key)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_status)?;
+        if taken {
+            return Ok(Exclusive { _held: tx });
+        }
     }
+    Err(Status::failed_precondition(
+        "the same request is being handled right now; open the execution it creates instead of asking again",
+    ))
 }
 
 /// What to remember about an execution the autopilot asked for.
