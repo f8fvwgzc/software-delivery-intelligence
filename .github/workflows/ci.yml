@@ -53,7 +53,7 @@ jobs:
     env:
       DATABASE_URL: postgres://sdi:sdi@127.0.0.1:5440/sdi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install protoc
         # libprotobuf-dev provides google/protobuf/*.proto imported by the contracts.
@@ -108,9 +108,9 @@ jobs:
       DATABASE_URL: postgres://sdi:sdi@127.0.0.1:5440/sdi
       SDI_ALLOW_PRIVATE_DEPLOY_TARGETS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/gitops/go.mod
           cache-dependency-path: services/gitops/go.sum
@@ -138,13 +138,13 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate deploy/nginx in the runtime image
         run: >-
@@ -200,9 +200,9 @@ jobs:
       matrix:
         image: [gateway, identity, knowledge, intelligence, execution, gitops, web]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Resolve build settings
         id: cfg
@@ -229,7 +229,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ steps.cfg.outputs.dockerfile }}
@@ -260,16 +260,16 @@ jobs:
       # mode. Generated per run, never a repository secret.
       SDI_DEV_LOGIN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Generate a session secret for this run
         run: echo "SDI_SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -280,7 +280,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           # The lockfile pins @playwright/test, and the browser build it
@@ -298,12 +298,12 @@ jobs:
         run: pnpm exec playwright install-deps chromium
         working-directory: web
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build the stack images from the shared layer cache
         # Bake reads the compose file directly; the targets are the services
         # with a build section, tagged exactly as compose expects them.
-        uses: docker/bake-action@v6
+        uses: docker/bake-action@v7
         with:
           source: .
           files: docker-compose.yml
@@ -347,7 +347,7 @@ jobs:
         if: always()
         run: docker compose logs --no-color --timestamps > compose.log 2>&1 || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-${{ github.run_number }}-${{ github.run_attempt }}
