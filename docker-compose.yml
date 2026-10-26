@@ -317,7 +317,7 @@ services:
   # filtering proxy (tecnativa/docker-socket-proxy) or rootless Docker
   # behind DOCKER_HOST instead of this relay.
   docker-socket:
-    image: alpine/socat:1.8.0.3
+    image: alpine/socat:1.8.1.1
     profiles: [local-exec]
     restart: unless-stopped
     command:
