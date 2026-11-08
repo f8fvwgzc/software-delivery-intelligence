@@ -724,7 +724,11 @@ async fn policies_and_grants_follow_the_contract() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies.len(), 36, "§5.2 with the §22, §23 and §24.7 rows");
+    assert_eq!(
+        policies.len(),
+        37,
+        "§5.2 with the §22, §22.1, §23 and §24.7 rows"
+    );
     let production = policies
         .iter()
         .find(|p| p.action_type == "deploy.production")
@@ -1644,7 +1648,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_b.len(), 36);
+    assert_eq!(policies_b.len(), 37);
     let err = h
         .svc
         .update_policy(as_role(
@@ -1921,7 +1925,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
     assert_eq!(count("execution"), 2);
     assert_eq!(count("step"), 3);
     assert_eq!(count("approval"), 1);
-    assert_eq!(count("policy"), 36);
+    assert_eq!(count("policy"), 37);
     assert_eq!(count("identity"), 4);
     assert!(count("grant") >= 8);
     assert!(count("event") > 5);
@@ -1991,7 +1995,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         "the docker run in PLANNING and the waiting one"
     );
     assert_eq!(deleted.deleted["execution"], 3);
-    assert_eq!(deleted.deleted["policy"], 36);
+    assert_eq!(deleted.deleted["policy"], 37);
     assert_eq!(deleted.deleted["identity"], 4);
     assert!(deleted.deleted["approval"] >= 2);
     let listed = h
@@ -2016,7 +2020,7 @@ async fn workspaces_are_isolated_and_roles_enforced() {
         .unwrap()
         .into_inner()
         .policies;
-    assert_eq!(policies_a.len(), 36);
+    assert_eq!(policies_a.len(), 37);
     assert_eq!(decision_in(&policies_a), PolicyDecision::Approval as i32);
     // The seed note is per process and bounded; both workspaces are in it.
     assert_eq!(h.rt.seeded_workspaces(), 2);

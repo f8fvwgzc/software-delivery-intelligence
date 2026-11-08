@@ -4,6 +4,7 @@
 //! | step | action_type | tool |
 //! |---|---|---|
 //! | verify image | `registry.verify_image` | `registry` |
+//! | inspect image (when the environment's `inspect` is `report` or `gate`, promotions only) | `artifact.inspect` | `registry` |
 //! | deploy | `deploy.development` · `deploy.staging` · `deploy.production` · `deploy.rollback` | the environment's deployer |
 //! | verify health | `deploy.verify_health` | `http` |
 //! | record | `deploy.record` | `github` |
@@ -16,6 +17,12 @@
 //! application with the release image as the override its source takes (a
 //! rollback, the earlier release's image the same way). Its health step is
 //! `gitops.verify_health` of that application.
+//!
+//! The inspection (CONTRACT.md §22.1) sits between "the registry has the
+//! image" and "deploy it": it reads the exact image the registry just
+//! confirmed and, in `gate` mode, stops the run before anything changes.
+//! A rollback skips it: the release it goes back to was inspected when it
+//! was promoted, and a recovery must not wait on a new advisory.
 //!
 //! Each step carries everything its adapter needs as params, and only
 //! that: names of workspace secrets, never their values. A plan is a
@@ -30,8 +37,8 @@ use super::{
     db::{environments::EnvironmentRow, registries::RegistryRow, releases::ReleaseRow},
     model::{
         self, ENV_DOCKER_LOCAL, ENV_GITHUB_ACTIONS, ENV_GITOPS_ARGOCD, ENV_GITOPS_FLUX,
-        ENV_SDI_GITOPS, ENV_WEBHOOK, RUN_ROLLBACK, STEP_DEPLOY, STEP_RECORD, STEP_VERIFY_HEALTH,
-        STEP_VERIFY_IMAGE,
+        ENV_SDI_GITOPS, ENV_WEBHOOK, RUN_ROLLBACK, STEP_DEPLOY, STEP_INSPECT_IMAGE, STEP_RECORD,
+        STEP_VERIFY_HEALTH, STEP_VERIFY_IMAGE,
     },
 };
 use crate::adapters::{
@@ -144,6 +151,64 @@ pub fn build(input: &PlanInput<'_>) -> Vec<PlanStep> {
         verification: "the registry answers with the manifest's digest".to_owned(),
     };
 
+    // What the environment does with an inspection of the image.
+    let inspect_mode = match setting("inspect") {
+        sdi_inspect::MODE_REPORT => Some(sdi_inspect::MODE_REPORT),
+        sdi_inspect::MODE_GATE => Some(sdi_inspect::MODE_GATE),
+        _ => None,
+    }
+    .filter(|_| !rollback);
+    let inspect_image = inspect_mode.map(|mode| {
+        let fail_on = match setting("inspect_fail_on") {
+            "" => sdi_inspect::Severity::High.as_str(),
+            level => level,
+        };
+        let gate = mode == sdi_inspect::MODE_GATE;
+        PlanStep {
+            key: STEP_INSPECT_IMAGE.to_owned(),
+            title: "Inspect the shipped image".to_owned(),
+            description: format!(
+                "Pull the layers of {reference} as the registry holds them and reverse-engineer what ships: dependency versions compiled into Go and Rust binaries, packages of the base image and of node_modules / site-packages against OSV, binary hardening, provenance against commit {}, keys and env files baked in. {}",
+                &release.commit_sha[..release.commit_sha.len().min(7)],
+                if gate {
+                    format!("Findings at {fail_on} or above stop the run before the deploy.")
+                } else {
+                    "Findings are reported; the run goes on.".to_owned()
+                }
+            ),
+            action_type: adapters::INSPECT_IMAGE.to_owned(),
+            adapter: adapters::TOOL_REGISTRY.to_owned(),
+            depends_on: vec![STEP_VERIFY_IMAGE.to_owned()],
+            required_permissions: vec!["registry:read".to_owned()],
+            params: params([
+                ("mode", mode),
+                ("fail_on", fail_on),
+                ("ignore", setting("inspect_ignore")),
+                ("registry_kind", registry.kind.as_str()),
+                ("registry_host", registry.host.as_str()),
+                ("registry_auth", registry.auth.as_str()),
+                ("username_secret", registry.username_secret.as_str()),
+                ("password_secret", registry.password_secret.as_str()),
+                ("image", release.image.as_str()),
+                ("tag", release.tag.as_str()),
+                ("digest", release.digest.as_str()),
+                ("repo", release.repo_full_name.as_str()),
+                ("commit_sha", release.commit_sha.as_str()),
+                ("release_id", &release.id.to_string()),
+            ]),
+            verification: if gate {
+                format!("no finding at {fail_on} or above that the environment does not ignore")
+            } else {
+                "the image was read and its report recorded on the release".to_owned()
+            },
+        }
+    });
+    let before_deploy = if inspect_image.is_some() {
+        STEP_INSPECT_IMAGE
+    } else {
+        STEP_VERIFY_IMAGE
+    };
+
     // The deployer: the release, the environment's settings, and how.
     let kind = environment.kind.as_str();
     let timeout = match setting("timeout_seconds") {
@@ -252,7 +317,7 @@ pub fn build(input: &PlanInput<'_>) -> Vec<PlanStep> {
         action_type: model::deploy_action(environment.position, environment.protected, run_kind)
             .to_owned(),
         adapter: model::deploy_tool(kind).to_owned(),
-        depends_on: vec![STEP_VERIFY_IMAGE.to_owned()],
+        depends_on: vec![before_deploy.to_owned()],
         required_permissions: permissions,
         params: deploy_params,
         verification: if sdi_gitops {
@@ -346,7 +411,10 @@ pub fn build(input: &PlanInput<'_>) -> Vec<PlanStep> {
         verification: "GitHub lists the deployment with a success status".to_owned(),
     };
 
-    vec![verify_image, deploy, verify_health, record]
+    let mut steps = vec![verify_image];
+    steps.extend(inspect_image);
+    steps.extend([deploy, verify_health, record]);
+    steps
 }
 
 #[cfg(test)]
@@ -397,6 +465,10 @@ mod tests {
             repo_full_name: "acme/api".into(),
             project_name: "api".into(),
             created_at: Utc::now(),
+            inspection_status: String::new(),
+            inspection_max_severity: String::new(),
+            inspection_findings: 0,
+            inspected_at: None,
         }
     }
 
@@ -752,6 +824,80 @@ mod tests {
             rollback[1].required_permissions,
             ["deploy:production", "cluster:write"]
         );
+    }
+
+    /// CONTRACT.md §22.1: the inspection sits between the registry and
+    /// the deploy when the environment asks for it, and never on a rollback.
+    #[test]
+    fn an_inspecting_environment_reads_the_image_before_the_deploy() {
+        let keys = |steps: &[PlanStep]| -> Vec<(String, Vec<String>)> {
+            steps
+                .iter()
+                .map(|s| (s.key.clone(), s.depends_on.clone()))
+                .collect()
+        };
+        // Off (or unset): the plan of the contract, unchanged.
+        let off = plan(
+            &environment("webhook", 1, false, &[("inspect", "off")]),
+            RUN_PROMOTE,
+        );
+        assert_eq!(off.len(), 4);
+        assert_eq!(off[1].depends_on, ["verify_image"]);
+
+        let gate = plan(
+            &environment(
+                "webhook",
+                2,
+                true,
+                &[
+                    ("inspect", "gate"),
+                    ("inspect_fail_on", "medium"),
+                    ("inspect_ignore", "binary.*,image.source_map"),
+                ],
+            ),
+            RUN_PROMOTE,
+        );
+        assert_eq!(
+            keys(&gate),
+            [
+                ("verify_image".to_owned(), vec![]),
+                ("inspect_image".to_owned(), vec!["verify_image".to_owned()]),
+                ("deploy".to_owned(), vec!["inspect_image".to_owned()]),
+                ("verify_health".to_owned(), vec!["deploy".to_owned()]),
+                ("record".to_owned(), vec!["verify_health".to_owned()]),
+            ]
+        );
+        let inspect = &gate[1];
+        assert_eq!(inspect.action_type, "artifact.inspect");
+        assert_eq!(inspect.adapter, "registry");
+        assert!(runnable(DELIVERY, &inspect.action_type));
+        assert_eq!(inspect.required_permissions, ["registry:read"]);
+        assert_eq!(inspect.params["mode"], "gate");
+        assert_eq!(inspect.params["fail_on"], "medium");
+        assert_eq!(inspect.params["ignore"], "binary.*,image.source_map");
+        assert_eq!(inspect.params["registry_host"], "ghcr.io");
+        assert_eq!(inspect.params["repo"], "acme/api");
+        assert_eq!(
+            inspect.params["commit_sha"],
+            "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+        );
+        assert!(inspect.description.contains("medium or above stop the run"));
+
+        // Report mode defaults the threshold and says the run goes on.
+        let report = plan(
+            &environment("webhook", 1, false, &[("inspect", "report")]),
+            RUN_PROMOTE,
+        );
+        assert_eq!(report[1].params["fail_on"], "high");
+        assert!(report[1].description.ends_with("the run goes on."));
+
+        // A rollback goes back to a release that was inspected already.
+        let rollback = plan(
+            &environment("webhook", 2, true, &[("inspect", "gate")]),
+            RUN_ROLLBACK,
+        );
+        assert_eq!(rollback.len(), 4);
+        assert_eq!(rollback[1].depends_on, ["verify_image"]);
     }
 
     #[test]

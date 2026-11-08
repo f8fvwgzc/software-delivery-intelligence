@@ -1,6 +1,7 @@
 import type { Environment, UpsertEnvironmentRequest } from '../api/types'
 import { visibleFields, type ConfigField } from './deployers'
 import { aliasesOf, type FieldAlias } from './field-errors'
+import { isRulePattern } from './inspection'
 
 /** The editor's state: every value as the controls hold it. */
 export interface EnvironmentDraft {
@@ -99,6 +100,13 @@ function configError(field: ConfigField, raw: string | undefined): string | null
     }
   }
   if (field.key === 'url' && !isHttpUrl(value)) return `${field.label} must start with http:// or https://.`
+  if (field.key === 'inspect_ignore') {
+    const bad = value
+      .split(',')
+      .map((rule) => rule.trim())
+      .find((rule) => rule && !isRulePattern(rule))
+    if (bad) return `${bad} is not a rule id (binary.no_pie) or a family (binary.*).`
+  }
   return null
 }
 

@@ -370,9 +370,12 @@ fn parse_delivery(
     check_keys(
         m,
         "delivery.",
-        &["registry", "build_workflow", "environments"],
+        &["registry", "build_workflow", "environments", "inspect"],
         warnings,
     );
+    let inspect_defaults = yaml::get(m, "inspect")
+        .map(|v| parse_inspect_defaults(v, warnings, fatal))
+        .unwrap_or_default();
     if let Some(v) = yaml::get(m, "registry")
         && let Some(r) = require_mapping(v, "delivery.registry", fatal)
     {
@@ -441,6 +444,14 @@ fn parse_delivery(
                 ));
             }
             out.environments.push(env);
+        }
+    }
+    // An environment's own `config.inspect*` wins over `delivery.inspect`.
+    for env in &mut out.environments {
+        for (key, value) in &inspect_defaults {
+            env.config
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
         }
     }
     out
@@ -561,8 +572,129 @@ fn is_uuid(text: &str) -> bool {
             .all(|(part, len)| part.len() == len && part.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Settings every deployer kind accepts on top of its own.
-const COMMON_CONFIG_KEYS: &[&str] = &["timeout_seconds", "health_timeout_seconds"];
+/// Settings every deployer kind accepts on top of its own: its time limits
+/// and what the image inspection does before the deploy (CONTRACT.md §22.1).
+const COMMON_CONFIG_KEYS: &[&str] = &[
+    "timeout_seconds",
+    "health_timeout_seconds",
+    "inspect",
+    "inspect_fail_on",
+    "inspect_ignore",
+];
+
+/// `config.inspect` (CONTRACT.md §22.1), the execution service's
+/// `sdi_inspect::MODES`.
+const INSPECT_MODES: &[&str] = &["off", "report", "gate"];
+/// `config.inspect_fail_on`.
+const INSPECT_SEVERITIES: &[&str] = &["info", "low", "medium", "high", "critical"];
+
+/// A rule id `inspect_ignore` may name: `family.name` or `family.*`
+/// (mirrors `sdi_inspect::rules::valid_rule_pattern`).
+fn is_rule_pattern(pattern: &str) -> bool {
+    let body = pattern.strip_suffix(".*").unwrap_or(pattern);
+    !body.is_empty()
+        && body.len() <= 64
+        && body
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_'))
+        && !body.starts_with('.')
+        && !body.ends_with('.')
+}
+
+fn is_rule_list(text: &str) -> bool {
+    text.split(',')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .all(is_rule_pattern)
+}
+
+/// `inspect_ignore` as one comma-separated string: a YAML list or a string.
+fn rule_list(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Sequence(items) => items
+            .iter()
+            .map(|item| item.as_str().map(|s| s.trim().to_string()))
+            .collect::<Option<Vec<_>>>()
+            .map(|rules| rules.join(",")),
+        _ => None,
+    }
+}
+
+/// `delivery.inspect`: the inspection every environment gets unless its
+/// `config` says otherwise. Either a mode (`inspect: gate`) or a mapping
+/// with `mode`, `fail_on` and `ignore` (a list of rule ids).
+fn parse_inspect_defaults(
+    v: &Value,
+    warnings: &mut Vec<String>,
+    fatal: &mut Vec<String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mode = match v {
+        Value::String(s) => Some(s.trim().to_ascii_lowercase()),
+        Value::Mapping(_) => {
+            check_keys(
+                v,
+                "delivery.inspect.",
+                &["mode", "fail_on", "ignore"],
+                warnings,
+            );
+            match yaml::get(v, "fail_on") {
+                Some(Value::String(s)) if INSPECT_SEVERITIES.contains(&s.trim()) => {
+                    out.insert("inspect_fail_on".to_string(), s.trim().to_string());
+                }
+                Some(other) => fatal.push(format!(
+                    "error: `delivery.inspect.fail_on` must be one of {}, got {}",
+                    INSPECT_SEVERITIES.join(" | "),
+                    describe(other)
+                )),
+                None => {}
+            }
+            match yaml::get(v, "ignore").map(|v| (v, rule_list(v))) {
+                Some((_, Some(rules))) if is_rule_list(&rules) => {
+                    if !rules.is_empty() {
+                        out.insert("inspect_ignore".to_string(), rules);
+                    }
+                }
+                Some((other, _)) => fatal.push(format!(
+                    "error: `delivery.inspect.ignore` must list rule ids such as `binary.no_pie` or families such as `binary.*`, got {}",
+                    describe(other)
+                )),
+                None => {}
+            }
+            match yaml::get(v, "mode") {
+                Some(Value::String(s)) => Some(s.trim().to_ascii_lowercase()),
+                Some(other) => {
+                    fatal.push(format!(
+                        "error: `delivery.inspect.mode` must be a string, got {}",
+                        describe(other)
+                    ));
+                    None
+                }
+                None => Some("report".to_string()),
+            }
+        }
+        other => {
+            fatal.push(format!(
+                "error: `delivery.inspect` must be a mode (off | report | gate) or a mapping, got {}",
+                describe(other)
+            ));
+            None
+        }
+    };
+    if let Some(mode) = mode {
+        if INSPECT_MODES.contains(&mode.as_str()) {
+            out.insert("inspect".to_string(), mode);
+        } else {
+            fatal.push(format!(
+                "error: `delivery.inspect` mode must be one of {}, got `{}`",
+                INSPECT_MODES.join(" | "),
+                crate::util::truncate(&mode, 30)
+            ));
+        }
+    }
+    out
+}
 
 /// Settings a deployer cannot run without.
 fn deployer_required_keys(kind: &str) -> &'static [&'static str] {
@@ -857,6 +989,13 @@ fn parse_deployer_config(
                 Value::String(s) => s.trim().to_string(),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => b.to_string(),
+                Value::Sequence(_) if key == "inspect_ignore" => match rule_list(value) {
+                    Some(rules) => rules,
+                    None => {
+                        fatal.push(format!("error: `{path}` must list rule ids as strings"));
+                        continue;
+                    }
+                },
                 other => {
                     fatal.push(format!(
                         "error: `{path}` must be a string, number or boolean, got {}",
@@ -927,6 +1066,16 @@ fn parse_deployer_config(
             }
             "health_timeout_seconds" if !seconds_within(&text, MAX_HEALTH_TIMEOUT_SECONDS) => Some(
                 format!("a number of seconds between 1 and {MAX_HEALTH_TIMEOUT_SECONDS}"),
+            ),
+            "inspect" if !INSPECT_MODES.contains(&text.as_str()) => {
+                Some(format!("one of {}", INSPECT_MODES.join(" | ")))
+            }
+            "inspect_fail_on" if !INSPECT_SEVERITIES.contains(&text.as_str()) => {
+                Some(format!("one of {}", INSPECT_SEVERITIES.join(" | ")))
+            }
+            "inspect_ignore" if !is_rule_list(&text) => Some(
+                "rule ids such as `binary.no_pie` or families such as `binary.*`, comma-separated"
+                    .to_string(),
             ),
             _ => None,
         };
@@ -1555,6 +1704,84 @@ delivery:
                 .delivery_json
                 .is_empty()
         );
+    }
+
+    /// CONTRACT.md §22.1: `delivery.inspect` is every environment's default,
+    /// an environment's own `config.inspect*` wins, and the values are as
+    /// strict as the execution service's check.
+    #[test]
+    fn delivery_inspect_defaults_every_environment_and_each_may_override() {
+        let cfg = parse_config(
+            "version: 1\ndelivery:\n  inspect:\n    mode: report\n    fail_on: medium\n    ignore: [binary.no_pie, image.*]\n  environments:\n    - { name: staging, kind: github_actions }\n    - name: production\n      kind: github_actions\n      protected: true\n      config: { inspect: gate, inspect_fail_on: high }\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let delivery = DeliveryConfigDraft::from_json(&cfg.delivery_json).unwrap();
+        let staging = &delivery.environments[0].config;
+        assert_eq!(staging["inspect"], "report");
+        assert_eq!(staging["inspect_fail_on"], "medium");
+        assert_eq!(staging["inspect_ignore"], "binary.no_pie,image.*");
+        let production = &delivery.environments[1].config;
+        assert_eq!(production["inspect"], "gate");
+        assert_eq!(production["inspect_fail_on"], "high");
+        assert_eq!(production["inspect_ignore"], "binary.no_pie,image.*");
+        // The short form is a mode.
+        let short = parse_config(
+            "version: 1\ndelivery:\n  inspect: gate\n  environments:\n    - { name: a, kind: webhook, config: { url: \"https://h.example.com\", secret: HOOK } }\n",
+        );
+        assert!(short.errors.is_empty(), "{:?}", short.errors);
+        let short = DeliveryConfigDraft::from_json(&short.delivery_json).unwrap();
+        assert_eq!(short.environments[0].config["inspect"], "gate");
+        assert!(!short.environments[0].config.contains_key("inspect_fail_on"));
+        // A list in an environment's config is joined like the default.
+        let listed = parse_config(
+            "version: 1\ndelivery:\n  environments:\n    - name: a\n      kind: github_actions\n      config:\n        inspect: report\n        inspect_ignore: [dependency.vulnerable]\n",
+        );
+        assert!(listed.errors.is_empty(), "{:?}", listed.errors);
+        assert_eq!(
+            DeliveryConfigDraft::from_json(&listed.delivery_json)
+                .unwrap()
+                .environments[0]
+                .config["inspect_ignore"],
+            "dependency.vulnerable"
+        );
+        for (content, needle) in [
+            (
+                "delivery:\n  inspect: always",
+                "`delivery.inspect` mode must be one of off | report | gate",
+            ),
+            (
+                "delivery:\n  inspect: { fail_on: severe }",
+                "`delivery.inspect.fail_on` must be one of",
+            ),
+            (
+                "delivery:\n  inspect: { ignore: [Binary.PIE] }",
+                "`delivery.inspect.ignore` must list rule ids",
+            ),
+            (
+                "delivery:\n  inspect: [gate]",
+                "`delivery.inspect` must be a mode",
+            ),
+            (
+                "delivery:\n  environments:\n    - { name: a, kind: github_actions, config: { inspect: yes } }",
+                "`delivery.environments[0].config.inspect` must be one of off | report | gate",
+            ),
+            (
+                "delivery:\n  environments:\n    - { name: a, kind: github_actions, config: { inspect_fail_on: urgent } }",
+                "`delivery.environments[0].config.inspect_fail_on` must be one of",
+            ),
+            (
+                "delivery:\n  environments:\n    - { name: a, kind: github_actions, config: { inspect_ignore: \"binary no pie\" } }",
+                "`delivery.environments[0].config.inspect_ignore` must be rule ids",
+            ),
+        ] {
+            let cfg = parse_config(&format!("version: 1\n{content}\n"));
+            assert!(
+                cfg.errors.iter().any(|e| e.contains(needle)),
+                "{content}: {:?}",
+                cfg.errors
+            );
+            assert!(!is_usable(&cfg), "{content}");
+        }
     }
 
     #[test]

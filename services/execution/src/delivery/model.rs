@@ -69,12 +69,23 @@ pub const RUN_ROLLBACK: &str = "rollback";
 
 /// Step keys of a deployment run's plan.
 pub const STEP_VERIFY_IMAGE: &str = "verify_image";
+/// Reverse-engineers the release image (CONTRACT.md §22.1); in the plan
+/// when the environment's `config.inspect` is `report` or `gate`.
+pub const STEP_INSPECT_IMAGE: &str = "inspect_image";
 pub const STEP_DEPLOY: &str = "deploy";
 pub const STEP_VERIFY_HEALTH: &str = "verify_health";
 pub const STEP_RECORD: &str = "record";
 
-/// Config keys every deployer kind accepts on top of its own.
-pub const COMMON_CONFIG_KEYS: [&str; 2] = ["timeout_seconds", "health_timeout_seconds"];
+/// Config keys every deployer kind accepts on top of its own: the
+/// deployer's time limits and what the image inspection does before the
+/// deploy (CONTRACT.md §22.1).
+pub const COMMON_CONFIG_KEYS: [&str; 5] = [
+    "timeout_seconds",
+    "health_timeout_seconds",
+    "inspect",
+    "inspect_fail_on",
+    "inspect_ignore",
+];
 
 /// Longest a deployer may be given to finish (six hours).
 pub const MAX_TIMEOUT_SECONDS: u64 = 6 * 60 * 60;
@@ -339,6 +350,40 @@ fn require<'a>(
         .ok_or_else(|| format!("config.{key} is required for {kind} environments"))
 }
 
+/// The image inspection settings (CONTRACT.md §22.1): `inspect` is
+/// `off | report | gate`, `inspect_fail_on` a severity, `inspect_ignore`
+/// comma-separated rule ids or `family.*`. Mirrors the analyzer's check of
+/// `.sdi.yml`.
+pub fn check_inspection(config: &BTreeMap<String, String>) -> Result<(), String> {
+    if let Some(mode) = config.get("inspect")
+        && !sdi_inspect::MODES.contains(&mode.as_str())
+    {
+        return Err(format!(
+            "config.inspect must be one of {}",
+            sdi_inspect::MODES.join(", ")
+        ));
+    }
+    if let Some(level) = config.get("inspect_fail_on")
+        && sdi_inspect::Severity::parse(level).is_none()
+    {
+        return Err(
+            "config.inspect_fail_on must be one of info, low, medium, high, critical".to_owned(),
+        );
+    }
+    if let Some(ignore) = config.get("inspect_ignore")
+        && let Some(bad) = ignore
+            .split(',')
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .find(|r| !sdi_inspect::rules::valid_rule_pattern(r))
+    {
+        return Err(format!(
+            "config.inspect_ignore lists `{bad}`, which is not a rule id (e.g. binary.no_pie) or a family (binary.*)"
+        ));
+    }
+    Ok(())
+}
+
 /// Checks the deployer settings of one kind. Unknown keys are refused by
 /// name; values are checked for shape, never for existence (whether a
 /// secret exists is the caller's question to the identity service). Every
@@ -383,6 +428,7 @@ fn check_config(kind: &str, config: &BTreeMap<String, String>) -> Result<(), Str
             http_health::MAX_TIMEOUT_SECONDS,
         )?;
     }
+    check_inspection(config)?;
     let safe_ref = |value: &str| {
         !value.starts_with(['-', '/'])
             && !value.contains("..")
@@ -1057,7 +1103,26 @@ mod tests {
                     ("application", "0192f6a0-0000-7000-8000-00000000a991"),
                     ("path", "apps/api"),
                 ],
-                "config.path is not a setting of sdi_gitops environments (allowed: application, timeout_seconds, health_timeout_seconds)",
+                "config.path is not a setting of sdi_gitops environments (allowed: application, timeout_seconds, health_timeout_seconds, inspect, inspect_fail_on, inspect_ignore)",
+            ),
+            // CONTRACT.md §22.1: the inspection settings every kind accepts.
+            (
+                "github_actions",
+                vec![("inspect", "always")],
+                "config.inspect must be one of off, report, gate",
+            ),
+            (
+                "github_actions",
+                vec![("inspect", "gate"), ("inspect_fail_on", "urgent")],
+                "config.inspect_fail_on must be one of info, low, medium, high, critical",
+            ),
+            (
+                "github_actions",
+                vec![
+                    ("inspect", "gate"),
+                    ("inspect_ignore", "binary.*,Image.PIE"),
+                ],
+                "config.inspect_ignore lists `Image.PIE`",
             ),
             (
                 "sdi_gitops",

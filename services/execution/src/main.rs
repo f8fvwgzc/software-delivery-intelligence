@@ -72,6 +72,9 @@ async fn main() -> anyhow::Result<()> {
         settings.github_token.clone(),
         &settings.github_api_url,
         &settings.azure_devops_url,
+        // `artifact.inspect` (CONTRACT.md §22.1): OSV_API_URL, SDI_REA_BIN,
+        // SDI_INSPECT_MAX_MB.
+        adapters::registry::InspectSettings::from_env(),
     ))
     // SDI's GitOps engine (CONTRACT.md §24.7), reached lazily like every peer.
     .with_gitops(Arc::new(GitopsEngineAdapter::new(&settings.gitops_url)?));

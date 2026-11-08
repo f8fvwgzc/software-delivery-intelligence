@@ -110,9 +110,10 @@ The pipeline board shows, per stage, what runs there now and what could go
 next. **Promote** starts a deployment run:
 
 1. Verify the image exists in the registry.
-2. Deploy through the stage's deployer.
-3. Verify health.
-4. Record a GitHub Deployment so the repository shows the environment.
+2. Inspect the image, when the stage asks for it (next section).
+3. Deploy through the stage's deployer.
+4. Verify health.
+5. Record a GitHub Deployment so the repository shows the environment.
 
 Each run is an execution, so approvals, live logs, failure diagnosis and
 remediation work as they do everywhere else. **Rollback** redeploys the
@@ -120,6 +121,55 @@ previous successful release of that stage.
 
 The first promote in a workspace pauses and asks for access. Deploy
 permissions are granted per run and expire; that is by design.
+
+## 6. Inspecting the image before it deploys
+
+"We upgraded the vulnerable library, the build passed, it deployed" is
+what the repository says. The image is what actually runs. A stage with
+**Image inspection** on reads the release image's layers from the registry,
+exactly the digest the registry just confirmed, and reverse-engineers what
+ships before anything is deployed:
+
+- the dependency versions compiled into Go binaries (build info) and Rust
+  binaries built with `cargo auditable`, the Go toolchain that built them,
+  and the packages of the base image, `node_modules` and `site-packages`,
+  all looked up at OSV;
+- binary hardening of your own binaries: PIE, non-executable stack,
+  RELRO, stack protector, FORTIFY, RPATH, debug symbols;
+- provenance: your Go binary built from another commit than the release
+  says, or from uncommitted changes;
+- what must never ship: private keys, `.env` files, credentials in `ENV`,
+  source maps, a root user, an end-of-life distribution.
+
+Pick per stage, in the environment editor or in `.sdi.yml`:
+
+| mode | what happens |
+|---|---|
+| Off (default) | the plan is the four steps above |
+| Report | the release gets a report (the tag on the release opens it); the run always goes on |
+| Gate | findings at or above **Stop at** (default high), minus the stage's **Accepted rules**, pause the run before the deploy. **Deploy anyway** continues and records that a person accepted them; **Cancel** is the recommended way out: fix, rebuild, release again |
+
+```yaml
+delivery:
+  inspect: { mode: report, fail_on: high, ignore: [binary.no_pie] }   # every stage's default
+  environments:
+    - name: staging
+      kind: github_actions
+    - name: production
+      kind: gitops_argocd
+      protected: true
+      config: { path: apps/api/values.yaml, strategy: helm_values, inspect: gate }
+```
+
+A rollback is never inspected (the release was, when it was promoted),
+and each promotion inspects again: an advisory published between staging
+and production is caught at production. The report names files,
+packages, versions and variable names, never contents or values. The
+readers are Rust ports of [REA](https://github.com/morluto/rea)'s static
+analyzers; set `SDI_REA_BIN` to an installed `rea` CLI to have it run over
+your binaries too. `OSV_API_URL=off` keeps the lookups inside an
+air-gapped network; `SDI_INSPECT_MAX_MB` (default 2048) bounds what one
+inspection downloads.
 
 ## GitHub App permissions
 

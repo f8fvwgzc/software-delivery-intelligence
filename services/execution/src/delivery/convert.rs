@@ -2,7 +2,9 @@
 
 use chrono::Utc;
 use sdi_common::time;
-use sdi_proto::execution::v1::{DeploymentRun, DeploymentStatus, Environment, Registry, Release};
+use sdi_proto::execution::v1::{
+    DeploymentRun, DeploymentStatus, Environment, Registry, Release, ReleaseInspection,
+};
 
 use super::{
     db::{
@@ -68,6 +70,13 @@ pub fn release(row: ReleaseRow, deployed_to: Vec<String>) -> Release {
         created_by: row.created_by,
         created_at: Some(time::to_proto(row.created_at)),
         deployed_to,
+        inspection: row.inspected_at.map(|at| ReleaseInspection {
+            status: row.inspection_status,
+            max_severity: row.inspection_max_severity,
+            finding_count: u32::try_from(row.inspection_findings).unwrap_or(0),
+            inspected_at: Some(time::to_proto(at)),
+            report_json: String::new(),
+        }),
     }
 }
 

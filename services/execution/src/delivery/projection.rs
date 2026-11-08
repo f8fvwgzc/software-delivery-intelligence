@@ -8,7 +8,9 @@
 //! When the execution succeeds the projection also makes the release the
 //! environment's current one, and as soon as the registry step confirmed
 //! the image it marks the release verified (with the digest the registry
-//! reported). What has to happen outside the transaction (events to the
+//! reported). The report of an image inspection (CONTRACT.md §22.1) moves
+//! from the run's outputs onto the release in the same way: it describes
+//! the release's one image, and the run keeps only its summary. What has to happen outside the transaction (events to the
 //! platform feed, the automatic promotion of the next stage) is returned
 //! to the runner as [`Projected`] and done after the commit.
 
@@ -39,6 +41,8 @@ pub struct Projected {
     pub succeeded_now: bool,
     /// The release was just marked verified (or learned its digest).
     pub release_changed: bool,
+    /// The release just got a new inspection report.
+    pub release_inspected: bool,
 }
 
 /// Brings the run of `exec` in line with it. `None` for executions that
@@ -83,6 +87,43 @@ pub async fn project(tx: &mut Tx, exec: &ExecutionRow) -> sqlx::Result<Option<Pr
         release_changed = releases::mark_verified(tx, workspace, run.release_id, digest).await?;
     }
 
+    // An inspection reported on the image (success or a gate that stopped
+    // the run alike): the report goes to the release, the run keeps the
+    // summary outputs.
+    let mut release_inspected = false;
+    if let Some(raw) = current.outputs.0.get(adapters::registry::REPORT_OUTPUT) {
+        if let Ok(report) = serde_json::from_str::<sdi_inspect::Report>(raw)
+            && let Ok(value) = serde_json::to_value(&report)
+        {
+            let status = if !report.findings.is_empty() {
+                "findings"
+            } else if report
+                .limitations
+                .iter()
+                .any(|l| l.starts_with("not read:"))
+            {
+                "incomplete"
+            } else {
+                "passed"
+            };
+            let severity = report
+                .max_severity()
+                .map_or("", sdi_inspect::Severity::as_str);
+            release_inspected = releases::record_inspection(
+                tx,
+                workspace,
+                run.release_id,
+                &value,
+                status,
+                severity,
+                i32::try_from(report.findings.len()).unwrap_or(i32::MAX),
+            )
+            .await?;
+        }
+        db::executions::remove_output(tx, workspace, exec.id, adapters::registry::REPORT_OUTPUT)
+            .await?;
+    }
+
     let status_text = model::status_to_db(status);
     let changed = run.status != status_text
         || run.external_url != external_url
@@ -93,6 +134,7 @@ pub async fn project(tx: &mut Tx, exec: &ExecutionRow) -> sqlx::Result<Option<Pr
             changed: false,
             succeeded_now: false,
             release_changed,
+            release_inspected,
         }));
     }
     let succeeded_now = status == DeploymentStatus::Succeeded
@@ -107,6 +149,7 @@ pub async fn project(tx: &mut Tx, exec: &ExecutionRow) -> sqlx::Result<Option<Pr
         changed: true,
         succeeded_now,
         release_changed,
+        release_inspected,
     }))
 }
 
@@ -117,6 +160,7 @@ pub fn announce(rt: &Arc<Runtime>, projected: Projected) {
         changed,
         succeeded_now,
         release_changed,
+        release_inspected,
     } = projected;
     let workspace = run.workspace_id;
     if changed {
@@ -130,8 +174,9 @@ pub fn announce(rt: &Arc<Runtime>, projected: Projected) {
             flow::run_data(&run),
         );
     }
-    if release_changed || succeeded_now {
-        // `verified`, `digest` or `deployed_to` of the release changed.
+    if release_changed || succeeded_now || release_inspected {
+        // `verified`, `digest`, `deployed_to` or the inspection of the
+        // release changed.
         rt.platform.delivery(
             workspace,
             "release",
@@ -140,6 +185,8 @@ pub fn announce(rt: &Arc<Runtime>, projected: Projected) {
             "updated",
             if succeeded_now {
                 "deployed"
+            } else if release_inspected {
+                "inspected"
             } else {
                 "verified"
             },

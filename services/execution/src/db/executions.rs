@@ -331,3 +331,20 @@ pub async fn stats<'e>(
     .fetch_one(exec)
     .await
 }
+
+/// Drops one output key (the inspection report, once it moved to its
+/// release: CONTRACT.md §22.1).
+pub async fn remove_output(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    key: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE executions SET outputs = outputs - $3 WHERE workspace_id = $1 AND id = $2")
+        .bind(workspace_id)
+        .bind(id)
+        .bind(key)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+}

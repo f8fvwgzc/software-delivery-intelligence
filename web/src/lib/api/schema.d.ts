@@ -3692,6 +3692,17 @@ export interface components {
             /** @description Repository path the node came from. */
             sourcePath: string;
         };
+        /** @description One hardening property, REA's evidence model. */
+        HardeningProperty: {
+            /** @description The bytes the state was read from, in words. */
+            basis: string;
+            /** @description `observed` (read from the bytes) or `derived` (reasoned from them). */
+            confidence: string;
+            /** @description `pie`, `nx`, `relro`, `stack_protector`, `fortify`, `rpath`, `runpath`, `stripped`. */
+            property: string;
+            /** @description `enabled`, `disabled`, `partial`, `unknown` or `not_applicable`. */
+            state: string;
+        };
         /** @description Response of `GET /health`. */
         Health: {
             /** @description Always `ok` when the gateway can answer at all. */
@@ -3766,6 +3777,147 @@ export interface components {
             node?: components["schemas"]["GraphNode"] | null;
             /** @description Relations walked from the origin to reach this node. */
             via: string[];
+        };
+        /** @description One ELF executable or shared object. */
+        InspectedBinary: {
+            /** @description Written by the team (not the distribution's, not a third-party package's). */
+            application: boolean;
+            /**
+             * Format: int32
+             * @description 32 or 64.
+             */
+            bits: number;
+            /** @description GNU build-id, hex. */
+            buildId?: string;
+            /** @description Selected build settings (`vcs.revision`, `vcs.modified`, `CGO_ENABLED`, …). */
+            buildSettings?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int32
+             * @description Dependencies embedded in the binary.
+             */
+            dependencyCount: number;
+            /** @description The binary carries its own dependency list (Go build info, cargo-auditable). */
+            embeddedDependencies?: boolean;
+            /** @description `elf`. */
+            format: string;
+            /** @description Hardening properties with their state and evidence. */
+            hardening: components["schemas"]["HardeningProperty"][];
+            /** @description `executable`, `pie_executable`, `static_pie_executable`, `shared_object`. */
+            kind: string;
+            /** @description `go`, `rust` or `native`. */
+            language: string;
+            /** @description `x86_64`, `aarch64`, … */
+            machine: string;
+            /** @description Main module or root crate. */
+            mainModule?: string;
+            /** @description Path in the image. */
+            path: string;
+            /**
+             * Format: int64
+             * @description Bytes.
+             */
+            size: number;
+            /** @description Compiler that built it (`go1.22.5`). */
+            toolchain?: string;
+        };
+        /** @description A package the image ships. */
+        InspectedComponent: {
+            /** @description OSV ecosystem: `Go`, `crates.io`, `npm`, `PyPI`, `Debian:12`, `Alpine:v3.20`, … */
+            ecosystem: string;
+            /** @description Package name. */
+            name: string;
+            /** @description File it was read from. */
+            path: string;
+            /** @description `go-buildinfo`, `go-toolchain`, `cargo-auditable`, `package.json`, `dist-info`, `dpkg`, `apk`. */
+            source: string;
+            /** @description Version as shipped. */
+            version: string;
+        };
+        /** @description One finding of an inspection. */
+        InspectionFinding: {
+            /** @description `observed` or `derived`. */
+            confidence: string;
+            /** @description The evidence. */
+            detail: string;
+            /** @description What would make it go away. */
+            fix: string;
+            /** @description File in the image; empty for image-wide findings. */
+            path?: string;
+            /** @description Stable rule id (`binary.exec_stack`, `dependency.vulnerable`): what `inspect_ignore` names. */
+            rule: string;
+            /** @description `info`, `low`, `medium`, `high` or `critical`. */
+            severity: string;
+            /** @description One line. */
+            title: string;
+        };
+        /** @description `/etc/os-release` of the image. */
+        InspectionOs: {
+            /** @description `debian`, `alpine`, … */
+            id: string;
+            /** @description `Debian GNU/Linux 12 (bookworm)`. */
+            prettyName: string;
+            /** @description `12`, `3.20.3`. */
+            versionId: string;
+        };
+        /** @description One inspection of one image: what was read, what ships, what was found. */
+        InspectionReport: {
+            /** @description Application binaries and binaries that carry their own dependency list. */
+            binaries: components["schemas"]["InspectedBinary"][];
+            /**
+             * Format: int64
+             * @description Bytes read out of those files.
+             */
+            bytesRead: number;
+            /** @description Packages the image ships, wherever they were read. */
+            components: components["schemas"]["InspectedComponent"][];
+            /** @description Digest of the platform manifest that was read. */
+            digest: string;
+            /**
+             * Format: int64
+             * @description Files looked at across layers.
+             */
+            filesSeen: number;
+            /** @description Most severe first. */
+            findings: components["schemas"]["InspectionFinding"][];
+            /** @description `host/namespace/name:tag` as inspected. */
+            image: string;
+            /**
+             * Format: int32
+             * @description Layers the image has.
+             */
+            layers: number;
+            /**
+             * Format: int32
+             * @description Layers that were read.
+             */
+            layersRead: number;
+            /** @description What was not read, and why. */
+            limitations: string[];
+            os?: components["schemas"]["InspectionOs"] | null;
+            /** @description `linux/amd64`. */
+            platform: string;
+            /**
+             * Format: int32
+             * @description Version of this shape.
+             */
+            schema: number;
+            /** @description External analyzers that ran (the REA CLI). */
+            tools?: components["schemas"]["InspectionToolRun"][];
+        };
+        /** @description An external analyzer run and what it said. */
+        InspectionToolRun: {
+            /** @description The command (`inspect-binary-hardening`). */
+            command: string;
+            /** @description It exited successfully. */
+            ok: boolean;
+            /** @description Binary it ran on. */
+            path: string;
+            /** @description Bounded excerpt of what it printed. */
+            summary: string;
+            /** @description `rea`. */
+            tool: string;
         };
         /** @description Response of `GET /github/app/install-url`. */
         InstallUrl: {
@@ -5042,6 +5194,7 @@ export interface components {
             id: string;
             /** @description `host/namespace/name`, without tag. */
             image: string;
+            inspection?: components["schemas"]["ReleaseInspection"] | null;
             /** @description Commit subjects since the previous release, Markdown. */
             notes: string;
             /** @description The CI run that built it, when a webhook created the release. */
@@ -5056,6 +5209,24 @@ export interface components {
             verified: boolean;
             /** @description Tag shown to people, e.g. `v1.4.2` or the short SHA. */
             version: string;
+        };
+        /** @description What reverse-engineering the release image found (CONTRACT.md §22.1). */
+        ReleaseInspection: {
+            /**
+             * Format: int32
+             * @description Findings in the report.
+             */
+            findingCount: number;
+            /**
+             * Format: date-time
+             * @description When the report was made.
+             */
+            inspectedAt: string;
+            /** @description Most severe finding: `info`, `low`, `medium`, `high` or `critical`; null without findings. */
+            maxSeverity?: string | null;
+            report?: components["schemas"]["InspectionReport"] | null;
+            /** @description `passed`, `findings` or `incomplete`. */
+            status: string;
         };
         /** @description A way out of a failure. */
         RemediationOption: {

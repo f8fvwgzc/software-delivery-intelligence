@@ -56,6 +56,10 @@ Shared crates:
 - `crates/analyzer` — pure functions `wanted_files(tree)` and
   `analyze_at(&RepoSnapshot, today) -> Analysis`. No I/O, no clock: the
   caller passes the date (there is no default one in the crate).
+- `crates/inspect` — pure image inspection (§22.1): `ImageScan` over
+  decompressed layer streams, `rules::apply` with the release and the
+  date, `osv::queries` / `osv::add_findings` around the caller's HTTP,
+  `Gate`. No network, no clock, no disk.
 
 ## 3. Environment
 
@@ -67,7 +71,9 @@ Shared crates:
 | `LLM_BASE_URL` | — | intelligence (OpenAI-compatible endpoint: OpenAI, Azure OpenAI with `?api-version=`, Ollama, vLLM, OpenRouter, Gemini) |
 | `LLM_API_KEY` / `ANTHROPIC_API_KEY` | — | intelligence (optional dev fallback key; `ANTHROPIC_API_KEY` is the alias) |
 | `LLM_MODEL` / `ANTHROPIC_MODEL` | `claude-sonnet-5-5` for `anthropic`, none otherwise | intelligence (`LLM_MODEL` names the model for whichever provider is configured; `ANTHROPIC_MODEL` is the older name and applies to the Anthropic provider only. An OpenAI-compatible provider has no default: until a model is named nothing is called, §19) |
-| `OSV_API_URL` | `https://api.osv.dev` | intelligence (§20 dependency vulnerabilities; `off` disables) |
+| `OSV_API_URL` | `https://api.osv.dev` | intelligence (§20 dependency vulnerabilities), execution (§22.1 what an inspected image ships); `off` disables both, empty means the default |
+| `SDI_INSPECT_MAX_MB` | `2048` | execution: compressed layer bytes one image inspection may download (§22.1); layers past the budget are a limitation, never a silent pass |
+| `SDI_REA_BIN` | unset | execution: path of the REA CLI (`rea`, from `rea-agents`); when set, its `inspect-binary-hardening` / `inspect-go-binary` / `inspect-rust-binary` run over at most five application binaries of an inspected image as a second opinion (§22.1) |
 | `KNOWLEDGE_GRPC_URL` | `http://127.0.0.1:50051` | gateway, intelligence, execution |
 | `GITOPS_GRPC_URL` | `http://127.0.0.1:50055` | gateway, execution (§24) |
 | `GITOPS_LISTEN` | `0.0.0.0:50055` | gitops |
@@ -182,6 +188,7 @@ design conversation. `editable=false` rows can never be relaxed.
 | `env.destroy_temporary` | Remove a temporary environment | safe | auto | yes |
 | `repo.open_pull_request` | Open a pull request with generated files | medium | approval | yes |
 | `registry.verify_image` | Verify the image exists in the registry | safe | auto | no |
+| `artifact.inspect` | Inspect the shipped image (§22.1) | safe | auto | no |
 | `deploy.development` | Deploy to development | medium | auto | yes |
 | `deploy.verify_health` | Verify the deployment is healthy | safe | auto | no |
 | `deploy.record` | Record the deployment on GitHub | safe | auto | yes |
@@ -248,8 +255,8 @@ approval → run → verify → checkpoint. The `docker` adapter requires the
 `DEPENDENCY_CONFLICT`, `IMAGE_NOT_FOUND`, `DEPLOYER_FAILED`,
 `DEPLOYER_TIMEOUT`, `GITOPS_CONFLICT`, `HEAD_MOVED`, `MERGE_CONFLICT`,
 `CHECKS_FAILING`, `MERGE_BLOCKED`, `RENDER_FAILED`, `CLUSTER_UNREACHABLE`,
-`SYNC_FAILED`, `UNKNOWN`. Each has at least two remediation options
-plus the free-text instruction path.
+`SYNC_FAILED`, `ARTIFACT_FINDINGS` (§22.1), `UNKNOWN`. Each has at least
+two remediation options plus the free-text instruction path.
 
 ### 5.6 Pattern catalog (seeded by knowledge, `source=catalog`, scope `public_template`)
 
@@ -994,6 +1001,7 @@ choose". The architecture has to make that checkable:
 | LLM requests | none stored; sent only when the data controls allow the reasoner, to the workspace's configured provider with its own key; payload = structured context (findings, options, facts, diagram spec), never raw files, trimmed to the token budget below | `reasoner_usage` keeps token counts per workspace and day (no content) | yes (default off) |
 | Source lines sent to the model (§23) | nothing by default. With `code_to_model = changed_lines` and the reasoner on: the lines one finding points at plus at most 20 lines either side, from the pull request under review, capped at 120 lines per request, to the workspace's configured provider. Never a whole file, never a `secrets.*` finding, and any line a secrets rule matches is replaced by `<redacted>` before sending. The reply is stored as that finding's suggestion | the suggestion lives with the review; the request is not stored | yes (default off; `code_to_model = off`) |
 | OSV lookups (§20) | package coordinates (`ecosystem`, `name`, `version`) of dependencies a pull request adds, sent to `OSV_API_URL`; answers cached in `osv_cache` (shared, not per tenant) | 24 h TTL | `OSV_API_URL=off` |
+| Image inspection (§22.1) | layer blobs of a release image, pulled from the workspace's registry into `<SDI_RUN_DIR>/inspect` and deleted as soon as each is read; the report on the release names files, packages, versions, variable names and binary metadata, never contents, key material or variable values; the shipped packages' coordinates go to `OSV_API_URL` | the report: until the release (or the workspace) is deleted; blobs: the step | yes (`inspect: off`, the default; `OSV_API_URL=off`) |
 | Audit entries | `identity.audit` | `audit_retention_days` (default 365) | no |
 | GitHub tokens | installation tokens are minted per request and cached ≤ 55 min in memory; OAuth tokens encrypted at rest with `SDI_SESSION_SECRET` | session lifetime | — |
 
@@ -1209,6 +1217,7 @@ checkpoint, and stops on failure.
   | step | action_type | adapter | default policy |
   |---|---|---|---|
   | verify image | `registry.verify_image` | `registry` (Registry v2 `HEAD /v2/<name>/manifests/<tag>`, token auth; records the digest) | safe · auto |
+  | inspect image (only when the environment's `config.inspect` is `report` or `gate`, promotions only; §22.1) | `artifact.inspect` | `registry` (pulls the layers of the digest just verified) | safe · auto |
   | deploy | `deploy.development` (position 0, not protected) · `deploy.staging` · `deploy.production` (protected) | the environment's deployer | medium · auto / high · approval / high · required |
   | verify health | `deploy.verify_health` | `http` (polls `url + health_path` for 2xx, up to `health_timeout_seconds`, default 120; skipped without a URL) | safe · auto |
   | record | `deploy.record` | `github` (creates a GitHub Deployment + status so the repository shows the environment) | safe · auto |
@@ -1258,6 +1267,10 @@ hint are ever returned; `ResolveSecret` is service-to-service and audited
 delivery:
   registry: { kind: ghcr }                # or acr/ecr/gar/dockerhub/generic with host + namespace
   build_workflow: ci.yml                  # which workflow's success creates a release
+  inspect:                                # §22.1, every environment's default (or just `inspect: report`)
+    mode: report                          # off | report | gate
+    fail_on: high                         # what a gate stops on
+    ignore: [binary.no_pie]               # rule ids or families (binary.*)
   environments:
     - name: staging
       kind: github_actions
@@ -1267,7 +1280,7 @@ delivery:
     - name: production
       kind: gitops_flux
       protected: true
-      config: { repo: acme/fleet, path: apps/api/kustomization.yaml, strategy: kustomize_image }
+      config: { repo: acme/fleet, path: apps/api/kustomization.yaml, strategy: kustomize_image, inspect: gate }
 ```
 
 The analyzer parses it into `ProjectConfig.delivery_json`; after each scan
@@ -1327,6 +1340,100 @@ counts runs *started* in the last 30 days whatever became of them;
 window and is the denominator of `successRate`. A paused run is not
 finished, so `finishedRuns30d: 0` means "no rate yet" and clients show a
 dash, never 0%.
+
+### 22.1 Image inspection (reverse-engineering what ships)
+
+A pull request review sees what the team meant to ship; the release image
+is what actually ships. Between "the registry has the image" and "deploy
+it", a deployment run can reverse-engineer that exact image and find what
+only the built artifact shows: the dependency versions compiled into its
+binaries (a repository can say `golang.org/x/net v0.23.0` while the binary
+still links v0.17.0), the Go toolchain that built them, the packages of
+the base image, binary hardening, provenance, and things that must never
+ship. The readers are Rust ports of REA, "Reverse Engineer Anything"
+(`github.com/morluto/rea`, MIT, see NOTICE), in the pure crate
+`crates/inspect` (`sdi-inspect`: bytes in, report out; no network, no
+clock, no disk), and keep REA's evidence model: every property has a
+`state`, a `confidence` (`observed` from the bytes, `derived` from what
+was read) and a `basis`; whatever could not be read is a limitation,
+never a clean result.
+
+**Where it runs.** Step `inspect_image`, action `artifact.inspect` (safe ·
+auto, not editable), tool `registry`, depending on `verify_image`; the
+deploy step then depends on it. Planned only for promotions (a rollback
+goes back to a release already inspected, and a recovery must not wait on
+a new advisory) and only when the environment's `config.inspect` is
+`report` or `gate`. Off (the default) leaves §22's four-step plan as it is.
+
+**What it reads.** Through the same Registry v2 auth as `verify_image`:
+the manifest of the digest `verify_image` just recorded (an index resolves
+to `linux/amd64`, else `linux/arm64`, else the first Linux image;
+attestations are skipped), the image config, then every layer blob, lowest
+first. A blob follows the registry's redirect to its storage without the
+registry's `Authorization` once the host changes, is streamed to a file
+under `<SDI_RUN_DIR>/inspect` (deleted when read), must hash to its
+digest, and is read through gzip (zstd layers are a limitation). Files
+are kept only if the final filesystem still holds them (OCI whiteouts and
+opaque directories apply). Budgets: `SDI_INSPECT_MAX_MB` of compressed
+layers, 128 MiB per binary, 8 MiB per package database, 2 000 000 files,
+15 minutes per step (`params.timeout_seconds`).
+
+| family | rule ids | what it reads |
+|---|---|---|
+| hardening (application binaries: outside the distribution's directories and outside `node_modules`/`site-packages`, or a Go binary whose main module is the release's repository) | `binary.exec_stack` (high), `binary.no_pie` (medium; low for Go), `binary.no_relro` (low; not Go), `binary.partial_relro` (info), `binary.no_stack_protector` (low; C/C++ only), `binary.unsafe_rpath` (medium: relative or `/tmp`-like RPATH/RUNPATH), `binary.debug_info` (info), `rust.no_dependency_list` (info) | ELF header, program headers (`PT_GNU_STACK`, `PT_GNU_RELRO`, `PT_INTERP`), dynamic table (`DF_1_PIE`, `BIND_NOW`, `DT_RPATH`/`DT_RUNPATH`), symbols (`__stack_chk_fail`, `__*_chk`), sections |
+| toolchain and provenance | `go.toolchain_eol` (medium, the analyzer's EOL table on the run's date), `go.dirty_build` (medium: `vcs.modified=true`), `provenance.commit_mismatch` (high: the repository's own Go binary was built from another `vcs.revision` than the release's commit) | Go build info (`.go.buildinfo`, inline and pointer encodings) |
+| what ships | `dependency.vulnerable` (the advisories' highest severity; unknown is medium) | Go modules and the Go standard library from build info, Rust crates from cargo-auditable's `.dep-v0`, `node_modules/**/package.json`, Python `*.dist-info/METADATA`, dpkg (`status`, `status.d/`) and apk databases with the ecosystem from `/etc/os-release` (`Debian:<major>`, `Alpine:v<major.minor>`), asked of `OSV_API_URL` (`querybatch`, at most 1 000 coordinates, details of at most 60 advisories, 30 s budget, fails soft). A distribution package is reported only for advisories with a fixed version; the rest are counted in the limitations |
+| base image | `image.os_eol` (high) | `/etc/os-release` against the analyzer's EOL table |
+| never ship | `image.private_key` (critical; test, fixture, doc and third-party trees excluded), `image.env_file` (high when a variable name says credential, else medium), `image.secret_in_env` (high: a credential-named `ENV` with a value in the image config), `image.source_map` (low), `image.runs_as_root` (medium: no or root `User` in the image config) | file names, PEM markers, `.env` variable names, the image config |
+
+Values are never copied: a report names files, packages, versions,
+variables and binary metadata, never file contents, key material or the
+value of a variable.
+
+**What the environment decides** (config keys every deployer kind accepts,
+validated identically by the analyzer and the execution service):
+`inspect` = `off` | `report` | `gate`; `inspect_fail_on` = `info` | `low`
+| `medium` | `high` (default) | `critical`; `inspect_ignore` = rule ids or
+families (`binary.*`), comma-separated, at most 64 characters each.
+`report` never stops the run: an image that could not be read is noted
+(`inspection_status = skipped`) and the run goes on. `gate` fails the step
+with `ARTIFACT_FINDINGS` when findings at or above `inspect_fail_on` remain
+after `inspect_ignore` (its raw output lists them with their fixes), and
+with the registry's own code (`IMAGE_NOT_FOUND`, `PERMISSION_DENIED`,
+`QUOTA_EXCEEDED`, `TIMEOUT`, `UNKNOWN`, the last also for a blob whose
+bytes do not match its digest) when the image could not be read.
+`ARTIFACT_FINDINGS` offers `accept_findings` ("Deploy anyway": retries the
+step with `params.accept_findings = true`; it inspects again, records
+`inspection_status = accepted` and lets the run continue; the RESOLVE
+event says a person accepted), `retry` and `cancel` (recommended); any
+other failure of the step offers `accept_findings` as "Deploy without the
+inspection" next to its usual options. `skip_step` is never offered: the
+deploy depends on the step.
+
+**Where the report goes.** The step emits the whole report as the
+progress output `inspection_report`; the delivery projection (in the same
+transaction) stores it on the release (`releases.inspection`, with
+`inspection_status` `passed` | `findings` | `incomplete`,
+`inspection_max_severity`, `inspection_findings`, `inspected_at`) and
+removes it from the execution's outputs, which keep `inspection_status`,
+`inspection_findings`, `inspection_max_severity`, `inspection_blocking`
+and `inspection_digest`. The release's report is the latest one: a
+release promoted to production a week after staging is inspected again,
+so an advisory published in between is found. `Release.inspection` (REST
+`inspection`) carries the summary everywhere and the typed report
+(`InspectionReport`) only on `GET /releases/{id}`; the platform event is
+`release updated` with status `inspected`.
+
+**Second opinion.** With `SDI_REA_BIN` set, the REA CLI's
+`inspect-binary-hardening` (plus `inspect-go-binary` or
+`inspect-rust-binary` by language) runs over at most five application
+binaries, 90 s each, written to a scratch directory under the same work
+directory; each run is a bounded `tools[]` entry of the report and never
+fails the step.
+
+`.sdi.yml`: `delivery.inspect` is every environment's default, either a
+mode (`inspect: gate`) or `{mode, fail_on, ignore: [rule ids]}`; an
+environment's own `config.inspect*` wins.
 
 ## 23. Pull request autopilot
 

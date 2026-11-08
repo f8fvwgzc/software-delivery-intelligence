@@ -15,6 +15,7 @@ publish = false
 sdi-proto = { path = "crates/proto" }
 sdi-common = { path = "crates/common" }
 sdi-analyzer = { path = "crates/analyzer" }
+sdi-inspect = { path = "crates/inspect" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

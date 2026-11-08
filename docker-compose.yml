@@ -225,6 +225,14 @@ services:
       SDI_RUN_DIR: /var/lib/sdi/run
       SDI_ALLOW_PRIVATE_DEPLOY_TARGETS: ${SDI_ALLOW_PRIVATE_DEPLOY_TARGETS:-}
       AZURE_DEVOPS_URL: ${AZURE_DEVOPS_URL:-}
+      # `artifact.inspect` (CONTRACT.md §22.1): where shipped packages are
+      # looked up (`off` for an air-gapped instance; empty is the public
+      # OSV), the compressed bytes one inspection may pull (MiB), and an
+      # optional REA CLI for a second opinion on binaries. Layers are spooled
+      # under SDI_RUN_DIR/inspect, on the run volume, one at a time.
+      OSV_API_URL: ${OSV_API_URL:-}
+      SDI_INSPECT_MAX_MB: ${SDI_INSPECT_MAX_MB:-}
+      SDI_REA_BIN: ${SDI_REA_BIN:-}
       # Unset by default: the Docker CLI then uses /var/run/docker.sock,
       # which only exists under the local-exec profile. Set on the host to
       # point the adapter at a remote daemon instead (passed through as-is).

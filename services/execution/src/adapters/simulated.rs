@@ -248,6 +248,7 @@ pub fn failure_output(step: &StepInput, code: &str) -> String {
             "the sync of application {} failed; 1 resource failed: Deployment api (ImagePullBackOff) (injected fault)",
             p("application", "?")
         ),
+        diagnosis::ARTIFACT_FINDINGS => "1 finding at or above high in the release image stops this deployment.\n[critical] RSA private key in the image (root/.ssh/id_rsa): Remove the key from the build context (.dockerignore), rotate it, and mount it at run time from a secret store. (injected fault)".to_owned(),
         other => format!("{} failed: {other} (injected fault)", step.key),
     }
 }

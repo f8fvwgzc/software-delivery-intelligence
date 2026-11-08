@@ -261,6 +261,196 @@ pub struct Release {
     pub created_at: DateTime<Utc>,
     /// Names of the environments this release currently runs in, in promotion order.
     pub deployed_to: Vec<String>,
+    /// The last inspection of the image (CONTRACT.md §22.1); null when it
+    /// was never inspected. The full report is only on `GET /releases/{id}`.
+    pub inspection: Option<ReleaseInspection>,
+}
+
+/// What reverse-engineering the release image found (CONTRACT.md §22.1).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseInspection {
+    /// `passed`, `findings` or `incomplete`.
+    pub status: String,
+    /// Most severe finding: `info`, `low`, `medium`, `high` or `critical`; null without findings.
+    pub max_severity: Option<String>,
+    /// Findings in the report.
+    pub finding_count: u32,
+    /// When the report was made.
+    pub inspected_at: DateTime<Utc>,
+    /// The whole report; only on `GET /releases/{id}`.
+    pub report: Option<InspectionReport>,
+}
+
+/// One inspection of one image: what was read, what ships, what was found.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionReport {
+    /// Version of this shape.
+    pub schema: u32,
+    /// `host/namespace/name:tag` as inspected.
+    pub image: String,
+    /// Digest of the platform manifest that was read.
+    pub digest: String,
+    /// `linux/amd64`.
+    pub platform: String,
+    /// Layers the image has.
+    pub layers: u32,
+    /// Layers that were read.
+    pub layers_read: u32,
+    /// Files looked at across layers.
+    pub files_seen: u64,
+    /// Bytes read out of those files.
+    pub bytes_read: u64,
+    /// The distribution, from `/etc/os-release`.
+    #[serde(default)]
+    pub os: Option<InspectionOs>,
+    /// Application binaries and binaries that carry their own dependency list.
+    pub binaries: Vec<InspectedBinary>,
+    /// Packages the image ships, wherever they were read.
+    pub components: Vec<InspectedComponent>,
+    /// Most severe first.
+    pub findings: Vec<InspectionFinding>,
+    /// What was not read, and why.
+    pub limitations: Vec<String>,
+    /// External analyzers that ran (the REA CLI).
+    #[serde(default)]
+    pub tools: Vec<InspectionToolRun>,
+}
+
+/// `/etc/os-release` of the image.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionOs {
+    /// `debian`, `alpine`, …
+    pub id: String,
+    /// `12`, `3.20.3`.
+    pub version_id: String,
+    /// `Debian GNU/Linux 12 (bookworm)`.
+    pub pretty_name: String,
+}
+
+/// One ELF executable or shared object.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectedBinary {
+    /// Path in the image.
+    pub path: String,
+    /// `elf`.
+    pub format: String,
+    /// `x86_64`, `aarch64`, …
+    pub machine: String,
+    /// 32 or 64.
+    pub bits: u8,
+    /// `executable`, `pie_executable`, `static_pie_executable`, `shared_object`.
+    pub kind: String,
+    /// `go`, `rust` or `native`.
+    pub language: String,
+    /// Bytes.
+    pub size: u64,
+    /// GNU build-id, hex.
+    #[serde(default)]
+    pub build_id: String,
+    /// Compiler that built it (`go1.22.5`).
+    #[serde(default)]
+    pub toolchain: String,
+    /// Main module or root crate.
+    #[serde(default)]
+    pub main_module: String,
+    /// Selected build settings (`vcs.revision`, `vcs.modified`, `CGO_ENABLED`, …).
+    #[serde(default)]
+    pub build_settings: BTreeMap<String, String>,
+    /// Dependencies embedded in the binary.
+    pub dependency_count: u32,
+    /// The binary carries its own dependency list (Go build info, cargo-auditable).
+    #[serde(default)]
+    pub embedded_dependencies: bool,
+    /// Written by the team (not the distribution's, not a third-party package's).
+    pub application: bool,
+    /// Hardening properties with their state and evidence.
+    pub hardening: Vec<HardeningProperty>,
+}
+
+/// One hardening property, REA's evidence model.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HardeningProperty {
+    /// `pie`, `nx`, `relro`, `stack_protector`, `fortify`, `rpath`, `runpath`, `stripped`.
+    pub property: String,
+    /// `enabled`, `disabled`, `partial`, `unknown` or `not_applicable`.
+    pub state: String,
+    /// `observed` (read from the bytes) or `derived` (reasoned from them).
+    pub confidence: String,
+    /// The bytes the state was read from, in words.
+    pub basis: String,
+}
+
+/// A package the image ships.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectedComponent {
+    /// OSV ecosystem: `Go`, `crates.io`, `npm`, `PyPI`, `Debian:12`, `Alpine:v3.20`, …
+    pub ecosystem: String,
+    /// Package name.
+    pub name: String,
+    /// Version as shipped.
+    pub version: String,
+    /// File it was read from.
+    pub path: String,
+    /// `go-buildinfo`, `go-toolchain`, `cargo-auditable`, `package.json`, `dist-info`, `dpkg`, `apk`.
+    pub source: String,
+}
+
+/// One finding of an inspection.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionFinding {
+    /// Stable rule id (`binary.exec_stack`, `dependency.vulnerable`): what `inspect_ignore` names.
+    pub rule: String,
+    /// `info`, `low`, `medium`, `high` or `critical`.
+    pub severity: String,
+    /// One line.
+    pub title: String,
+    /// File in the image; empty for image-wide findings.
+    #[serde(default)]
+    pub path: String,
+    /// The evidence.
+    pub detail: String,
+    /// `observed` or `derived`.
+    pub confidence: String,
+    /// What would make it go away.
+    pub fix: String,
+}
+
+/// An external analyzer run and what it said.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionToolRun {
+    /// `rea`.
+    pub tool: String,
+    /// The command (`inspect-binary-hardening`).
+    pub command: String,
+    /// Binary it ran on.
+    pub path: String,
+    /// It exited successfully.
+    pub ok: bool,
+    /// Bounded excerpt of what it printed.
+    pub summary: String,
+}
+
+impl From<proto::ReleaseInspection> for ReleaseInspection {
+    fn from(inspection: proto::ReleaseInspection) -> Self {
+        let report = (!inspection.report_json.is_empty())
+            .then(|| serde_json::from_str(&inspection.report_json).ok())
+            .flatten();
+        Self {
+            status: inspection.status,
+            max_severity: opt_string(inspection.max_severity),
+            finding_count: inspection.finding_count,
+            inspected_at: timestamp(inspection.inspected_at.as_ref()),
+            report,
+        }
+    }
 }
 
 impl From<proto::Release> for Release {
@@ -280,6 +470,7 @@ impl From<proto::Release> for Release {
             created_by: opt_string(release.created_by),
             created_at: timestamp(release.created_at.as_ref()),
             deployed_to: release.deployed_to,
+            inspection: release.inspection.map(ReleaseInspection::from),
         }
     }
 }
