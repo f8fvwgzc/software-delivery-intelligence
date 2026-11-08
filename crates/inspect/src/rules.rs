@@ -70,27 +70,42 @@ pub fn apply(report: &mut Report, ctx: &Context<'_>) {
         }
     }
     let mut found = Vec::new();
+    // An end of life that could not be judged is a limitation, never a
+    // clean result (REA's rule): the oldest images are the likeliest to be
+    // missing from the table.
+    let mut unjudged = Vec::new();
     for binary in &report.binaries {
         if binary.application {
             hardening_findings(binary, &mut found);
         }
-        toolchain_findings(binary, ctx, &mut found);
+        toolchain_findings(binary, ctx, &mut found, &mut unjudged);
     }
     if let Some(os) = &report.os {
+        let name = if os.pretty_name.is_empty() {
+            format!("{} {}", os.id, os.version_id)
+        } else {
+            os.pretty_name.clone()
+        };
         let (runtime, version) = match os.id.as_str() {
             "debian" => (eol::DEBIAN, eol::debian_version(&os.version_id)),
             "ubuntu" => (eol::UBUNTU, eol::ubuntu_version(&os.version_id)),
             "alpine" => (eol::ALPINE, eol::alpine_version(&os.version_id)),
             _ => ("", None),
         };
+        let why = match version.as_deref() {
+            _ if runtime.is_empty() => Some("only Debian, Ubuntu and Alpine are in the table"),
+            None => Some("etc/os-release names no release"),
+            Some(v) if eol::is_unlisted_older(runtime, v) => {
+                Some("its release is not in the table")
+            }
+            Some(_) => None,
+        };
+        if let Some(why) = why {
+            unjudged.push(format!("the end of life of {name} was not checked: {why}"));
+        }
         if let Some(version) = version
             && let Some(day) = eol::is_eol(runtime, &version, ctx.today)
         {
-            let name = if os.pretty_name.is_empty() {
-                format!("{} {}", os.id, os.version_id)
-            } else {
-                os.pretty_name.clone()
-            };
             found.push(finding(
                 "image.os_eol",
                 Severity::High,
@@ -106,6 +121,11 @@ pub fn apply(report: &mut Report, ctx: &Context<'_>) {
         }
     }
     report.findings.extend(found);
+    for line in unjudged {
+        if !report.limitations.contains(&line) {
+            report.limitations.push(line);
+        }
+    }
 }
 
 fn hardening_findings(binary: &BinaryReport, out: &mut Vec<Finding>) {
@@ -230,12 +250,25 @@ fn hardening_findings(binary: &BinaryReport, out: &mut Vec<Finding>) {
     }
 }
 
-fn toolchain_findings(binary: &BinaryReport, ctx: &Context<'_>, out: &mut Vec<Finding>) {
+fn toolchain_findings(
+    binary: &BinaryReport,
+    ctx: &Context<'_>,
+    out: &mut Vec<Finding>,
+    unjudged: &mut Vec<String>,
+) {
     if binary.language != "go" || binary.toolchain.is_empty() {
         return;
     }
     let path = binary.path.as_str();
-    if let Some(minor) = eol::go_minor(&binary.toolchain)
+    let minor = eol::go_minor(&binary.toolchain);
+    if let Some(minor) = &minor
+        && eol::is_unlisted_older(eol::GO, minor)
+    {
+        unjudged.push(format!(
+            "the end of life of Go {minor} was not checked: it is not in the table"
+        ));
+    }
+    if let Some(minor) = minor
         && let Some(day) = eol::is_eol(eol::GO, &minor, ctx.today)
     {
         out.push(finding(
@@ -519,6 +552,119 @@ mod tests {
         assert_eq!(eol.rule, "image.os_eol");
         assert_eq!(eol.severity, Severity::High);
         assert!(eol.detail.contains("2024-06-30"));
+    }
+
+    fn alpine(version_id: &str) -> Option<OsRelease> {
+        Some(OsRelease {
+            id: "alpine".into(),
+            version_id: version_id.into(),
+            pretty_name: format!("Alpine Linux v{version_id}"),
+        })
+    }
+
+    #[test]
+    fn an_image_older_than_the_newest_rows_is_still_end_of_life() {
+        // podinfo 5.0.0 as published: Alpine 3.12, two binaries from Go 1.15.
+        let mut old = go_binary("home/app/podinfo", "github.com/stefanprodan/podinfo", &[]);
+        old.toolchain = "go1.15.2".into();
+        let mut cli = old.clone();
+        cli.path = "usr/local/bin/podcli".into();
+        let mut report = Report {
+            os: alpine("3.12.0"),
+            binaries: vec![old, cli],
+            ..Report::default()
+        };
+        apply(&mut report, &CTX);
+        let os = report
+            .findings
+            .iter()
+            .find(|f| f.rule == "image.os_eol")
+            .expect("Alpine 3.12 is past its end of life");
+        assert!(os.detail.contains("2022-05-01"), "{}", os.detail);
+        let go: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule == "go.toolchain_eol")
+            .collect();
+        assert_eq!(go.len(), 2);
+        assert!(go[0].detail.contains("2021-08-16"), "{}", go[0].detail);
+        assert!(report.limitations.is_empty(), "{:?}", report.limitations);
+    }
+
+    #[test]
+    fn what_the_table_cannot_judge_is_a_limitation_not_a_clean_result() {
+        let mut ancient = go_binary("app/a", "example.com/a", &[]);
+        ancient.toolchain = "go1.5.4".into();
+        let mut twin = ancient.clone();
+        twin.path = "app/b".into();
+        let mut report = Report {
+            os: alpine("2.7.0"),
+            binaries: vec![ancient, twin],
+            ..Report::default()
+        };
+        apply(&mut report, &CTX);
+        assert!(
+            !rules(&report)
+                .iter()
+                .any(|r| *r == "image.os_eol" || *r == "go.toolchain_eol"),
+            "an unknown date is never a finding"
+        );
+        assert_eq!(
+            report.limitations,
+            vec![
+                "the end of life of Go 1.5 was not checked: it is not in the table".to_string(),
+                "the end of life of Alpine Linux v2.7.0 was not checked: its release is not in the table"
+                    .to_string(),
+            ]
+        );
+
+        let mut report = Report {
+            os: Some(OsRelease {
+                id: "centos".into(),
+                version_id: "7".into(),
+                pretty_name: "CentOS Linux 7 (Core)".into(),
+            }),
+            ..Report::default()
+        };
+        apply(&mut report, &CTX);
+        assert_eq!(
+            report.limitations,
+            vec![
+                "the end of life of CentOS Linux 7 (Core) was not checked: only Debian, Ubuntu and Alpine are in the table"
+                    .to_string()
+            ]
+        );
+
+        let mut report = Report {
+            os: Some(OsRelease {
+                id: "debian".into(),
+                version_id: String::new(),
+                pretty_name: "Debian GNU/Linux trixie/sid".into(),
+            }),
+            ..Report::default()
+        };
+        apply(&mut report, &CTX);
+        assert_eq!(
+            report.limitations,
+            vec![
+                "the end of life of Debian GNU/Linux trixie/sid was not checked: etc/os-release names no release"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_release_newer_than_the_table_is_neither_a_finding_nor_a_limitation() {
+        let mut fresh = go_binary("app/api", "example.com/api", &[]);
+        fresh.toolchain = "go1.40.1".into();
+        let mut report = Report {
+            os: alpine("3.40.0"),
+            binaries: vec![fresh],
+            ..Report::default()
+        };
+        apply(&mut report, &CTX);
+        assert!(!rules(&report).iter().any(|r| r.ends_with("_eol")));
+        assert!(report.limitations.is_empty(), "{:?}", report.limitations);
     }
 
     #[test]

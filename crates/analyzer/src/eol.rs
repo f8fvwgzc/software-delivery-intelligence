@@ -6,7 +6,11 @@
 //! endoflife.date: the last day of free security updates from the project
 //! itself (Node, Python, PHP, Ruby, Go, Ubuntu, Debian, Alpine), Microsoft's
 //! published dates for .NET, and Oracle's end of premier support for Java.
-//! Anything not in the table is "unknown", never "end of life".
+//! Anything not in the table is "unknown", never "end of life", so the rows
+//! reach back to the oldest releases the readers can still meet (a Go
+//! binary's build info, an Alpine 3.0 base image): the oldest software is
+//! the one that most needs the finding. A caller that must not mistake
+//! "unknown" for "supported" asks [`is_unlisted_older`].
 
 /// A calendar day as `(year, month, day)`; tuples compare lexicographically,
 /// which is exactly date order.
@@ -30,6 +34,9 @@ pub const ALPINE: &str = "alpine";
 /// `(runtime, version, end of life)`.
 pub const EOL: &[(&str, &str, Day)] = &[
     // Node.js: even majors are LTS; odd ones are listed where they are common.
+    (NODE, "4", (2018, 4, 30)),
+    (NODE, "6", (2019, 4, 30)),
+    (NODE, "8", (2019, 12, 31)),
     (NODE, "10", (2021, 4, 30)),
     (NODE, "12", (2022, 4, 30)),
     (NODE, "14", (2023, 4, 30)),
@@ -84,6 +91,9 @@ pub const EOL: &[(&str, &str, Day)] = &[
     (DOTNET, "9", (2026, 5, 12)),
     (DOTNET, "10", (2028, 11, 14)),
     // PHP: end of security support.
+    (PHP, "5.3", (2014, 8, 14)),
+    (PHP, "5.4", (2015, 9, 3)),
+    (PHP, "5.5", (2016, 7, 21)),
     (PHP, "5.6", (2018, 12, 31)),
     (PHP, "7.0", (2019, 1, 10)),
     (PHP, "7.1", (2019, 12, 1)),
@@ -96,6 +106,10 @@ pub const EOL: &[(&str, &str, Day)] = &[
     (PHP, "8.3", (2027, 12, 31)),
     (PHP, "8.4", (2028, 12, 31)),
     // Ruby
+    (RUBY, "1.9", (2015, 2, 23)),
+    (RUBY, "2.0", (2016, 2, 24)),
+    (RUBY, "2.1", (2017, 3, 31)),
+    (RUBY, "2.2", (2018, 3, 31)),
     (RUBY, "2.3", (2019, 3, 31)),
     (RUBY, "2.4", (2020, 4, 5)),
     (RUBY, "2.5", (2021, 3, 31)),
@@ -106,7 +120,20 @@ pub const EOL: &[(&str, &str, Day)] = &[
     (RUBY, "3.2", (2026, 3, 31)),
     (RUBY, "3.3", (2027, 3, 31)),
     (RUBY, "3.4", (2028, 3, 31)),
-    // Go: a release is supported until two newer majors exist.
+    // Go: a release is supported until two newer majors exist, so each row
+    // is the release day of the version two after it.
+    (GO, "1.6", (2017, 2, 16)),
+    (GO, "1.7", (2017, 8, 24)),
+    (GO, "1.8", (2018, 2, 16)),
+    (GO, "1.9", (2018, 8, 24)),
+    (GO, "1.10", (2019, 2, 25)),
+    (GO, "1.11", (2019, 9, 3)),
+    (GO, "1.12", (2020, 2, 25)),
+    (GO, "1.13", (2020, 8, 11)),
+    (GO, "1.14", (2021, 2, 16)),
+    (GO, "1.15", (2021, 8, 16)),
+    (GO, "1.16", (2022, 3, 15)),
+    (GO, "1.17", (2022, 8, 2)),
     (GO, "1.18", (2023, 2, 1)),
     (GO, "1.19", (2023, 8, 8)),
     (GO, "1.20", (2024, 2, 6)),
@@ -117,19 +144,38 @@ pub const EOL: &[(&str, &str, Day)] = &[
     (GO, "1.25", (2026, 8, 11)),
     (GO, "1.26", (2027, 2, 9)),
     // Ubuntu LTS: end of standard support.
+    (UBUNTU, "12.04", (2017, 4, 28)),
+    (UBUNTU, "14.04", (2019, 4, 25)),
     (UBUNTU, "16.04", (2021, 4, 30)),
     (UBUNTU, "18.04", (2023, 5, 31)),
     (UBUNTU, "20.04", (2025, 5, 31)),
     (UBUNTU, "22.04", (2027, 6, 1)),
     (UBUNTU, "24.04", (2029, 5, 31)),
     // Debian: end of LTS.
+    (DEBIAN, "6", (2016, 2, 29)),
+    (DEBIAN, "7", (2018, 5, 31)),
     (DEBIAN, "8", (2020, 6, 30)),
     (DEBIAN, "9", (2022, 6, 30)),
     (DEBIAN, "10", (2024, 6, 30)),
     (DEBIAN, "11", (2026, 8, 31)),
     (DEBIAN, "12", (2028, 6, 30)),
     (DEBIAN, "13", (2030, 6, 30)),
-    // Alpine
+    // Alpine: a branch is supported for two years.
+    (ALPINE, "3.0", (2016, 5, 1)),
+    (ALPINE, "3.1", (2016, 11, 1)),
+    (ALPINE, "3.2", (2017, 5, 1)),
+    (ALPINE, "3.3", (2017, 11, 1)),
+    (ALPINE, "3.4", (2018, 5, 1)),
+    (ALPINE, "3.5", (2018, 11, 1)),
+    (ALPINE, "3.6", (2019, 5, 1)),
+    (ALPINE, "3.7", (2019, 11, 1)),
+    (ALPINE, "3.8", (2020, 5, 1)),
+    (ALPINE, "3.9", (2020, 11, 1)),
+    (ALPINE, "3.10", (2021, 5, 1)),
+    (ALPINE, "3.11", (2021, 11, 1)),
+    (ALPINE, "3.12", (2022, 5, 1)),
+    (ALPINE, "3.13", (2022, 11, 1)),
+    (ALPINE, "3.14", (2023, 5, 1)),
     (ALPINE, "3.15", (2023, 11, 1)),
     (ALPINE, "3.16", (2024, 5, 23)),
     (ALPINE, "3.17", (2024, 11, 22)),
@@ -150,6 +196,30 @@ pub fn eol_date(runtime: &str, version: &str) -> Option<Day> {
 /// `Some(date)` when the runtime version is past its end of life on `today`.
 pub fn is_eol(runtime: &str, version: &str, today: Day) -> Option<Day> {
     eol_date(runtime, version).filter(|d| *d <= today)
+}
+
+/// `3.12` → `[3, 12]`, `16.04` → `[16, 4]`; `None` for anything else.
+fn numeric_version(version: &str) -> Option<Vec<u32>> {
+    version.split('.').map(|part| part.parse().ok()).collect()
+}
+
+/// Whether `version` of a tracked runtime is missing from the table although
+/// it is older than the runtime's newest row (Alpine 2.7, Ubuntu 21.10): its
+/// support status is unknown, which must not read as "supported". A version
+/// newer than every row is too recent to have ended, and a runtime with no
+/// rows is not tracked at all; both give `false`.
+pub fn is_unlisted_older(runtime: &str, version: &str) -> bool {
+    if eol_date(runtime, version).is_some() {
+        return false;
+    }
+    let Some(version) = numeric_version(version) else {
+        return false;
+    };
+    EOL.iter()
+        .filter(|(r, _, _)| *r == runtime)
+        .filter_map(|(_, row, _)| numeric_version(row))
+        .max()
+        .is_some_and(|newest| version < newest)
 }
 
 /// `2023-09-11`.
@@ -351,6 +421,8 @@ pub fn ubuntu_version(raw: &str) -> Option<String> {
     let t = raw.trim().to_ascii_lowercase();
     let t = t.split('-').next().unwrap_or(&t);
     let by_name = match t {
+        "precise" => Some("12.04"),
+        "trusty" => Some("14.04"),
         "xenial" => Some("16.04"),
         "bionic" => Some("18.04"),
         "focal" => Some("20.04"),
@@ -366,6 +438,8 @@ pub fn debian_version(raw: &str) -> Option<String> {
     let t = raw.trim().to_ascii_lowercase();
     let t = t.split('-').next().unwrap_or(&t);
     let by_name = match t {
+        "squeeze" => Some("6"),
+        "wheezy" => Some("7"),
         "jessie" => Some("8"),
         "stretch" => Some("9"),
         "buster" => Some("10"),
@@ -470,16 +544,19 @@ pub fn image_runtimes(image: &str) -> Vec<(&'static str, String)> {
 fn debian_codename(part: &str) -> Option<String> {
     matches!(
         part,
-        "jessie" | "stretch" | "buster" | "bullseye" | "bookworm" | "trixie"
+        "squeeze" | "wheezy" | "jessie" | "stretch" | "buster" | "bullseye" | "bookworm" | "trixie"
     )
     .then(|| debian_version(part))
     .flatten()
 }
 
 fn ubuntu_codename(part: &str) -> Option<String> {
-    matches!(part, "xenial" | "bionic" | "focal" | "jammy" | "noble")
-        .then(|| ubuntu_version(part))
-        .flatten()
+    matches!(
+        part,
+        "precise" | "trusty" | "xenial" | "bionic" | "focal" | "jammy" | "noble"
+    )
+    .then(|| ubuntu_version(part))
+    .flatten()
 }
 
 #[cfg(test)]
@@ -497,6 +574,61 @@ mod tests {
         assert_eq!(format_day((2023, 9, 11)), "2023-09-11");
         assert_eq!(label(NODE, "16"), "Node 16");
         assert_eq!(label(RUST, "edition-2021"), "Rust edition 2021");
+    }
+
+    #[test]
+    fn the_oldest_releases_are_end_of_life_not_unknown() {
+        let today = (2026, 11, 8);
+        assert_eq!(is_eol(GO, "1.15", today), Some((2021, 8, 16)));
+        assert_eq!(is_eol(GO, "1.6", today), Some((2017, 2, 16)));
+        assert_eq!(is_eol(ALPINE, "3.12", today), Some((2022, 5, 1)));
+        assert_eq!(is_eol(ALPINE, "3.0", today), Some((2016, 5, 1)));
+        assert_eq!(is_eol(NODE, "8", today), Some((2019, 12, 31)));
+        assert_eq!(is_eol(PHP, "5.5", today), Some((2016, 7, 21)));
+        assert_eq!(is_eol(RUBY, "2.2", today), Some((2018, 3, 31)));
+        let trusty = ubuntu_version("trusty").unwrap();
+        assert_eq!(is_eol(UBUNTU, &trusty, today), Some((2019, 4, 25)));
+        let wheezy = debian_version("wheezy").unwrap();
+        assert_eq!(is_eol(DEBIAN, &wheezy, today), Some((2018, 5, 31)));
+        assert_eq!(
+            image_runtimes("golang:1.15-alpine3.12"),
+            vec![(ALPINE, "3.12".to_string()), (GO, "1.15".to_string())]
+        );
+    }
+
+    #[test]
+    fn support_ends_in_release_order_where_the_project_says_so() {
+        // .NET is left out: 2.0 ended before 1.0, 7 before 6.
+        for runtime in [NODE, PYTHON, JAVA, PHP, RUBY, GO, UBUNTU, DEBIAN, ALPINE] {
+            let mut rows: Vec<(Vec<u32>, Day)> = EOL
+                .iter()
+                .filter(|(r, _, _)| *r == runtime)
+                .map(|(_, v, d)| (numeric_version(v).expect(v), *d))
+                .collect();
+            rows.sort();
+            for pair in rows.windows(2) {
+                assert!(
+                    pair[0].1 < pair[1].1,
+                    "{runtime} {:?} ends {:?}, not before {:?} ({:?})",
+                    pair[0].0,
+                    pair[0].1,
+                    pair[1].0,
+                    pair[1].1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_gap_in_the_table_is_unknown_and_says_so() {
+        assert!(is_unlisted_older(ALPINE, "2.7"));
+        assert!(is_unlisted_older(UBUNTU, "21.10"));
+        assert!(is_unlisted_older(GO, "1.5"));
+        assert!(!is_unlisted_older(ALPINE, "3.12"), "listed");
+        assert!(!is_unlisted_older(ALPINE, "3.40"), "newer than every row");
+        assert!(!is_unlisted_older(GO, "1.40"), "newer than every row");
+        assert!(!is_unlisted_older("fortran", "77"), "not tracked");
+        assert!(!is_unlisted_older(RUST, "edition-2015"), "not a number");
     }
 
     #[test]

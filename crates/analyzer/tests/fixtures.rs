@@ -2322,3 +2322,27 @@ fn an_invalid_delivery_section_ignores_the_whole_file() {
     }
     assert!(!keys(&a).iter().any(|k| k.starts_with("config:")));
 }
+
+#[test]
+fn a_go_module_older_than_the_newest_rows_is_end_of_life() {
+    // `go 1.15` predates the table's old floor (Go 1.18): it must read as
+    // end of life, with its own date, not as unknown.
+    let snap = snapshot(
+        "acme/legacy-api",
+        &[
+            ("go.mod", "module github.com/acme/legacy-api\n\ngo 1.15\n"),
+            ("main.go", "package main\n\nfunc main() {}\n"),
+            (
+                "Dockerfile",
+                "FROM golang:1.15-alpine3.12\nCOPY . .\nRUN go build -o /api\n",
+            ),
+        ],
+        &[],
+    );
+    let a = analyze(&snap);
+    assert_common_invariants(&a);
+    let k = keys(&a);
+    assert!(k.contains(&"runtime:go:1.15"), "{k:?}");
+    assert_eq!(fact(&a, "runtime:eol:go").unwrap().value, "2021-08-16");
+    assert_eq!(fact(&a, "runtime:eol:alpine").unwrap().value, "2022-05-01");
+}
