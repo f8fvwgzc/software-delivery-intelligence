@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import type { Release } from '../../api/types'
 import { releaseSource, shortSha } from '../../lib/labels'
 import { CommitLink } from '../commit-link'
+import { InspectionTag } from './inspection-tag'
 import { ReleaseNotes } from './release-notes'
 
 interface ReleaseRowProps {
@@ -19,7 +20,7 @@ interface ReleaseRowProps {
   repoUrl?: string
 }
 
-/** One release: version and tag, the commit, where it came from, where it runs now, and its notes on demand. */
+/** One release: version and tag, the commit, where it came from, what its image inspection found, where it runs now, and its notes on demand. */
 export function ReleaseRow({ release, repoUrl }: ReleaseRowProps) {
   const [open, setOpen] = useState(false)
   // The tag defaults to the short sha, which the row already shows: only a tag of its own is worth a chip.
@@ -57,6 +58,7 @@ export function ReleaseRow({ release, repoUrl }: ReleaseRowProps) {
         }
         trailing={
           <>
+            <InspectionTag release={release} />
             {release.deployedTo.map((name) => (
               <Tag key={name} tone="success" dot title={`Runs in ${name}`}>
                 {name}

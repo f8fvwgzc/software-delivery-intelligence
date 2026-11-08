@@ -121,6 +121,52 @@ export const DEPLOYERS: Record<EnvironmentKind, DeployerMeta> = {
   },
 }
 
+const INSPECT_MODES: readonly ConfigChoice[] = [
+  { value: 'off', label: 'Off', description: 'Deploy without reading the image' },
+  { value: 'report', label: 'Report', description: 'Inspect before the deploy and record what ships; never stops the run' },
+  { value: 'gate', label: 'Gate', description: 'Inspect before the deploy and stop the run on findings at the threshold' },
+]
+
+const INSPECT_THRESHOLDS: readonly ConfigChoice[] = [
+  { value: 'critical', label: 'Critical', description: 'Only critical findings stop the deploy' },
+  { value: 'high', label: 'High', description: 'High and critical findings stop the deploy' },
+  { value: 'medium', label: 'Medium', description: 'Medium and above stop the deploy' },
+  { value: 'low', label: 'Low', description: 'Anything but informational findings stops the deploy' },
+]
+
+const inspecting = (config: Record<string, string>) => config.inspect === 'report' || config.inspect === 'gate'
+
+/**
+ * CONTRACT.md §22.1: every deployer kind may inspect the release image
+ * between the registry check and the deploy.
+ */
+export const INSPECTION_FIELDS: readonly ConfigField[] = [
+  {
+    key: 'inspect',
+    label: 'Image inspection',
+    type: 'choice',
+    choices: INSPECT_MODES,
+    placeholder: 'Off',
+    description: 'Reverse-engineers the exact image before it is deployed: embedded dependency versions against OSV, binary hardening, provenance, keys and env files.',
+  },
+  {
+    key: 'inspect_fail_on',
+    label: 'Stop at',
+    type: 'choice',
+    choices: INSPECT_THRESHOLDS,
+    placeholder: 'High',
+    when: (config) => config.inspect === 'gate',
+  },
+  {
+    key: 'inspect_ignore',
+    label: 'Accepted rules',
+    type: 'text',
+    placeholder: 'binary.no_pie, image.source_map',
+    description: 'Rule ids or families (binary.*) this environment accepts, comma-separated.',
+    when: inspecting,
+  },
+]
+
 /** In the order the editor offers them. */
 export const DEPLOYER_KINDS = Object.keys(DEPLOYERS) as EnvironmentKind[]
 
@@ -129,7 +175,7 @@ export function deployerOf(kind: string): DeployerMeta {
   return DEPLOYERS[kind as EnvironmentKind] ?? { tag: kind.replaceAll('_', ' '), label: kind, description: '', fields: [] }
 }
 
-/** The fields that apply to the config as typed so far. */
+/** The fields that apply to the config as typed so far: the deployer's, then the image inspection's. */
 export function visibleFields(kind: string, config: Record<string, string>): ConfigField[] {
-  return deployerOf(kind).fields.filter((field) => !field.when || field.when(config))
+  return [...deployerOf(kind).fields, ...INSPECTION_FIELDS].filter((field) => !field.when || field.when(config))
 }

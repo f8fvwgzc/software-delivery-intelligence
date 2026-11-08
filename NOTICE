@@ -23,3 +23,37 @@ repo-server and application controller and is SDI's own code.
 The gitops service also uses, as module dependencies under the Apache
 License, Version 2.0: Kubernetes client libraries (k8s.io), Kustomize
 (sigs.k8s.io/kustomize) and Helm (helm.sh/helm/v3).
+
+The image inspection (crates/inspect) contains Rust ports of the static
+readers of REA, "Reverse Engineer Anything": its Go build-info decoder
+(src/go/GoBinaryImage.ts, GoBuildInfoSearch.ts, GoModuleText.ts), its
+cargo-auditable reader (src/rust/RustAuditableReader.ts) and its ELF
+hardening rows (src/native/hardening/ElfHardening.ts), with their limits
+and evidence model:
+
+  REA: Reverse Engineer Anything
+  https://github.com/morluto/rea
+  Copyright (c) 2026 morluto
+  Licensed under the MIT License:
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+  NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+  USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The REA CLI itself is not bundled; SDI_REA_BIN runs an installation the
+operator provides.

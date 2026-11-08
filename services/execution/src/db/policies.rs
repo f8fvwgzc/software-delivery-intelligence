@@ -26,7 +26,7 @@ pub struct PolicyRow {
 
 /// `(action_type, label, risk, decision, editable)`: the §5.2 table. The
 /// bootstrap workspace got the same rows from the migrations.
-pub const SEED: [(&str, &str, &str, &str, bool); 36] = [
+pub const SEED: [(&str, &str, &str, &str, bool); 37] = [
     ("repo.read", "Read repository", "SAFE", "AUTO", false),
     ("repo.analyze", "Analyze repository", "SAFE", "AUTO", false),
     ("tests.run_local", "Run tests locally", "SAFE", "AUTO", true),
@@ -162,6 +162,15 @@ pub const SEED: [(&str, &str, &str, &str, bool); 36] = [
     (
         "registry.verify_image",
         "Verify the image exists in the registry",
+        "SAFE",
+        "AUTO",
+        false,
+    ),
+    // CONTRACT.md §22.1: reverse-engineering the release image before
+    // the deploy reads and changes nothing.
+    (
+        "artifact.inspect",
+        "Inspect the shipped image",
         "SAFE",
         "AUTO",
         false,

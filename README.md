@@ -88,7 +88,13 @@ GitHub already grants them (`CONTRACT.md` §18).
   negotiation, decision memory, generated documents.
 - **execution** policy and permission checks, approvals, one-step-at-a-time
   DAG execution, checkpoints, diagnosis and replanning, through the
-  `simulated`, `docker`, `github` and `gitops` adapters.
+  `simulated`, `docker`, `github` and `gitops` adapters. Before a release
+  deploys, it can reverse-engineer the exact image the registry holds
+  (`crates/inspect`, Rust ports of [REA](https://github.com/morluto/rea)'s
+  static readers): dependency versions compiled into Go and Rust binaries
+  and the image's packages against OSV, binary hardening, provenance, keys
+  and env files baked in; reported, or gating the deploy
+  ([`docs/continuous-delivery.md`](docs/continuous-delivery.md)).
 - **gitops** (Go) Argo CD's gitops-engine embedded: renders plain YAML,
   Kustomize and Helm from the repository, diffs with the cluster, syncs
   with waves, hooks and prune, health, auto-sync and self-heal, history
@@ -151,7 +157,8 @@ because the default thread count exhausts memory on a 16 GB machine.
 | `LLM_API_KEY` (alias `ANTHROPIC_API_KEY`) | — | intelligence (optional; enables the reasoner for workspaces that allow it and hold no key) |
 | `LLM_MODEL` (alias `ANTHROPIC_MODEL`) | `claude-sonnet-5-5` for `anthropic`; required for every other provider | intelligence |
 | `SDI_PR_WATCH_SECONDS` | `60` | intelligence: how often the pull request watcher looks at open pull requests of workspaces with automatic review on (§23); `0` turns it off |
-| `OSV_API_URL` | `https://api.osv.dev` | intelligence (review vulnerability check; `off` disables) |
+| `OSV_API_URL` | `https://api.osv.dev` | intelligence (review vulnerability check), execution (image inspection); `off` disables |
+| `SDI_INSPECT_MAX_MB` / `SDI_REA_BIN` | `2048` / — | execution: download budget of one image inspection, and an optional REA CLI for a second opinion (`CONTRACT.md` §22.1) |
 | `KNOWLEDGE_GRPC_URL` / `INTELLIGENCE_GRPC_URL` / `EXECUTION_GRPC_URL` / `IDENTITY_GRPC_URL` / `GITOPS_GRPC_URL` | `http://127.0.0.1:5005x` (host) · `http://<service>:5005x` (compose) | gateway, intelligence, execution, knowledge, gitops |
 | `GATEWAY_LISTEN` / `KNOWLEDGE_LISTEN` / `INTELLIGENCE_LISTEN` / `EXECUTION_LISTEN` / `IDENTITY_LISTEN` / `GITOPS_LISTEN` | `0.0.0.0:<port>` | each service |
 | `GITOPS_RECONCILE_SECONDS` | `180` | gitops: seconds between two comparisons of an application (§24); `0` turns the loop off |
@@ -181,6 +188,7 @@ proto/sdi/*/v1         gRPC contracts (compiled by crates/proto)
 crates/proto           generated clients and servers, never hand-edited
 crates/common          config, telemetry, db pool per schema, gRPC channels, embeddings
 crates/analyzer        pure repository analysis: wanted_files(tree), analyze(snapshot), EOL table
+crates/inspect         pure image inspection: layers in, report out (REA's readers, ported)
 services/gateway       axum REST + OpenAPI, SSE for executions, scans and platform events
 services/identity      GitHub OAuth + App, sessions, workspaces, roles, audit, data controls
 services/knowledge     GitHub, scans, facts, graph, patterns, retrieval, maturity, .sdi.yml

@@ -86,7 +86,8 @@ not paste its output anywhere.
 | `GITHUB_APP_*`, `GITHUB_WEBHOOK_SECRET` | organisations install the App |
 | `GITHUB_TOKEN` | a personal instance without an OAuth app (`SDI_DEV_LOGIN=1`), or the `github` adapter on a personal workspace |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` (aliases `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`) | an instance-wide reasoner provider and key; workspaces may configure their own provider in the intelligence settings and store their own key instead |
-| `OSV_API_URL` | where reviews look up added dependencies (`off` for an air-gapped instance) |
+| `OSV_API_URL` | where reviews look up added dependencies and image inspections look up shipped packages (`off` for an air-gapped instance) |
+| `SDI_INSPECT_MAX_MB`, `SDI_REA_BIN` | compressed layer bytes one image inspection may download (default 2048), and an installed REA CLI for a second opinion on binaries (`docs/continuous-delivery.md`) |
 | `GITHUB_API_URL` | GitHub Enterprise Server (`https://<host>/api/v3`); organisations on other hosts get their base from their installation |
 | `SDI_HTTP_PORT`, `SDI_TAG`, `RUST_LOG` | the port the edge publishes, the image tag, log verbosity |
 | `DB_MAX_CONNECTIONS` (20), `DB_STATEMENT_TIMEOUT_MS` (30000) | Postgres pool per service and the session statement timeout; six services × the pool must fit the server's `max_connections` (§9) |

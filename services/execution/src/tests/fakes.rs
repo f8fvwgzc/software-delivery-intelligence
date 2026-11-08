@@ -683,7 +683,11 @@ pub mod github {
 }
 
 pub mod registry {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::HashMap,
+        io::Write,
+        sync::{Arc, Mutex},
+    };
 
     use axum::{
         Json, Router,
@@ -693,13 +697,23 @@ pub mod registry {
         routing::get,
     };
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
-    /// An open registry (no challenge) that knows the manifests it was given.
+    /// An open registry (no challenge) that knows the manifests it was
+    /// given, and serves whole images (manifest, config, one layer) for the
+    /// inspection (CONTRACT.md §22.1).
     #[derive(Default)]
     pub struct FakeRegistry {
         /// `(repository path, reference)` → digest.
         manifests: Mutex<Vec<(String, String, String)>>,
+        /// `(repository path, reference or digest)` → manifest body.
+        bodies: Mutex<Vec<(String, String, String)>>,
+        blobs: Mutex<HashMap<String, Vec<u8>>>,
         pub lookups: Mutex<Vec<String>>,
+    }
+
+    fn sha(bytes: &[u8]) -> String {
+        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
     }
 
     impl FakeRegistry {
@@ -710,6 +724,48 @@ pub mod registry {
                 reference.to_owned(),
                 digest.to_owned(),
             ));
+        }
+
+        /// Publishes a real one-layer image of `files` as
+        /// `repository:reference` and returns its manifest digest.
+        pub fn publish_image(
+            &self,
+            repository: &str,
+            reference: &str,
+            files: &[(&str, &[u8])],
+        ) -> String {
+            let mut tar = tar::Builder::new(Vec::new());
+            for (path, content) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, path, *content).unwrap();
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(&tar.into_inner().unwrap()).unwrap();
+            let layer = gz.finish().unwrap();
+            let config =
+                json!({"os": "linux", "architecture": "amd64", "config": {"User": "10001"}})
+                    .to_string()
+                    .into_bytes();
+            let manifest = json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": sha(&config), "size": config.len()},
+                "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": sha(&layer), "size": layer.len()}]
+            })
+            .to_string();
+            let digest = sha(manifest.as_bytes());
+            let mut blobs = self.blobs.lock().unwrap();
+            blobs.insert(sha(&layer), layer);
+            blobs.insert(sha(&config), config);
+            let mut bodies = self.bodies.lock().unwrap();
+            for key in [reference, digest.as_str()] {
+                bodies.push((repository.to_owned(), key.to_owned(), manifest.clone()));
+            }
+            self.publish(repository, reference, &digest);
+            digest
         }
 
         /// Serves on a random port; the second value is `host:port`.
@@ -727,16 +783,37 @@ pub mod registry {
 
     async fn manifest(State(fake): State<Arc<FakeRegistry>>, Path(rest): Path<String>) -> Response {
         fake.lookups.lock().unwrap().push(rest.clone());
-        let found = rest
-            .split_once("/manifests/")
-            .and_then(|(repository, reference)| {
-                fake.manifests
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|(r, t, _)| r == repository && t == reference)
-                    .map(|(_, _, digest)| digest.clone())
-            });
+        if let Some((_, digest)) = rest.split_once("/blobs/") {
+            return match fake.blobs.lock().unwrap().get(digest) {
+                Some(bytes) => (StatusCode::OK, bytes.clone()).into_response(),
+                None => StatusCode::NOT_FOUND.into_response(),
+            };
+        }
+        let Some((repository, reference)) = rest.split_once("/manifests/") else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let body = fake
+            .bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(r, t, _)| r == repository && t == reference)
+            .map(|(_, _, body)| body.clone());
+        if let Some(body) = body {
+            return (
+                StatusCode::OK,
+                [("docker-content-digest", sha(body.as_bytes()))],
+                body,
+            )
+                .into_response();
+        }
+        let found = fake
+            .manifests
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(r, t, _)| r == repository && t == reference)
+            .map(|(_, _, digest)| digest.clone());
         match found {
             Some(digest) => (StatusCode::OK, [("docker-content-digest", digest)], "").into_response(),
             None => (

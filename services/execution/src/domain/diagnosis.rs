@@ -42,9 +42,12 @@ pub const CLUSTER_UNREACHABLE: &str = "CLUSTER_UNREACHABLE";
 /// A sync or rollback ran and failed (or could not run because another
 /// operation holds the application).
 pub const SYNC_FAILED: &str = "SYNC_FAILED";
+/// The inspection of the release image (`artifact.inspect`, CONTRACT.md
+/// §22.1) found what the environment's gate does not let through.
+pub const ARTIFACT_FINDINGS: &str = "ARTIFACT_FINDINGS";
 pub const UNKNOWN: &str = "UNKNOWN";
 
-pub const CODES: [&str; 21] = [
+pub const CODES: [&str; 22] = [
     PERMISSION_DENIED,
     POLICY_BLOCKED,
     SKU_UNAVAILABLE,
@@ -65,12 +68,22 @@ pub const CODES: [&str; 21] = [
     RENDER_FAILED,
     CLUSTER_UNREACHABLE,
     SYNC_FAILED,
+    ARTIFACT_FINDINGS,
     UNKNOWN,
 ];
 
 /// Remediation that ends a deployment run and starts a rollback run for
 /// its environment (CONTRACT.md §22).
 pub const ROLLBACK_TO_PREVIOUS: &str = "rollback_to_previous";
+
+/// Remediation of an `artifact.inspect` step: a person accepts what the
+/// inspection found (or that it could not run) and the deployment goes on.
+/// Retries the step with `params.accept_findings = true`; the step still
+/// inspects and records the report, and says the findings were accepted.
+pub const ACCEPT_FINDINGS: &str = "accept_findings";
+
+/// The action type of the image inspection (CONTRACT.md §22.1).
+const INSPECT_IMAGE: &str = "artifact.inspect";
 
 /// Normalises a user-supplied code; anything unknown becomes `UNKNOWN`.
 pub fn normalize_code(code: &str) -> &'static str {
@@ -131,7 +144,9 @@ pub struct FailedStep<'a> {
 
 /// Whether a step is part of a deployment run's plan (CONTRACT.md §22).
 fn is_delivery_action(action_type: &str) -> bool {
-    action_type.starts_with("deploy.") || action_type.starts_with("registry.")
+    action_type.starts_with("deploy.")
+        || action_type.starts_with("registry.")
+        || action_type.starts_with("artifact.")
 }
 
 /// Whether a step drives SDI's GitOps engine (CONTRACT.md §24.7). Its
@@ -719,6 +734,32 @@ pub fn diagnose(
                 ),
             ],
         ),
+        ARTIFACT_FINDINGS => (
+            format!(
+                "The inspection of the release image found what this environment does not deploy{}. Nothing was deployed.",
+                if step.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", clause(step.detail))
+                }
+            ),
+            vec![
+                option(
+                    ACCEPT_FINDINGS,
+                    "Deploy anyway",
+                    "Accept these findings for this release and continue. The run records that a person accepted them; the next release is inspected again.",
+                    "Sets params.accept_findings = true and retries the step, which inspects again and lets the run continue.",
+                    false,
+                ),
+                option(
+                    "retry",
+                    "Inspect again",
+                    "Look at the image again, for instance after an advisory was withdrawn. The release's image cannot change, so the same findings usually come back.",
+                    "The step returns to PENDING and inspects the image again.",
+                    false,
+                ),
+            ],
+        ),
         DEPENDENCY_CONFLICT => (
             format!("'{}' hit conflicting dependency versions.", step.title),
             vec![
@@ -753,6 +794,21 @@ pub fn diagnose(
         ),
     };
 
+    // A gate that could not read the image stops the run like any other
+    // failure; a person may still choose to deploy without it.
+    if step.action_type == INSPECT_IMAGE
+        && code != ARTIFACT_FINDINGS
+        && step.attempts < MAX_ATTEMPTS
+        && !options.iter().any(|o| o.id == ACCEPT_FINDINGS)
+    {
+        options.push(option(
+            ACCEPT_FINDINGS,
+            "Deploy without the inspection",
+            "Continue without knowing what the image ships. The run records that a person chose this.",
+            "Sets params.accept_findings = true and retries the step, which lets the run continue even if the image still cannot be read.",
+            false,
+        ));
+    }
     // Skipping a step ends the run as SUCCEEDED without it. That is never
     // offered for the pull request codes, nor, whatever the code, for the
     // step that is the whole point of its run: a run that did not commit
@@ -851,6 +907,10 @@ pub fn resolve(
         "skip_step" => Resolution::Skip,
         "skip_branch" => Resolution::SkipBranch,
         ROLLBACK_TO_PREVIOUS => Resolution::RollbackToPrevious,
+        ACCEPT_FINDINGS => Resolution::Retry {
+            patch: patch(&[("accept_findings", "true".to_owned())]),
+            note: "inspection findings accepted; deploying anyway".to_owned(),
+        },
         "request_access" => Resolution::RequestAccess,
         "use_another_identity" => Resolution::UseAnotherIdentity,
         "change_region" => {

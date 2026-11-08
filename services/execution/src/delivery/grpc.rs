@@ -717,11 +717,21 @@ pub async fn get_release(
     caller: &Caller,
     req: GetReleaseRequest,
 ) -> Result<Release, Status> {
-    let row = releases::get(&rt.pool, caller.workspace, parse_id(&req.id, "id")?)
+    let id = parse_id(&req.id, "id")?;
+    let row = releases::get(&rt.pool, caller.workspace, id)
         .await
         .map_err(missing("release"))?;
     let mut releases = with_deployed_to(rt, caller.workspace, vec![row]).await?;
-    Ok(releases.remove(0))
+    let mut release = releases.remove(0);
+    // The full report only here: lists carry the summary (CONTRACT.md §21).
+    if let Some(inspection) = release.inspection.as_mut()
+        && let Some(report) = releases::inspection_report(&rt.pool, caller.workspace, id)
+            .await
+            .map_err(db_status)?
+    {
+        inspection.report_json = report.to_string();
+    }
+    Ok(release)
 }
 
 pub async fn create_release(

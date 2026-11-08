@@ -23,10 +23,17 @@ pub struct ReleaseRow {
     pub repo_full_name: String,
     pub project_name: String,
     pub created_at: DateTime<Utc>,
+    /// The last inspection of the image (CONTRACT.md §22.1): `passed`,
+    /// `findings`, `incomplete`, or empty when it was never inspected.
+    pub inspection_status: String,
+    pub inspection_max_severity: String,
+    pub inspection_findings: i32,
+    pub inspected_at: Option<DateTime<Utc>>,
 }
 
 const COLUMNS: &str = "id, workspace_id, project_id, version, commit_sha, image, tag, digest, source, \
-     pipeline_run_id, notes, verified, created_by, repo_full_name, project_name, created_at";
+     pipeline_run_id, notes, verified, created_by, repo_full_name, project_name, created_at, \
+     inspection_status, inspection_max_severity, inspection_findings, inspected_at";
 
 pub struct NewRelease<'a> {
     pub id: Uuid,
@@ -197,4 +204,46 @@ pub async fn mark_verified(
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Stores the report of an inspection of the release's image, replacing
+/// the previous one (CONTRACT.md §22.1). True when the row changed.
+pub async fn record_inspection(
+    tx: &mut Tx,
+    workspace_id: Uuid,
+    id: Uuid,
+    report: &serde_json::Value,
+    status: &str,
+    max_severity: &str,
+    findings: i32,
+) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE releases SET inspection = $3, inspection_status = $4, inspection_max_severity = $5, \
+           inspection_findings = $6, inspected_at = now() \
+         WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .bind(sqlx::types::Json(report))
+    .bind(status)
+    .bind(max_severity)
+    .bind(findings)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// The full report of the last inspection, read only for one release.
+pub async fn inspection_report<'e>(
+    exec: impl PgExecutor<'e>,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<Option<serde_json::Value>> {
+    let row: Option<(Option<sqlx::types::Json<serde_json::Value>>,)> =
+        sqlx::query_as("SELECT inspection FROM releases WHERE workspace_id = $1 AND id = $2")
+            .bind(workspace_id)
+            .bind(id)
+            .fetch_optional(exec)
+            .await?;
+    Ok(row.and_then(|(report,)| report.map(|json| json.0)))
 }

@@ -2044,6 +2044,7 @@ dependencies = [
  "prost-types",
  "reqwest",
  "sdi-common",
+ "sdi-inspect",
  "sdi-proto",
  "serde",
  "serde_json",
@@ -2115,6 +2116,18 @@ dependencies = [
  "tonic-health",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "sdi-inspect"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "sdi-analyzer",
+ "serde",
+ "serde_json",
+ "tar",
+ "thiserror",
 ]
 
 [[package]]

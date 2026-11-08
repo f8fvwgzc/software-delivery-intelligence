@@ -32,6 +32,10 @@ use super::{
 };
 use crate::domain::diagnosis;
 
+mod inspect;
+
+pub use inspect::{InspectSettings, REPORT_OUTPUT};
+
 /// Manifest media types a tag may resolve to: OCI and Docker, single
 /// images and multi-platform indexes.
 pub const ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
@@ -54,6 +58,8 @@ pub struct RegistryAdapter {
     github_token: Option<String>,
     /// Registry hosts that may receive the GitHub token.
     token_hosts: Vec<String>,
+    /// How `artifact.inspect` reads images (CONTRACT.md §22.1).
+    inspect_settings: InspectSettings,
 }
 
 /// User name and password for the registry, when it needs any.
@@ -206,7 +212,14 @@ impl RegistryAdapter {
             net,
             github_token,
             token_hosts: vec![GHCR_HOST.to_owned()],
+            inspect_settings: InspectSettings::default(),
         }
+    }
+
+    /// OSV endpoint, REA CLI and download budget of `artifact.inspect`.
+    pub fn with_inspection(mut self, settings: InspectSettings) -> Self {
+        self.inspect_settings = settings;
+        self
     }
 
     /// Another host that may receive the GitHub token (a fake GHCR in tests).
@@ -689,6 +702,10 @@ impl Adapter for RegistryAdapter {
     }
 
     async fn run(&self, step: &StepInput, ctx: &RunContext) -> StepOutcome {
+        if step.action_type == super::INSPECT_IMAGE {
+            // Its own time limit: reading layers takes longer than a HEAD.
+            return self.inspect(step, ctx).await;
+        }
         if step.action_type != super::VERIFY_IMAGE {
             return StepOutcome::failed(
                 diagnosis::UNKNOWN,

@@ -27,8 +27,11 @@ rewritten, scaled or replaced without a migration in another one.
 
 Shared crates keep the services thin: `crates/proto` (generated code),
 `crates/common` (config, telemetry, per-schema pools, lazy gRPC channels,
-shutdown, local embeddings) and `crates/analyzer` (pure functions over a
-repository snapshot, so analysis is unit-testable without I/O).
+shutdown, local embeddings), `crates/analyzer` (pure functions over a
+repository snapshot, so analysis is unit-testable without I/O) and
+`crates/inspect` (the same discipline for a built image: layer streams in,
+an evidence report out; Rust ports of REA's static readers, used by the
+execution service's `artifact.inspect` step, `CONTRACT.md` §22.1).
 
 ## 2. Knowledge model
 

@@ -19633,6 +19633,34 @@
           }
         }
       },
+      "HardeningProperty": {
+        "type": "object",
+        "description": "One hardening property, REA's evidence model.",
+        "required": [
+          "property",
+          "state",
+          "confidence",
+          "basis"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string",
+            "description": "The bytes the state was read from, in words."
+          },
+          "confidence": {
+            "type": "string",
+            "description": "`observed` (read from the bytes) or `derived` (reasoned from them)."
+          },
+          "property": {
+            "type": "string",
+            "description": "`pie`, `nx`, `relro`, `stack_protector`, `fortify`, `rpath`, `runpath`, `stripped`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`enabled`, `disabled`, `partial`, `unknown` or `not_applicable`."
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "description": "Response of `GET /health`.",
@@ -19831,6 +19859,338 @@
               "type": "string"
             },
             "description": "Relations walked from the origin to reach this node."
+          }
+        }
+      },
+      "InspectedBinary": {
+        "type": "object",
+        "description": "One ELF executable or shared object.",
+        "required": [
+          "path",
+          "format",
+          "machine",
+          "bits",
+          "kind",
+          "language",
+          "size",
+          "dependencyCount",
+          "application",
+          "hardening"
+        ],
+        "properties": {
+          "application": {
+            "type": "boolean",
+            "description": "Written by the team (not the distribution's, not a third-party package's)."
+          },
+          "bits": {
+            "type": "integer",
+            "format": "int32",
+            "description": "32 or 64.",
+            "minimum": 0
+          },
+          "buildId": {
+            "type": "string",
+            "description": "GNU build-id, hex."
+          },
+          "buildSettings": {
+            "type": "object",
+            "description": "Selected build settings (`vcs.revision`, `vcs.modified`, `CGO_ENABLED`, …).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "dependencyCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Dependencies embedded in the binary.",
+            "minimum": 0
+          },
+          "embeddedDependencies": {
+            "type": "boolean",
+            "description": "The binary carries its own dependency list (Go build info, cargo-auditable)."
+          },
+          "format": {
+            "type": "string",
+            "description": "`elf`."
+          },
+          "hardening": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HardeningProperty"
+            },
+            "description": "Hardening properties with their state and evidence."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`executable`, `pie_executable`, `static_pie_executable`, `shared_object`."
+          },
+          "language": {
+            "type": "string",
+            "description": "`go`, `rust` or `native`."
+          },
+          "machine": {
+            "type": "string",
+            "description": "`x86_64`, `aarch64`, …"
+          },
+          "mainModule": {
+            "type": "string",
+            "description": "Main module or root crate."
+          },
+          "path": {
+            "type": "string",
+            "description": "Path in the image."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes.",
+            "minimum": 0
+          },
+          "toolchain": {
+            "type": "string",
+            "description": "Compiler that built it (`go1.22.5`)."
+          }
+        }
+      },
+      "InspectedComponent": {
+        "type": "object",
+        "description": "A package the image ships.",
+        "required": [
+          "ecosystem",
+          "name",
+          "version",
+          "path",
+          "source"
+        ],
+        "properties": {
+          "ecosystem": {
+            "type": "string",
+            "description": "OSV ecosystem: `Go`, `crates.io`, `npm`, `PyPI`, `Debian:12`, `Alpine:v3.20`, …"
+          },
+          "name": {
+            "type": "string",
+            "description": "Package name."
+          },
+          "path": {
+            "type": "string",
+            "description": "File it was read from."
+          },
+          "source": {
+            "type": "string",
+            "description": "`go-buildinfo`, `go-toolchain`, `cargo-auditable`, `package.json`, `dist-info`, `dpkg`, `apk`."
+          },
+          "version": {
+            "type": "string",
+            "description": "Version as shipped."
+          }
+        }
+      },
+      "InspectionFinding": {
+        "type": "object",
+        "description": "One finding of an inspection.",
+        "required": [
+          "rule",
+          "severity",
+          "title",
+          "detail",
+          "confidence",
+          "fix"
+        ],
+        "properties": {
+          "confidence": {
+            "type": "string",
+            "description": "`observed` or `derived`."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The evidence."
+          },
+          "fix": {
+            "type": "string",
+            "description": "What would make it go away."
+          },
+          "path": {
+            "type": "string",
+            "description": "File in the image; empty for image-wide findings."
+          },
+          "rule": {
+            "type": "string",
+            "description": "Stable rule id (`binary.exec_stack`, `dependency.vulnerable`): what `inspect_ignore` names."
+          },
+          "severity": {
+            "type": "string",
+            "description": "`info`, `low`, `medium`, `high` or `critical`."
+          },
+          "title": {
+            "type": "string",
+            "description": "One line."
+          }
+        }
+      },
+      "InspectionOs": {
+        "type": "object",
+        "description": "`/etc/os-release` of the image.",
+        "required": [
+          "id",
+          "versionId",
+          "prettyName"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`debian`, `alpine`, …"
+          },
+          "prettyName": {
+            "type": "string",
+            "description": "`Debian GNU/Linux 12 (bookworm)`."
+          },
+          "versionId": {
+            "type": "string",
+            "description": "`12`, `3.20.3`."
+          }
+        }
+      },
+      "InspectionReport": {
+        "type": "object",
+        "description": "One inspection of one image: what was read, what ships, what was found.",
+        "required": [
+          "schema",
+          "image",
+          "digest",
+          "platform",
+          "layers",
+          "layersRead",
+          "filesSeen",
+          "bytesRead",
+          "binaries",
+          "components",
+          "findings",
+          "limitations"
+        ],
+        "properties": {
+          "binaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InspectedBinary"
+            },
+            "description": "Application binaries and binaries that carry their own dependency list."
+          },
+          "bytesRead": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes read out of those files.",
+            "minimum": 0
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InspectedComponent"
+            },
+            "description": "Packages the image ships, wherever they were read."
+          },
+          "digest": {
+            "type": "string",
+            "description": "Digest of the platform manifest that was read."
+          },
+          "filesSeen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files looked at across layers.",
+            "minimum": 0
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InspectionFinding"
+            },
+            "description": "Most severe first."
+          },
+          "image": {
+            "type": "string",
+            "description": "`host/namespace/name:tag` as inspected."
+          },
+          "layers": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Layers the image has.",
+            "minimum": 0
+          },
+          "layersRead": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Layers that were read.",
+            "minimum": 0
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What was not read, and why."
+          },
+          "os": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InspectionOs",
+                "description": "The distribution, from `/etc/os-release`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "platform": {
+            "type": "string",
+            "description": "`linux/amd64`."
+          },
+          "schema": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Version of this shape.",
+            "minimum": 0
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InspectionToolRun"
+            },
+            "description": "External analyzers that ran (the REA CLI)."
+          }
+        }
+      },
+      "InspectionToolRun": {
+        "type": "object",
+        "description": "An external analyzer run and what it said.",
+        "required": [
+          "tool",
+          "command",
+          "path",
+          "ok",
+          "summary"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The command (`inspect-binary-hardening`)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "It exited successfully."
+          },
+          "path": {
+            "type": "string",
+            "description": "Binary it ran on."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Bounded excerpt of what it printed."
+          },
+          "tool": {
+            "type": "string",
+            "description": "`rea`."
           }
         }
       },
@@ -22742,6 +23102,17 @@
             "type": "string",
             "description": "`host/namespace/name`, without tag."
           },
+          "inspection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseInspection",
+                "description": "The last inspection of the image (CONTRACT.md §22.1); null when it\nwas never inspected. The full report is only on `GET /releases/{id}`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "notes": {
             "type": "string",
             "description": "Commit subjects since the previous release, Markdown."
@@ -22772,6 +23143,50 @@
           "version": {
             "type": "string",
             "description": "Tag shown to people, e.g. `v1.4.2` or the short SHA."
+          }
+        }
+      },
+      "ReleaseInspection": {
+        "type": "object",
+        "description": "What reverse-engineering the release image found (CONTRACT.md §22.1).",
+        "required": [
+          "status",
+          "findingCount",
+          "inspectedAt"
+        ],
+        "properties": {
+          "findingCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Findings in the report.",
+            "minimum": 0
+          },
+          "inspectedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the report was made."
+          },
+          "maxSeverity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Most severe finding: `info`, `low`, `medium`, `high` or `critical`; null without findings."
+          },
+          "report": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InspectionReport",
+                "description": "The whole report; only on `GET /releases/{id}`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "`passed`, `findings` or `incomplete`."
           }
         }
       },

@@ -1915,3 +1915,132 @@ async fn delivery_rows_are_isolated_exported_and_deleted_with_the_workspace() {
 
     h.teardown().await;
 }
+
+/// CONTRACT.md §22.1: a stage that gates on the inspection reads the exact
+/// image the registry confirmed, stops a release that ships a private key
+/// before anything is deployed, keeps the report on the release (never the
+/// key), and lets a person deploy anyway.
+#[tokio::test]
+async fn an_inspecting_stage_stops_a_release_that_ships_a_key_until_a_person_accepts() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    h.fake_registry_as_default().await;
+    let mut staging = h.staging();
+    staging.config.insert("inspect".into(), "gate".into());
+    staging
+        .config
+        .insert("inspect_fail_on".into(), "high".into());
+    let staging = h.upsert(staging).await;
+    assert_eq!(staging.config["inspect"], "gate");
+    let digest = h.registry.publish_image(
+        "acme/api",
+        "a1b2c3d",
+        &[
+            ("etc/os-release", b"ID=debian\nVERSION_ID=\"12\"\n"),
+            (
+                "srv/app/tls.key",
+                b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n-----END PRIVATE KEY-----\n",
+            ),
+        ],
+    );
+    h.grant(&["deploy:development"]).await;
+    let release = h
+        .svc
+        .create_release(as_role(
+            Role::Member,
+            WS_A,
+            CreateReleaseRequest {
+                project_id: PROJECT.into(),
+                commit_sha: COMMIT_1.into(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let run = h
+        .svc
+        .promote(approver(PromoteRequest {
+            environment_id: staging.id.clone(),
+            release_id: release.id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // The gate stops the run on the inspection step; nothing was deployed.
+    let failure = h.diagnosed(&run, "inspect_image").await;
+    assert_eq!(failure.code, "ARTIFACT_FINDINGS");
+    assert!(
+        failure.raw_output.contains("private key"),
+        "{}",
+        failure.raw_output
+    );
+    let ids: Vec<&str> = failure.options.iter().map(|o| o.id.as_str()).collect();
+    assert!(
+        ids.contains(&"accept_findings") && ids.contains(&"retry") && ids.contains(&"cancel"),
+        "{ids:?}"
+    );
+    let recommended: Vec<&str> = failure
+        .options
+        .iter()
+        .filter(|o| o.recommended)
+        .map(|o| o.id.as_str())
+        .collect();
+    assert_eq!(recommended, ["cancel"], "stopping is the safe default");
+    assert!(h.github.dispatches.lock().unwrap().is_empty());
+
+    // The report lives on the release; the run kept only its summary.
+    let inspected = h.release(&release.id).await;
+    let inspection = inspected.inspection.expect("the release was inspected");
+    assert_eq!(inspection.status, "findings");
+    assert_eq!(inspection.max_severity, "critical");
+    assert!(inspection.finding_count >= 1);
+    let report: serde_json::Value = serde_json::from_str(&inspection.report_json).unwrap();
+    assert_eq!(
+        report["digest"],
+        digest.as_str(),
+        "the image the registry confirmed"
+    );
+    assert_eq!(report["findings"][0]["rule"], "image.private_key");
+    assert_eq!(report["findings"][0]["path"], "srv/app/tls.key");
+    let execution = h.execution(&run.execution_id).await;
+    assert!(!execution.outputs.contains_key("inspection_report"));
+    // The key itself is nowhere: not in the report, events, steps or outputs.
+    assert!(!inspection.report_json.contains("MIIEvQIBADANBgkqhkiG9w0B"));
+    assert_eq!(h.occurrences("MIIEvQIBADANBgkqhkiG9w0B").await, 0);
+    // Lists carry the summary, never the report (CONTRACT.md §21).
+    let listed = h
+        .svc
+        .list_releases(admin(ListReleasesRequest {
+            project_id: PROJECT.into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .releases;
+    let summary = listed[0].inspection.as_ref().unwrap();
+    assert_eq!(summary.max_severity, "critical");
+    assert!(summary.report_json.is_empty());
+
+    // A person accepts: the step inspects again, says so, and the deploy runs.
+    h.resolve(&run, "accept_findings").await.expect("accept");
+    h.wait_run(&run.id, DeploymentStatus::Succeeded).await;
+    let execution = h.execution(&run.execution_id).await;
+    assert_eq!(execution.outputs["inspection_status"], "accepted");
+    assert!(!execution.outputs.contains_key("inspection_report"));
+    let inspect = execution
+        .steps
+        .iter()
+        .find(|s| s.key == "inspect_image")
+        .unwrap();
+    assert!(
+        inspect.output.contains("accepted by a person"),
+        "{}",
+        inspect.output
+    );
+    assert_eq!(h.github.dispatches.lock().unwrap().len(), 1);
+    h.teardown().await;
+}

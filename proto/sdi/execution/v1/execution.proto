@@ -580,6 +580,22 @@ message Release {
   google.protobuf.Timestamp created_at = 13;
   // Environment names this release currently runs in.
   repeated string deployed_to = 14;
+  // The last inspection of the image (CONTRACT.md §22.1); unset when it
+  // was never inspected.
+  ReleaseInspection inspection = 15;
+}
+
+// What reverse-engineering the release image found (CONTRACT.md §22.1).
+message ReleaseInspection {
+  // "passed" | "findings" | "incomplete"
+  string status = 1;
+  // "info" | "low" | "medium" | "high" | "critical"; empty without findings.
+  string max_severity = 2;
+  uint32 finding_count = 3;
+  google.protobuf.Timestamp inspected_at = 4;
+  // The whole report (sdi_inspect::Report as camelCase JSON). Only
+  // GetRelease fills it; lists and pipelines carry the summary.
+  string report_json = 5;
 }
 
 message ListReleasesRequest {

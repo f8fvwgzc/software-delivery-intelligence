@@ -337,6 +337,10 @@ mod tests {
                 repo_full_name: "acme/api".into(),
                 project_name: "api".into(),
                 created_at: base + ChronoDuration::hours(n),
+                inspection_status: String::new(),
+                inspection_max_severity: String::new(),
+                inspection_findings: 0,
+                inspected_at: None,
             })
             .collect()
     }

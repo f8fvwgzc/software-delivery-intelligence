@@ -59,14 +59,18 @@ pub const RESERVED: [&str; 2] = ["cloud", "kubernetes"];
 
 /// Action types of a deployment run's plan (CONTRACT.md §22).
 pub const VERIFY_IMAGE: &str = "registry.verify_image";
+/// Reverse-engineers the release image before it is deployed
+/// (CONTRACT.md §22.1); planned when the environment's `inspect` is not off.
+pub const INSPECT_IMAGE: &str = "artifact.inspect";
 pub const DEPLOY_DEVELOPMENT: &str = "deploy.development";
 pub const DEPLOY_STAGING: &str = "deploy.staging";
 pub const DEPLOY_PRODUCTION: &str = "deploy.production";
 pub const DEPLOY_ROLLBACK: &str = "deploy.rollback";
 pub const VERIFY_HEALTH: &str = "deploy.verify_health";
 pub const DEPLOY_RECORD: &str = "deploy.record";
-pub const DELIVERY_ACTIONS: [&str; 7] = [
+pub const DELIVERY_ACTIONS: [&str; 8] = [
     VERIFY_IMAGE,
+    INSPECT_IMAGE,
     DEPLOY_DEVELOPMENT,
     DEPLOY_STAGING,
     DEPLOY_PRODUCTION,
@@ -630,13 +634,14 @@ impl DeliveryTools {
         github_token: Option<String>,
         github_api: &str,
         azure_base: &str,
+        inspection: registry::InspectSettings,
     ) -> Self {
         let net = net::Net::new(policy);
         Self {
-            registry: Arc::new(registry::RegistryAdapter::new(
-                net.clone(),
-                github_token.clone(),
-            )),
+            registry: Arc::new(
+                registry::RegistryAdapter::new(net.clone(), github_token.clone())
+                    .with_inspection(inspection),
+            ),
             gitops: Arc::new(gitops::GitopsAdapter::new(github_token, github_api)),
             jenkins: Arc::new(jenkins::JenkinsAdapter::new(net.clone())),
             azure_devops: Arc::new(azure_devops::AzureDevopsAdapter::new(
@@ -770,6 +775,8 @@ pub(crate) fn test_registry() -> Registry {
         None,
         github::DEFAULT_API,
         azure_devops::DEFAULT_BASE,
+        // Nothing external in tests: no OSV, no REA.
+        registry::InspectSettings::default(),
     ))
     // Nothing listens there: a test that needs the engine serves a fake.
     .with_gitops(Arc::new(

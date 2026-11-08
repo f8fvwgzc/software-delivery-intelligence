@@ -1,0 +1,16 @@
+[package]
+name = "sdi-inspect"
+description = "Reverse-engineers a shipped container image: binary hardening, embedded Go and Rust dependency versions, packages, secrets. Pure: bytes in, evidence out. No network, no clock."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdi-analyzer.workspace = true
+
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+thiserror.workspace = true
