@@ -1,4 +1,5 @@
 import type { UseQueryResult } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 
 import { KeyValue } from '@/components/shared/data'
 import { Separator } from '@/components/ui/separator'
@@ -12,10 +13,12 @@ interface NodeDetailsProps {
   node: GraphNode
   impact: UseQueryResult<ImpactAnalysis>
   onSelectNode: (id: string) => void
+  /** Actions and connections from the map, between the attributes and the impact analysis. */
+  children?: ReactNode
 }
 
 /** Identity, provenance and attributes of one node, then what it would affect. */
-export function NodeDetails({ projectId, node, impact, onSelectNode }: NodeDetailsProps) {
+export function NodeDetails({ projectId, node, impact, onSelectNode, children }: NodeDetailsProps) {
   const meta = NODE_KIND_META[node.kind]
   const Icon = meta.icon
   const attributes = Object.entries(node.attributes)
@@ -59,6 +62,8 @@ export function NodeDetails({ projectId, node, impact, onSelectNode }: NodeDetai
           }))}
         />
       ) : null}
+
+      {children}
 
       <Separator />
 

@@ -105,6 +105,13 @@ const PROJECT_PAGES = [
   { path: '', title: 'Understanding', needsReady: true, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Understanding', exact: true }) },
   // The code browser has no page title of its own: the tree is its landmark.
   { path: '/code', title: 'Code', needsReady: true, ready: (page: Page) => page.getByRole('tree', { name: 'Repository files' }) },
+  // The map is ready once its level navigation is drawn, or the graph is still empty.
+  {
+    path: '/architecture',
+    title: 'Architecture',
+    needsReady: true,
+    ready: (page: Page) => page.getByRole('navigation', { name: 'Map level' }).or(page.getByText('No graph yet')),
+  },
   { path: '/pull-requests', title: 'Pull requests', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Pull requests', exact: true }) },
   { path: '/security', title: 'Security', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Security', exact: true }) },
   { path: '/diagrams', title: 'Diagrams', needsReady: false, ready: (page: Page) => page.getByRole('heading', { level: 1, name: 'Diagrams', exact: true }) },

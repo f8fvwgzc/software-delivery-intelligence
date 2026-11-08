@@ -2,6 +2,10 @@
  * React Flow is themed through its own custom properties. Everything here maps
  * them onto the app tokens so the canvas follows light/dark automatically.
  * `.react-flow.arch-flow` outranks the library's `.react-flow` and `.react-flow.dark`.
+ *
+ * The motion (staggered rise, the moving dash on active wires, the locate
+ * flash) follows Floorplan's map, held to this app's budget: nothing longer
+ * than --motion-slow per step, and none of it with reduced motion.
  */
 .react-flow.arch-flow {
   --arch-edge: color-mix(in oklch, var(--muted-foreground) 55%, var(--border));
@@ -16,8 +20,8 @@
   --xy-edge-label-color-default: var(--muted-foreground);
 
   --xy-node-color-default: var(--foreground);
-  --xy-node-background-color-default: var(--card);
-  --xy-node-border-default: 1px solid var(--border);
+  --xy-node-background-color-default: transparent;
+  --xy-node-border-default: 0;
   --xy-node-border-radius-default: var(--radius-lg);
   --xy-node-boxshadow-hover-default: none;
   --xy-node-boxshadow-selected-default: none;
@@ -40,7 +44,16 @@
   font-family: var(--font-sans);
 }
 
-/* Handles only anchor edges; they are never shown. */
+/* A new board stays invisible until it is fitted, then fades in while its cards rise. */
+.react-flow.arch-flow .react-flow__viewport {
+  transition: opacity var(--motion-base) var(--motion-ease);
+}
+
+.react-flow.arch-flow.is-hidden .react-flow__viewport {
+  opacity: 0;
+}
+
+/* Handles only anchor edges; the port dots show where wires meet a card. */
 .react-flow.arch-flow .react-flow__handle {
   width: 1px;
   height: 1px;
@@ -56,6 +69,12 @@
   border-radius: var(--radius-lg);
 }
 
+.react-flow.arch-flow .react-flow__node-band {
+  cursor: default;
+  pointer-events: none;
+  color: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+}
+
 .react-flow.arch-flow .react-flow__node:focus,
 .react-flow.arch-flow .react-flow__node:focus-visible {
   outline: 2px solid var(--ring);
@@ -67,7 +86,146 @@
 }
 
 .react-flow.arch-flow .react-flow__edge {
+  cursor: default;
+}
+
+/* Cards rise in left to right; --arch-delay staggers them. */
+@keyframes arch-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+.arch-flow .arch-enter {
+  position: relative;
+  animation: arch-rise var(--motion-slow) var(--motion-ease-out) both;
+  animation-delay: var(--arch-delay, 0ms);
+}
+
+.arch-flow .arch-card {
+  transition:
+    box-shadow var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    transform var(--motion-base) var(--motion-ease-out);
+}
+
+.arch-flow .react-flow__node:hover .arch-card {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+}
+
+.arch-flow .react-flow__node.selected:hover .arch-card {
+  box-shadow: none;
+}
+
+/* The open control shows on hover, on keyboard focus and on the selected card. */
+.arch-flow .arch-open {
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.arch-flow .react-flow__node:hover .arch-open,
+.arch-flow .react-flow__node.selected .arch-open,
+.arch-flow .react-flow__node:focus-visible .arch-open,
+.arch-flow .arch-open:focus-visible {
+  opacity: 1;
+}
+
+/* Receded: the box stays so the layout still reads, the content fades. */
+.arch-flow .arch-dim > * {
+  opacity: 0.3;
+  transition: opacity var(--motion-base) var(--motion-ease);
+}
+
+/* Located after a reveal or a pick from the panel: one ring, inside the motion budget. */
+@keyframes arch-flash {
+  40% {
+    box-shadow: 0 0 0 3px var(--brand);
+  }
+}
+
+.arch-flow .arch-flash {
+  animation: arch-flash var(--motion-slow) var(--motion-ease);
+}
+
+/* Where a wire meets a card: hollow at the source, filled at the target. */
+.arch-flow .arch-port {
+  position: absolute;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--arch-edge);
+  background: var(--card);
+  transform: translate(-50%, -50%);
   pointer-events: none;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease);
+}
+
+.arch-flow .arch-port[data-end='target'] {
+  background: var(--arch-edge);
+}
+
+.arch-flow .arch-port[data-state='active'],
+.arch-flow .arch-port[data-state='linked'] {
+  border-color: var(--foreground);
+}
+
+.arch-flow .arch-port[data-state='active'][data-end='target'],
+.arch-flow .arch-port[data-state='linked'][data-end='target'] {
+  background: var(--foreground);
+}
+
+.arch-flow .arch-port[data-state='dimmed'] {
+  opacity: 0.2;
+}
+
+/*
+ * The moving dash on a hovered wire (2 on, 10 off; -24 is two periods, so the
+ * loop is seamless). It runs only while the pointer rests on the card or the
+ * wire: the live read of a relation's direction, never ambient motion.
+ */
+@keyframes arch-flow-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.arch-flow .arch-flow-dash {
+  fill: none;
+  stroke: var(--background);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 2 10;
+  pointer-events: none;
+  animation: arch-flow-dash 1.1s linear infinite;
+}
+
+/* Level of detail: mid range keeps one line of prose, far out only the titles, larger. */
+.arch-flow.lod-mid .arch-desc {
+  -webkit-line-clamp: 1;
+}
+
+.arch-flow.lod-low .arch-desc,
+.arch-flow.lod-low .arch-meta,
+.arch-flow.lod-low .arch-caption {
+  visibility: hidden;
+}
+
+/* Far out the open control hides but stays reachable by keyboard. */
+.arch-flow.lod-low .arch-open:not(:focus-visible) {
+  opacity: 0;
+}
+
+.arch-flow.lod-low .arch-title {
+  font-size: 22px;
+  line-height: 28px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .react-flow.arch-flow .react-flow__controls {
@@ -102,8 +260,20 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .react-flow.arch-flow .react-flow__node,
-  .react-flow.arch-flow .react-flow__edge-path {
+  .arch-flow .arch-enter,
+  .arch-flow .arch-flash,
+  .arch-flow .arch-flow-dash {
+    animation: none;
+  }
+
+  .react-flow.arch-flow .react-flow__viewport,
+  .arch-flow .arch-card,
+  .arch-flow .arch-dim > *,
+  .arch-flow .arch-port {
     transition: none;
+  }
+
+  .arch-flow .react-flow__node:hover .arch-card {
+    transform: none;
   }
 }
