@@ -23,3 +23,40 @@ repo-server and application controller and is SDI's own code.
 The gitops service also uses, as module dependencies under the Apache
 License, Version 2.0: Kubernetes client libraries (k8s.io), Kustomize
 (sigs.k8s.io/kustomize) and Helm (helm.sh/helm/v3).
+
+The architecture map of the web app (web/src/features/graph) ports the
+rendering and drill-down know-how of Floorplan's map viewer
+(skills/floorplan/assets/viewer.html, at commit 70be3f40f9c2): containment
+as nesting with relations lifted to the visible cards, the "Used by /
+Inside / Uses" focus boards and their column brackets, its ELK layered
+layout options, port dots, the moving dash on highlighted wires, level of
+detail by zoom, and the zoom-into-card drill transition. The code is SDI's
+own React; no Floorplan file is copied:
+
+  Floorplan
+  https://github.com/haydenschmitty/floorplan
+  Copyright (c) 2026 Hayden Smith
+  Licensed under the MIT License:
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+  NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+  USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The map is laid out by elkjs (https://github.com/kieler/elkjs), used as an
+unmodified npm dependency under the Eclipse Public License 2.0; mermaid
+already depends on the same version.
