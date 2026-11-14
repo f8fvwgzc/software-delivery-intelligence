@@ -1,4 +1,7 @@
-/** Query key factory for the architecture graph. Invalidate `graphKeys.project(id)` after a scan. */
+/**
+ * Query key factory for the architecture graph. `useGraphLiveReload`
+ * invalidates `graphKeys.project(id)` when a scan of the project succeeds.
+ */
 export const graphKeys = {
   all: ['graph'] as const,
   project: (projectId: string) => [...graphKeys.all, projectId] as const,

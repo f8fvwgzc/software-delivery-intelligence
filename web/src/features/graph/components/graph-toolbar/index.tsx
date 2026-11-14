@@ -1,5 +1,6 @@
 import { MaximizeIcon } from 'lucide-react'
 
+import { Tag } from '@/components/system'
 import { Button } from '@/components/ui/button'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
@@ -21,6 +22,8 @@ interface GraphToolbarProps {
   historyPending: boolean
   visibleCount: number
   totalCount: number
+  /** Nodes a finished scan added while the map was open. */
+  freshCount: number
   onFitView: () => void
 }
 
@@ -36,6 +39,7 @@ export function GraphToolbar({
   historyPending,
   visibleCount,
   totalCount,
+  freshCount,
   onFitView,
 }: GraphToolbarProps) {
   return (
@@ -49,6 +53,11 @@ export function GraphToolbar({
         <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
           {visibleCount === totalCount ? `${totalCount} nodes` : `${visibleCount} of ${totalCount} nodes`}
         </span>
+        {freshCount > 0 ? (
+          <Tag tone="success" dot>
+            {freshCount} new
+          </Tag>
+        ) : null}
         <Field orientation="horizontal" className="w-auto gap-2">
           <Switch id="graph-show-history" size="sm" checked={showHistory} onCheckedChange={onShowHistoryChange} />
           <FieldLabel htmlFor="graph-show-history" className="text-xs font-normal text-muted-foreground">

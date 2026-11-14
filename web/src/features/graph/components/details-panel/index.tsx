@@ -9,6 +9,8 @@ interface DetailsPanelProps {
   open: boolean
   onClose: () => void
   title: string
+  /** Show the close control (desktop); off when the panel is the board's summary. */
+  closable?: boolean
   children: ReactNode
 }
 
@@ -17,7 +19,7 @@ interface DetailsPanelProps {
  * otherwise. The body is a native scroller on purpose: Radix ScrollArea lays
  * its content out as a table, which lets truncated text widen the panel.
  */
-export function DetailsPanel({ open, onClose, title, children }: DetailsPanelProps) {
+export function DetailsPanel({ open, onClose, title, closable = true, children }: DetailsPanelProps) {
   const isMobile = useIsMobile()
 
   if (isMobile) {
@@ -45,9 +47,11 @@ export function DetailsPanel({ open, onClose, title, children }: DetailsPanelPro
     <aside aria-label={title} className="flex w-80 shrink-0 flex-col overflow-hidden rounded-lg bg-card ring-1 ring-border">
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b pr-2 pl-4">
         <h2 className="text-sm font-medium">{title}</h2>
-        <Button variant="ghost" size="icon-sm" aria-label="Close details" onClick={onClose}>
-          <XIcon />
-        </Button>
+        {closable ? (
+          <Button variant="ghost" size="icon-sm" aria-label="Close details" onClick={onClose}>
+            <XIcon />
+          </Button>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 [scrollbar-gutter:stable]">{children}</div>
     </aside>
